@@ -706,7 +706,8 @@ function init() {
 function renderApp() {
   if (!plan) return;
   
-  document.getElementById('emptyState').style.display = 'none';
+  const emptyState = document.getElementById('emptyState');
+  if (emptyState) emptyState.style.display = 'none';
   document.getElementById('summaryBar').style.display = 'flex';
   document.getElementById('planTitle').textContent = plan.title || 'Workout Tracker';
   document.getElementById('planWeek').textContent = plan.week || '';
