@@ -141,6 +141,10 @@ Indexes target three expected query shapes: "all sets for exercise X over time,"
 6. On load: hydrate local state from active plan + most-recent incomplete workout.
 7. Keep localStorage as offline cache/fallback; Supabase is source of truth when online.
 
+## Deferred features
+
+- **Add ad-hoc exercises** (exercises performed but not in the imported plan). Planned for after the Supabase migration — see `DECISIONS.md` → "Ad-hoc exercises (extras)" for the data-model approach (separate `extras` client-side; `sets` rows with `exercise_order > plan_length` and null prescribed fields server-side).
+
 ## Non-goals for v1
 
 - Multi-user features.

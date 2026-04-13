@@ -2,6 +2,15 @@
 
 Running log of architecture/behavior decisions for the workout tracker. Newest first.
 
+## 2026-04-12 — Ad-hoc exercises (extras)
+
+Users will be able to log exercises they did not import from the plan JSON. These live separately from the prescribed plan blob.
+
+- **Client shape (pre-Supabase):** stored on a per-day `extras` array inside `logData`, e.g. `logData.day_<i>.extras = [{ name, sets: [{ weight, reps, done, rpe }], note }]`. The plan blob is never mutated.
+- **Supabase shape:** extras become ordinary rows in `sets` with `exercise_order > plan_length`, `prescribed_weight` and `prescribed_reps` null, and a normal `exercise_id` FK (lazy-create the `exercises` row on first use, same as prescribed exercises). No schema change required.
+- **Why keep them separate:** the plan blob stays immutable, so re-importing a plan never wipes logged extras, and "did I hit the plan?" queries stay clean (filter `prescribed_reps is not null`). Mutating the plan to append ad-hoc exercises would conflate prescription with execution.
+- **Status:** post-v1 feature. Document now, build after Supabase is live.
+
 ## 2026-04-12 — Per-set and per-workout timestamps
 
 Per-set timestamps captured for rest-interval analysis, fatigue timing, and skipped-exercise detection. Order fields kept separately as canonical sequence.
