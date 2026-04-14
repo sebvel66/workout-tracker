@@ -14,6 +14,8 @@ create unique index plans_one_active_per_user on plans (user_id) where is_active
 
 **How to apply:** when importing a new plan, the client must un-flag the previous active plan (`update plans set is_active = false where user_id = auth.uid() and is_active`) in the same logical operation as inserting the new one. A naïve "insert with is_active=true" will be rejected by the unique index.
 
+**Amendment 2026-04-13 — applied state correction.** The index was originally written into `20260412000000_init.sql`, but a re-run failure against the live database meant only the table-creation portion of that migration actually executed; the index never landed. To reconcile file-state with applied-state, the index was split into a follow-up migration (`20260413000000_add_active_plan_unique_index.sql`) and the original init file was edited to remove the index line so it accurately reflects what is in the database. This is a one-time exception: going forward, never edit a previously-run migration — always write a new forward-only migration instead.
+
 ## 2026-04-12 — Ad-hoc exercises (extras)
 
 Users will be able to log exercises they did not import from the plan JSON. These live separately from the prescribed plan blob.

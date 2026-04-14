@@ -1,5 +1,12 @@
 -- Initial schema for workout tracker v1 (Supabase migration).
 -- See DECISIONS.md and HANDOFF.md for rationale.
+--
+-- Edited 2026-04-13: removed the `plans_one_active_per_user` partial unique
+-- index. A re-run failure meant only the table-creation portion of this
+-- migration landed in the live database; the index was never applied. It has
+-- been split out into 20260413000000_add_active_plan_unique_index.sql so this
+-- file now matches what is actually in the database. This is a one-time
+-- exception to the "never edit an applied migration" rule — see DECISIONS.md.
 
 create table plans (
   id uuid primary key default gen_random_uuid(),
@@ -11,7 +18,6 @@ create table plans (
   created_at timestamptz not null default now()
 );
 create index on plans (user_id, created_at desc);
-create unique index plans_one_active_per_user on plans (user_id) where is_active;
 
 create table exercises (
   id uuid primary key default gen_random_uuid(),
