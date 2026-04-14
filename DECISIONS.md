@@ -2,6 +2,18 @@
 
 Running log of architecture/behavior decisions for the workout tracker. Newest first.
 
+## 2026-04-12 — Active plan uniqueness
+
+At most one `plans` row per user may have `is_active = true`, enforced at the database level via a partial unique index:
+
+```sql
+create unique index plans_one_active_per_user on plans (user_id) where is_active;
+```
+
+**Why DB-level, not app-level:** app-enforcement leaves silent failure modes — race conditions on concurrent import, direct edits from the Supabase dashboard, or interrupted imports — where two rows end up active simultaneously. The v2 AI planner will read "the active plan" and must never ambiguously pick one of two. Making the invalid state impossible is cheaper than defending against it everywhere downstream.
+
+**How to apply:** when importing a new plan, the client must un-flag the previous active plan (`update plans set is_active = false where user_id = auth.uid() and is_active`) in the same logical operation as inserting the new one. A naïve "insert with is_active=true" will be rejected by the unique index.
+
 ## 2026-04-12 — Ad-hoc exercises (extras)
 
 Users will be able to log exercises they did not import from the plan JSON. These live separately from the prescribed plan blob.
