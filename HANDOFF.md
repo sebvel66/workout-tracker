@@ -2,6 +2,13 @@
 
 Context for a fresh Claude Code instance picking up v1 (cross-device persistence) and preparing for v2 (AI-generated workouts from historical performance).
 
+## Where we left off (2026-04-12 session)
+
+- Initial schema migration applied live (`20260412000000_init.sql`), followed by the active-plan unique index (`20260413000000_add_active_plan_unique_index.sql`) — both verified in the Supabase dashboard.
+- Supabase magic-link auth gate working end-to-end, tested locally (send link → receive → click → tracker appears → sign out works). Committed as `b901074` and pushed.
+- Tracker data flow still runs entirely on `localStorage` — nothing in the app reads or writes the Supabase tables yet.
+- **Next session:** data-layer rewrite, starting with an audit of every `localStorage` call site in `index.html` so we know the full surface area before swapping in Supabase reads/writes.
+
 ## Repo state
 
 - Single file: `index.html` (labeled v3 in header at line 344 — stale string, current code).
