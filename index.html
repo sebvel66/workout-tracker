@@ -332,16 +332,74 @@ html, body {
 @media (min-width: 500px) {
   .workout-container { max-width: 500px; margin: 0 auto; }
 }
+
+/* Auth gate */
+.auth-gate {
+  display: none;
+  min-height: 100dvh;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+body.unauthed .auth-gate { display: flex; }
+body.unauthed .header,
+body.unauthed .workout-container,
+body.unauthed .summary-bar { display: none !important; }
+
+.auth-card {
+  width: 100%;
+  max-width: 360px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 28px 22px;
+}
+.auth-card h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.4px; margin-bottom: 6px; }
+.auth-card p { font-size: 13px; color: var(--text2); line-height: 1.5; margin-bottom: 18px; }
+.auth-email {
+  width: 100%; background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+  font-family: 'Outfit', sans-serif; font-size: 14px; padding: 12px 14px; border-radius: 10px;
+  outline: none; margin-bottom: 10px;
+}
+.auth-email:focus { border-color: var(--accent); }
+.auth-submit {
+  width: 100%; background: var(--accent2); color: #000; border: none;
+  font-family: 'Outfit', sans-serif; font-size: 14px; font-weight: 600;
+  padding: 12px; border-radius: 10px; cursor: pointer;
+}
+.auth-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+.auth-status { font-size: 12px; color: var(--text2); margin-top: 12px; min-height: 16px; font-family: 'JetBrains Mono', monospace; }
+.auth-status.err { color: var(--danger); }
+.auth-status.ok { color: var(--accent); }
+
+.signout-btn {
+  background: transparent; border: 1px solid var(--border); color: var(--text3);
+  font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 600;
+  padding: 4px 8px; border-radius: 6px; cursor: pointer; margin-left: 6px;
+}
 </style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
-<body>
+<body class="unauthed">
+
+<section class="auth-gate" id="authGate">
+  <div class="auth-card">
+    <h1>Workout Tracker</h1>
+    <p>Enter your email and we'll send you a magic link to sign in.</p>
+    <form id="authForm">
+      <input type="email" class="auth-email" id="authEmail" placeholder="you@example.com" autocomplete="email" required>
+      <button type="submit" class="auth-submit" id="authSubmit">Send magic link</button>
+    </form>
+    <div class="auth-status" id="authStatus"></div>
+  </div>
+</section>
 
 <div class="header">
   <div class="header-top">
     <div>
       <div class="header-title" id="planTitle">Workout Tracker</div>
       <div class="header-week" id="planWeek">No plan loaded</div>
-      <div class="version">v3</div>
+      <div class="version">v3 <button class="signout-btn" id="btnSignOut" type="button">sign out</button></div>
     </div>
     <div class="header-actions">
       <button class="header-btn" id="btnImport">Import</button>
@@ -401,6 +459,22 @@ html, body {
 </div>
 
 <script>
+// -----------------------------------------------------------------------------
+// Supabase config.
+//
+// The anon key below is PUBLIC BY DESIGN. Supabase issues it for browser use,
+// and data access is protected by Row-Level Security policies (see
+// supabase/migrations/). Shipping this key in a static HTML file is the
+// intended pattern.
+//
+// NEVER add the `service_role` key here — it bypasses RLS and would give any
+// visitor full admin access to the database. The service_role key belongs only
+// in server-side environments, never in any file served to a browser.
+// -----------------------------------------------------------------------------
+var SUPABASE_URL = 'https://kgrmlgrzaxbwpkmziwxp.supabase.co';
+var SUPABASE_ANON_KEY = 'sb_publishable_Yh8YMh9yq0gQ77OD-oiQ1A_9MHS_6rB';
+var sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
 var plan = null;
 var logData = {};
 var currentDay = 0;
@@ -729,7 +803,53 @@ function exportData() {
   a.click(); URL.revokeObjectURL(url);
 }
 
-init();
+// ---- Auth gate ----
+var authForm = document.getElementById('authForm');
+var authEmail = document.getElementById('authEmail');
+var authSubmit = document.getElementById('authSubmit');
+var authStatus = document.getElementById('authStatus');
+var btnSignOut = document.getElementById('btnSignOut');
+
+function setAuthStatus(msg, kind) {
+  authStatus.textContent = msg || '';
+  authStatus.className = 'auth-status' + (kind ? ' ' + kind : '');
+}
+
+authForm.addEventListener('submit', function(e) {
+  e.preventDefault();
+  var email = (authEmail.value || '').trim();
+  if (!email) return;
+  authSubmit.disabled = true;
+  setAuthStatus('Sending…');
+  sb.auth.signInWithOtp({
+    email: email,
+    options: { emailRedirectTo: window.location.href }
+  }).then(function(res) {
+    authSubmit.disabled = false;
+    if (res.error) setAuthStatus(res.error.message, 'err');
+    else setAuthStatus('Check your email for the link.', 'ok');
+  });
+});
+
+btnSignOut.addEventListener('click', function() {
+  sb.auth.signOut();
+});
+
+function applySession(session) {
+  if (session && session.user) {
+    document.body.classList.remove('unauthed');
+    init();
+  } else {
+    document.body.classList.add('unauthed');
+  }
+}
+
+sb.auth.getSession().then(function(res) {
+  applySession(res.data.session);
+});
+sb.auth.onAuthStateChange(function(_event, session) {
+  applySession(session);
+});
 </script>
 </body>
 </html>
