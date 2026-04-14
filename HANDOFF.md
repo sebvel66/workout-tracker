@@ -148,6 +148,14 @@ Indexes target three expected query shapes: "all sets for exercise X over time,"
 6. On load: hydrate local state from active plan + most-recent incomplete workout.
 7. Keep localStorage as offline cache/fallback; Supabase is source of truth when online.
 
+## Gotchas / lessons learned
+
+- **Local dev browser caching.** Restarting the Python server doesn't invalidate the browser cache, so the frontend can be running stale JavaScript against a fresh server. Always hard-reload (Cmd+Shift+R) after restarting the local server — normal reload (Cmd+R) can serve cached files and silently mask a fix.
+
+## Pre-deploy tasks
+
+- **Configure custom SMTP provider** (Resend or Postmark) in Supabase → Authentication → Emails to avoid the built-in sender's email rate limits. Required before the Vercel launch — real-use testing will otherwise keep hitting rate limits on magic-link sends.
+
 ## Deferred features
 
 - **Add ad-hoc exercises** (exercises performed but not in the imported plan). Planned for after the Supabase migration — see `DECISIONS.md` → "Ad-hoc exercises (extras)" for the data-model approach (separate `extras` client-side; `sets` rows with `exercise_order > plan_length` and null prescribed fields server-side).
