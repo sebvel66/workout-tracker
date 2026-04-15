@@ -2,6 +2,28 @@
 
 Context for a fresh Claude Code instance picking up v1 (cross-device persistence) and preparing for v2 (AI-generated workouts from historical performance).
 
+## Next session pickup
+
+Priority order:
+
+1. **Finish the data-layer rewrite test pass and commits.** BOTH sets of changes are currently uncommitted together in the working directory on `index.html`:
+   - **Change A — crash fix:** `#emptyState` moved out of `#workoutContainer` (HTML structural move) + `body.unauthed #emptyState` CSS rule so it stays hidden behind the auth gate.
+   - **Change B — alert-to-toast cleanup:** all seven `alert()` calls in `handleImport` / `exportData` converted to `showToast(...)`, with `console.error(err)` added before the two `catch`-block toasts so stack traces still reach DevTools.
+   - `BUG-TEST-13.md` documents the crash root cause.
+
+   Because both sets of changes live in the same file, they need to be staged separately — use `git add -p` (or stage the specific hunks manually) to split them into two commits in sequence, **not** one combined commit.
+
+   Steps:
+   - Hard-reload (Cmd+Shift+R).
+   - Run test 13 (sign in → import week 1 → log a few sets → import week 2 → verify no crash and the UI re-renders with the new plan).
+   - Hard-reload mid-workout to exercise the `hydrate()` path.
+   - Verify the signed-out state: auth gate shows, `#emptyState` is hidden behind it.
+   - **Commit 1 (after test 13 passes):** stage only the Change A hunks (HTML move + `.unauthed` CSS rule). Commit message like "Fix #emptyState crash on re-import — move element out of workoutContainer." Also stage `BUG-TEST-13.md` with this commit.
+   - **Commit 2 (after a visual diff review of the staged alert-to-toast hunks):** stage the remaining Change B hunks. Commit message like "Replace remaining alert() calls with showToast() — non-blocking error UX, no more swallowed stack traces."
+   - Then finish test checklist items 14–17 (export, toast/retry, sign out, legacy-localStorage residue).
+   - Then push everything.
+2. **Do NOT push previous commits** until the full test pass is complete.
+
 ## Where we left off (2026-04-12 session)
 
 - Initial schema migration applied live (`20260412000000_init.sql`), followed by the active-plan unique index (`20260413000000_add_active_plan_unique_index.sql`) — both verified in the Supabase dashboard.
@@ -151,14 +173,30 @@ Indexes target three expected query shapes: "all sets for exercise X over time,"
 ## Gotchas / lessons learned
 
 - **Local dev browser caching.** Restarting the Python server doesn't invalidate the browser cache, so the frontend can be running stale JavaScript against a fresh server. Always hard-reload (Cmd+Shift+R) after restarting the local server — normal reload (Cmd+R) can serve cached files and silently mask a fix.
+- **Commit milestones as they pass their test gates.** When a multi-step change has clear internal milestones, commit each milestone as it's verified rather than holding the whole stack uncommitted. Today's git history mistake came from leaving the data-layer rewrite uncommitted while layering further changes on top — a `git checkout` reverted further than expected and required a rebuild of the commit sequence. Future multi-day work: commit the foundation as soon as it passes its own test gate.
+
+## Known v1 limitations
+
+- **Multi-tab duplicate workouts.** Two browser tabs open on the same day could each independently hit "first set done" before either has persisted a `workouts` row, producing two rows for the same day. Single-tab use is safe — the in-memory `currentWorkoutId` guard prevents it within a tab. Mitigation deferred to v1.1 via a generated `performed_on date` column on `workouts` plus a partial unique index on `(user_id, day_index, performed_on)`. Documented here so future-me doesn't debug it fresh if it ever surfaces.
+- **First-insert retry dup.** If the very first `workouts` insert of a session fails mid-flight (network flake) and the user retries, the retry can't distinguish "never persisted" from "persisted but response lost," so a duplicate row is possible. Narrow failure window; worst case is one stray workouts row that's easy to detect and delete. Same class as the multi-tab limitation — both resolved by the v1.1 unique index.
+- **Midnight boundary drift.** "Today" is computed on every write/hydrate via `new Date()`, so a session that straddles midnight could see the boundary slip and log the late sets as a new day. Unlikely in practice; fix for v1.1 is to snapshot `todayStart` on hydration and hold it steady in memory for the session.
+- **One editable tab per calendar day.** Current rule: `todayState` is pinned to the first `day_index` the user taps "done" on, and every other tab flips to disabled until the calendar rolls over. This blocks logging two different day_index workouts on the same calendar date (e.g., doing Monday in the morning and Tuesday at night). v1.1 candidate: loosen the rule to one editable tab per `(date, day_index)` pair so each tab independently tracks its own today-workout. Roughly a 10-line change to `hydrate()` and `viewModeFor()`.
 
 ## Pre-deploy tasks
 
-- **Configure custom SMTP provider** (Resend or Postmark) in Supabase → Authentication → Emails to avoid the built-in sender's email rate limits. Required before the Vercel launch — real-use testing will otherwise keep hitting rate limits on magic-link sends.
+- *(No open pre-deploy tasks — see "Done" for the SMTP resolution.)*
+
+## Done
+
+- **Custom SMTP provider (2026-04-15).** Resend configured in Supabase → Authentication → Emails using the shared `onboarding@resend.dev` sender. Unblocks magic-link testing. Free tier limits are 3,000 emails/month and 100/day — well beyond expected usage, but worth knowing if this ever scales up. Upgrading to a custom domain sender is optional polish for post-v1.
 
 ## Deferred features
 
 - **Add ad-hoc exercises** (exercises performed but not in the imported plan). Planned for after the Supabase migration — see `DECISIONS.md` → "Ad-hoc exercises (extras)" for the data-model approach (separate `extras` client-side; `sets` rows with `exercise_order > plan_length` and null prescribed fields server-side).
+- **"Done = did as prescribed" shortcut.** Currently tapping the done checkbox while weight/reps inputs are empty marks the set done with `weight=null, reps=null` in the DB. Proposal: on check with empty inputs, auto-populate from the prescribed placeholder values (the greyed-out target numbers already shown as `placeholder`). Saves a tap per set when the user hit the plan exactly. Edge case: partial fills (weight entered, reps empty) — probably only auto-fill the empty field, not overwrite.
+- **Browse historical weeks.** Current UI only surfaces the most recent workout per `day_index`. Need a week-picker or date-based navigation so past weeks are reviewable. Schema already supports it (`workouts.performed_at` is indexed); purely a UI addition.
+- **Adjustable rest timer in the UI.** Timer currently uses `exercise.rest` from the plan or a 90s fallback with no in-app way to change mid-workout. Add +/- controls or a tap-to-edit on the timer card.
+- **Longer toast persistence.** Current auto-dismiss is 9 seconds; feels too short in practice for reading and reacting to error context. Bump to ~20s, or make sticky-until-dismissed for error toasts (keep auto-dismiss for successes if/when we add those).
 
 ## Non-goals for v1
 
