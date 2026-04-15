@@ -344,7 +344,8 @@ html, body {
 body.unauthed .auth-gate { display: flex; }
 body.unauthed .header,
 body.unauthed .workout-container,
-body.unauthed .summary-bar { display: none !important; }
+body.unauthed .summary-bar,
+body.unauthed #emptyState { display: none !important; }
 
 .auth-card {
   width: 100%;
@@ -441,13 +442,12 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
   </div>
 </div>
 
-<div class="workout-container" id="workoutContainer">
-  <div class="empty-state" id="emptyState">
-    <div class="empty-state-icon">🏋️</div>
-    <h3>No Plan Loaded</h3>
-    <p>Tap <strong>Import</strong> to load your weekly plan JSON, then start tracking.</p>
-  </div>
+<div class="empty-state" id="emptyState">
+  <div class="empty-state-icon">🏋️</div>
+  <h3>No Plan Loaded</h3>
+  <p>Tap <strong>Import</strong> to load your weekly plan JSON, then start tracking.</p>
 </div>
+<div class="workout-container" id="workoutContainer"></div>
 
 <div class="summary-bar" id="summaryBar">
   <div class="summary-stats">
