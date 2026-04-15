@@ -377,6 +377,36 @@ body.unauthed .summary-bar { display: none !important; }
   font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 600;
   padding: 4px 8px; border-radius: 6px; cursor: pointer; margin-left: 6px;
 }
+
+.day-mode-tag {
+  display: inline-block; font-size: 10px; font-weight: 600; color: var(--text3);
+  background: var(--surface3); border-radius: 4px; padding: 2px 6px;
+  font-family: 'JetBrains Mono', monospace; text-transform: uppercase; letter-spacing: 0.5px;
+  margin-left: 8px; vertical-align: middle;
+}
+
+.toast-stack {
+  position: fixed; left: 12px; right: 12px;
+  bottom: calc(100px + var(--safe-bottom));
+  display: flex; flex-direction: column-reverse; gap: 8px; z-index: 400;
+  pointer-events: none;
+}
+.toast {
+  background: var(--surface); border: 1px solid var(--danger);
+  border-radius: 10px; padding: 10px 14px; font-size: 13px; color: var(--text);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  pointer-events: auto; cursor: pointer;
+  display: flex; justify-content: space-between; gap: 10px; align-items: center;
+  animation: toastIn 0.2s ease;
+}
+.toast-msg { flex: 1; line-height: 1.3; }
+.toast-retry {
+  font-size: 10px; color: var(--accent); font-family: 'JetBrains Mono', monospace;
+  text-transform: uppercase; letter-spacing: 0.5px; font-weight: 700;
+}
+@keyframes toastIn { from { transform: translateY(8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: default; }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
@@ -451,6 +481,8 @@ body.unauthed .summary-bar { display: none !important; }
   </div>
 </div>
 
+<div class="toast-stack" id="toastStack"></div>
+
 <div class="rest-timer-overlay" id="restOverlay"></div>
 <div class="rest-timer" id="restTimer">
   <div class="rest-timer-time" id="restTime">0:00</div>
@@ -475,11 +507,22 @@ var SUPABASE_URL = 'https://kgrmlgrzaxbwpkmziwxp.supabase.co';
 var SUPABASE_ANON_KEY = 'sb_publishable_Yh8YMh9yq0gQ77OD-oiQ1A_9MHS_6rB';
 var sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-var plan = null;
-var logData = {};
+// ---- State ----
+var userId = null;
+var activePlanId = null;
+var plan = null;              // active plan's data blob
 var currentDay = 0;
 var restInterval = null;
 var restSeconds = 0;
+var hydratedForUser = null;
+
+// todayState: { workoutId, planId, dayIndex, exercises: { ex_<ei>: { rpe, note, sub, sets: [{setId, weight, reps, done, startedAt, completedAt, exerciseId}] } } }
+// null until the first set is persisted today.
+var todayState = null;
+
+var historicalCache = {};     // dayIndex -> state (read-only past workouts)
+var planCache = {};           // planId -> plan blob
+var exerciseIdCache = {};     // exercise name -> uuid
 
 // ALL EVENT LISTENERS
 document.getElementById('btnImport').addEventListener('click', function() {
@@ -501,7 +544,7 @@ document.getElementById('btnStopRest').addEventListener('click', stopRestTimer);
 document.getElementById('restOverlay').addEventListener('click', stopRestTimer);
 
 // TAB CLICKS
-document.getElementById('dayTabs').addEventListener('click', function(e) {
+document.getElementById('dayTabs').addEventListener('click', async function(e) {
   var tab = e.target;
   while (tab && tab !== this && !tab.classList.contains('day-tab')) {
     tab = tab.parentElement;
@@ -510,6 +553,10 @@ document.getElementById('dayTabs').addEventListener('click', function(e) {
   var idx = tab.getAttribute('data-day');
   if (idx === null) return;
   currentDay = parseInt(idx, 10);
+  // Lazy-load historical if this tab isn't today's editable tab and we haven't cached it.
+  if (todayState && todayState.dayIndex !== currentDay && !historicalCache[currentDay]) {
+    await loadHistorical(currentDay);
+  }
   buildTabs();
   buildDay(currentDay);
 });
@@ -527,6 +574,7 @@ document.getElementById('workoutContainer').addEventListener('click', function(e
   // Set check
   var checkBtn = target.closest ? target.closest('.set-check') : null;
   if (checkBtn) {
+    if (checkBtn.disabled) return;
     toggleSet(
       parseInt(checkBtn.getAttribute('data-di')),
       parseInt(checkBtn.getAttribute('data-ei')),
@@ -537,6 +585,7 @@ document.getElementById('workoutContainer').addEventListener('click', function(e
   // RPE
   var rpeBtn = target.closest ? target.closest('.rpe-btn') : null;
   if (rpeBtn) {
+    if (rpeBtn.disabled) return;
     logRPE(
       parseInt(rpeBtn.getAttribute('data-di')),
       parseInt(rpeBtn.getAttribute('data-ei')),
@@ -549,6 +598,7 @@ document.getElementById('workoutContainer').addEventListener('click', function(e
 // WORKOUT CONTAINER input changes
 document.getElementById('workoutContainer').addEventListener('change', function(e) {
   var t = e.target;
+  if (t.disabled) return;
   if (t.classList.contains('set-input')) {
     logSet(parseInt(t.getAttribute('data-di')), parseInt(t.getAttribute('data-ei')),
       parseInt(t.getAttribute('data-si')), t.getAttribute('data-field'), t.value);
@@ -561,67 +611,195 @@ document.getElementById('workoutContainer').addEventListener('change', function(
   }
 });
 
-function init() {
+// ---- Hydration ----
+async function hydrate() {
   try {
-    var saved = localStorage.getItem('workoutPlan');
-    var savedLog = localStorage.getItem('workoutLog');
-    if (saved) {
-      plan = JSON.parse(saved);
-      if (savedLog) logData = JSON.parse(savedLog);
-      document.getElementById('emptyState').style.display = 'none';
-      document.getElementById('summaryBar').style.display = 'flex';
-      document.getElementById('planTitle').textContent = plan.title || 'Workout Tracker';
-      document.getElementById('planWeek').textContent = plan.week || '';
-      buildTabs();
-      buildDay(currentDay);
+    var ures = await sb.auth.getUser();
+    if (!ures.data || !ures.data.user) return;
+    userId = ures.data.user.id;
+
+    var planRes = await sb.from('plans').select('*')
+      .eq('user_id', userId).eq('is_active', true).maybeSingle();
+    if (planRes.error) { showToast('Failed to load plan', null); return; }
+    if (!planRes.data) {
+      plan = null; activePlanId = null;
+      document.getElementById('emptyState').style.display = 'block';
+      document.getElementById('summaryBar').style.display = 'none';
+      document.getElementById('planTitle').textContent = 'Workout Tracker';
+      document.getElementById('planWeek').textContent = 'No plan loaded';
+      document.getElementById('dayTabs').innerHTML = '';
+      return;
     }
+    activePlanId = planRes.data.id;
+    plan = planRes.data.data;
+    planCache[activePlanId] = plan;
+    document.getElementById('emptyState').style.display = 'none';
+    document.getElementById('summaryBar').style.display = 'flex';
+    document.getElementById('planTitle').textContent = plan.title || 'Workout Tracker';
+    document.getElementById('planWeek').textContent = plan.week || '';
+
+    var bounds = dayBounds(new Date());
+    var wRes = await sb.from('workouts').select('*, sets(*)')
+      .eq('user_id', userId)
+      .gte('performed_at', bounds.start.toISOString())
+      .lt('performed_at', bounds.end.toISOString())
+      .order('performed_at', { ascending: false }).limit(1);
+    if (wRes.error) { showToast("Failed to load today's workout", null); }
+    else if (wRes.data && wRes.data.length) {
+      todayState = stateFromWorkout(wRes.data[0]);
+      currentDay = todayState.dayIndex;
+      if (todayState.planId && !planCache[todayState.planId]) {
+        var pr = await sb.from('plans').select('data').eq('id', todayState.planId).maybeSingle();
+        if (pr.data) planCache[todayState.planId] = pr.data.data;
+      }
+      seedExerciseIdCache(todayState);
+    }
+
+    buildTabs();
+    buildDay(currentDay);
   } catch(err) {
-    console.error('Init error:', err);
+    console.error('Hydrate error:', err);
+    showToast('Something went wrong loading your data', null);
   }
 }
 
+function seedExerciseIdCache(state) {
+  if (!state) return;
+  var planBlob = _planForState(state);
+  if (!planBlob || !planBlob.days[state.dayIndex]) return;
+  var exs = planBlob.days[state.dayIndex].exercises;
+  for (var ek in state.exercises) {
+    var ei = parseInt(ek.slice(3), 10);
+    var arr = state.exercises[ek].sets;
+    for (var si = 0; si < arr.length; si++) {
+      if (arr[si] && arr[si].exerciseId && exs[ei]) {
+        exerciseIdCache[normName(exs[ei].name)] = arr[si].exerciseId;
+      }
+    }
+  }
+}
+
+function _planForState(state) {
+  if (state && state.planId && planCache[state.planId]) return planCache[state.planId];
+  return plan;
+}
+
+function dayBounds(date) {
+  var start = new Date(date); start.setHours(0,0,0,0);
+  var end = new Date(start); end.setDate(end.getDate() + 1);
+  return { start: start, end: end };
+}
+
+function stateFromWorkout(row) {
+  var state = { workoutId: row.id, planId: row.plan_id, dayIndex: row.day_index, exercises: {} };
+  var sets = row.sets || [];
+  for (var i = 0; i < sets.length; i++) {
+    var s = sets[i];
+    var ek = 'ex_' + s.exercise_order;
+    if (!state.exercises[ek]) state.exercises[ek] = { rpe: null, note: '', sub: '', sets: [] };
+    state.exercises[ek].sets[s.set_order] = {
+      setId: s.id, weight: s.weight, reps: s.reps, done: !!s.done,
+      exerciseId: s.exercise_id,
+      startedAt: s.started_at, completedAt: s.completed_at,
+    };
+    if (s.rpe != null) state.exercises[ek].rpe = s.rpe;
+    if (s.note) state.exercises[ek].note = s.note;
+    if (s.substitution) state.exercises[ek].sub = s.substitution;
+  }
+  return state;
+}
+
+async function loadHistorical(di) {
+  if (historicalCache[di]) return historicalCache[di];
+  try {
+    var bounds = dayBounds(new Date());
+    var res = await sb.from('workouts').select('*, sets(*)')
+      .eq('user_id', userId).eq('day_index', di)
+      .lt('performed_at', bounds.start.toISOString())
+      .order('performed_at', { ascending: false }).limit(1);
+    if (res.error) { showToast('Failed to load history for this day', null); return null; }
+    if (!res.data || !res.data.length) return null;
+    var state = stateFromWorkout(res.data[0]);
+    if (state.planId && !planCache[state.planId]) {
+      var pr = await sb.from('plans').select('data').eq('id', state.planId).maybeSingle();
+      if (pr.data) planCache[state.planId] = pr.data.data;
+    }
+    historicalCache[di] = state;
+    return state;
+  } catch(err) {
+    console.error('loadHistorical error:', err);
+    return null;
+  }
+}
+
+function viewModeFor(di) {
+  if (!todayState) return 'editable';
+  if (todayState.dayIndex === di) return 'editable';
+  if (historicalCache[di]) return 'historical';
+  return 'template';
+}
+
+function stateForDay(di) {
+  var mode = viewModeFor(di);
+  if (mode === 'editable') return todayState;
+  if (mode === 'historical') return historicalCache[di];
+  return null;
+}
+
+// ---- Render ----
 function buildTabs() {
+  if (!plan) return;
   var el = document.getElementById('dayTabs');
   var h = '';
   for (var i = 0; i < plan.days.length; i++) {
     var d = plan.days[i];
     var cls = 'day-tab';
     if (i === currentDay) cls += ' active';
-    if (logData['day_' + i] && Object.keys(logData['day_' + i].exercises || {}).length > 0) cls += ' has-data';
+    var hasToday = todayState && todayState.dayIndex === i && Object.keys(todayState.exercises || {}).length > 0;
+    if (hasToday || historicalCache[i]) cls += ' has-data';
     h += '<button class="' + cls + '" data-day="' + i + '">' + (d.short || 'D' + (i+1)) + '</button>';
   }
   el.innerHTML = h;
 }
 
 function buildDay(di) {
-  var day = plan.days[di];
+  if (!plan) return;
+  var mode = viewModeFor(di);
+  var state = stateForDay(di);
+  var planBlob = _planForState(state) || plan;
+  if (!planBlob || !planBlob.days[di]) return;
+  var dayPlan = planBlob.days[di];
   var c = document.getElementById('workoutContainer');
-  if (!logData['day_' + di]) logData['day_' + di] = { exercises: {}, date: null };
-
   var ts = 0, cs = 0;
-  var h = '<div class="day-header"><h2>' + day.name + '</h2><div class="day-meta">' + (day.sets_total || '') + ' · ' + (day.duration || '') + '</div></div>';
+  var readOnly = mode !== 'editable';
+  var modeLabel = mode === 'historical' ? ' <span class="day-mode-tag">historical</span>'
+                : mode === 'template' ? ' <span class="day-mode-tag">template</span>'
+                : '';
+  var h = '<div class="day-header"><h2>' + escapeHtml(dayPlan.name) + modeLabel + '</h2>' +
+          '<div class="day-meta">' + (dayPlan.sets_total || '') + ' · ' + (dayPlan.duration || '') + '</div></div>';
 
-  for (var ei = 0; ei < day.exercises.length; ei++) {
-    var ex = day.exercises[ei];
+  for (var ei = 0; ei < dayPlan.exercises.length; ei++) {
+    var ex = dayPlan.exercises[ei];
     var ek = 'ex_' + ei;
-    var el = logData['day_' + di].exercises[ek] || { sets: [], rpe: null, note: '', sub: '' };
+    var exState = (state && state.exercises[ek]) || { sets: [], rpe: null, note: '', sub: '' };
     ts += ex.sets.length;
     var dn = 0;
-    for (var s = 0; s < el.sets.length; s++) { if (el.sets[s] && el.sets[s].done) dn++; }
+    for (var s = 0; s < exState.sets.length; s++) { if (exState.sets[s] && exState.sets[s].done) dn++; }
     cs += dn;
     var ad = dn === ex.sets.length, sd = dn > 0 && !ad;
     var sc = ad ? 'complete' : sd ? 'partial' : 'pending';
     var st = ad ? dn + '/' + ex.sets.length + ' ✓' : dn + '/' + ex.sets.length;
     var cc = ad ? ' complete' : sd ? ' partial' : '';
+    var dis = readOnly ? ' disabled' : '';
 
     h += '<div class="exercise-card' + cc + '">';
-    h += '<div class="exercise-header"><div class="exercise-name">' + ex.name + '</div><div class="exercise-status ' + sc + '">' + st + '</div></div>';
-    if (ex.note) h += '<div class="exercise-note">' + ex.note + '</div>';
+    h += '<div class="exercise-header"><div class="exercise-name">' + escapeHtml(ex.name) + '</div><div class="exercise-status ' + sc + '">' + st + '</div></div>';
+    if (ex.note) h += '<div class="exercise-note">' + escapeHtml(ex.note) + '</div>';
     h += '<div class="sets-container">';
 
     for (var si = 0; si < ex.sets.length; si++) {
       var set = ex.sets[si];
-      var sl = el.sets[si] || {};
+      var sl = exState.sets[si] || {};
       var pr = fmtP(set);
       var wc = inputCls(sl.weight, set.weight);
       var rc = inputCls(sl.reps, set.reps_target);
@@ -631,23 +809,23 @@ function buildDay(di) {
       h += '<div class="set-prescribed">' + pr + '</div>';
       h += '<div class="set-actual">';
       h += '<div class="input-group"><label class="input-label">LBS</label>';
-      h += '<input type="number" inputmode="decimal" class="set-input ' + wc + '" value="' + (sl.weight || '') + '" placeholder="' + (set.weight || '—') + '" data-di="' + di + '" data-ei="' + ei + '" data-si="' + si + '" data-field="weight" onfocus="this.select()"></div>';
+      h += '<input type="number" inputmode="decimal" class="set-input ' + wc + '" value="' + (sl.weight != null ? sl.weight : '') + '" placeholder="' + (set.weight || '—') + '" data-di="' + di + '" data-ei="' + ei + '" data-si="' + si + '" data-field="weight" onfocus="this.select()"' + dis + '></div>';
       h += '<div class="input-group"><label class="input-label">REPS</label>';
-      h += '<input type="number" inputmode="numeric" class="set-input ' + rc + '" value="' + (sl.reps || '') + '" placeholder="' + (set.reps_target || '—') + '" data-di="' + di + '" data-ei="' + ei + '" data-si="' + si + '" data-field="reps" onfocus="this.select()"></div>';
+      h += '<input type="number" inputmode="numeric" class="set-input ' + rc + '" value="' + (sl.reps != null ? sl.reps : '') + '" placeholder="' + (set.reps_target || '—') + '" data-di="' + di + '" data-ei="' + ei + '" data-si="' + si + '" data-field="reps" onfocus="this.select()"' + dis + '></div>';
       h += '</div>';
-      h += '<button class="set-check ' + (sl.done ? 'done' : '') + '" data-di="' + di + '" data-ei="' + ei + '" data-si="' + si + '">' + (sl.done ? '✓' : '·') + '</button>';
+      h += '<button class="set-check ' + (sl.done ? 'done' : '') + '" data-di="' + di + '" data-ei="' + ei + '" data-si="' + si + '"' + dis + '>' + (sl.done ? '✓' : '·') + '</button>';
       h += '</div>';
     }
 
     h += '<div class="rpe-row"><div class="rpe-label">RPE</div><div class="rpe-buttons">';
     var rv = [6,7,8,9,10];
     for (var r = 0; r < rv.length; r++) {
-      h += '<button class="rpe-btn' + (el.rpe === rv[r] ? ' selected' : '') + '" data-di="' + di + '" data-ei="' + ei + '" data-rpe="' + rv[r] + '">' + rv[r] + '</button>';
+      h += '<button class="rpe-btn' + (exState.rpe === rv[r] ? ' selected' : '') + '" data-di="' + di + '" data-ei="' + ei + '" data-rpe="' + rv[r] + '"' + dis + '>' + rv[r] + '</button>';
     }
     h += '</div></div></div>';
 
-    h += '<div class="sub-row"><div class="sub-label">SUB:</div><input type="text" class="sub-input" value="' + (el.sub || '') + '" placeholder="Substituted exercise" data-di="' + di + '" data-ei="' + ei + '"></div>';
-    h += '<div style="padding:0 14px 14px"><textarea class="exercise-note-input" rows="1" placeholder="Notes" data-di="' + di + '" data-ei="' + ei + '">' + (el.note || '') + '</textarea></div>';
+    h += '<div class="sub-row"><div class="sub-label">SUB:</div><input type="text" class="sub-input" value="' + escapeAttr(exState.sub || '') + '" placeholder="Substituted exercise" data-di="' + di + '" data-ei="' + ei + '"' + dis + '></div>';
+    h += '<div style="padding:0 14px 14px"><textarea class="exercise-note-input" rows="1" placeholder="Notes" data-di="' + di + '" data-ei="' + ei + '"' + dis + '>' + escapeHtml(exState.note || '') + '</textarea></div>';
     h += '</div>';
   }
 
@@ -656,6 +834,9 @@ function buildDay(di) {
   document.getElementById('setsTotal').textContent = ts;
   document.getElementById('dayProgress').textContent = ts > 0 ? Math.round((cs / ts) * 100) + '%' : '0%';
 }
+
+function escapeHtml(s) { return String(s == null ? '' : s).replace(/[&<>]/g, function(c){ return c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;'; }); }
+function escapeAttr(s) { return escapeHtml(s).replace(/"/g, '&quot;'); }
 
 function fmtP(s) {
   var p = [];
@@ -674,53 +855,212 @@ function inputCls(a, t) {
   return 'miss';
 }
 
-function logSet(di, ei, si, field, val) {
-  var dk = 'day_' + di, ek = 'ex_' + ei;
-  if (!logData[dk]) logData[dk] = { exercises: {}, date: new Date().toISOString() };
-  if (!logData[dk].exercises[ek]) logData[dk].exercises[ek] = { sets: [], rpe: null, note: '', sub: '' };
-  if (!logData[dk].exercises[ek].sets[si]) logData[dk].exercises[ek].sets[si] = {};
-  logData[dk].exercises[ek].sets[si][field] = parseFloat(val) || null;
-  logData[dk].date = new Date().toISOString();
-  var sl = logData[dk].exercises[ek].sets[si];
-  if (sl.weight && sl.reps) sl.done = true;
-  saveLog();
+// ---- Local state helpers ----
+function getOrInitToday(di) {
+  if (!todayState) todayState = { workoutId: null, planId: null, dayIndex: di, exercises: {} };
+  return todayState;
+}
+function getOrInitExercise(state, ei) {
+  var ek = 'ex_' + ei;
+  if (!state.exercises[ek]) state.exercises[ek] = { rpe: null, note: '', sub: '', sets: [] };
+  return state.exercises[ek];
+}
+function getOrInitSet(exState, si) {
+  if (!exState.sets[si]) exState.sets[si] = {};
+  return exState.sets[si];
+}
+
+// ---- Write helpers ----
+// Exercise identity is normalized (lowercase-trimmed) so that "Bench Press" and
+// "bench press" resolve to the same exercises row. Display uses the original
+// plan text; the normalized form is purely a canonical key.
+function normName(s) { return String(s == null ? '' : s).trim().toLowerCase(); }
+
+async function ensureExerciseId(name) {
+  var key = normName(name);
+  if (exerciseIdCache[key]) return exerciseIdCache[key];
+  var res = await sb.from('exercises')
+    .upsert({ user_id: userId, name: key }, { onConflict: 'user_id,name' })
+    .select('id').single();
+  if (res.error) throw res.error;
+  exerciseIdCache[key] = res.data.id;
+  return res.data.id;
+}
+
+async function ensureWorkout(di) {
+  var st = getOrInitToday(di);
+  if (st.workoutId) return st.workoutId;
+  var now = new Date().toISOString();
+  var res = await sb.from('workouts').insert({
+    user_id: userId, plan_id: activePlanId, day_index: di,
+    performed_at: now, started_at: now,
+  }).select().single();
+  if (res.error) throw res.error;
+  st.workoutId = res.data.id;
+  st.planId = activePlanId;
+  st.dayIndex = di;
+  return st.workoutId;
+}
+
+function buildSetPayload(di, ei, si) {
+  var ex = plan.days[di].exercises[ei];
+  var set = ex.sets[si];
+  var exState = todayState.exercises['ex_' + ei] || { rpe: null, note: '', sub: '', sets: [] };
+  var sl = exState.sets[si] || {};
+  return {
+    user_id: userId,
+    workout_id: todayState.workoutId,
+    exercise_id: exerciseIdCache[normName(ex.name)],
+    exercise_order: ei,
+    set_order: si,
+    weight: sl.weight != null ? sl.weight : null,
+    reps: sl.reps != null ? sl.reps : null,
+    rpe: exState.rpe != null ? exState.rpe : null,
+    prescribed_weight: set.weight != null ? set.weight : null,
+    prescribed_reps: set.reps_target != null ? set.reps_target : null,
+    substitution: exState.sub || null,
+    note: exState.note || null,
+    done: !!sl.done,
+    started_at: sl.startedAt || null,
+    completed_at: sl.done ? (sl.completedAt || new Date().toISOString()) : null,
+  };
+}
+
+async function persistSet(di, ei, si) {
+  try {
+    await ensureWorkout(di);
+    var ex = plan.days[di].exercises[ei];
+    await ensureExerciseId(ex.name);
+    var payload = buildSetPayload(di, ei, si);
+    var sl = todayState.exercises['ex_' + ei].sets[si];
+    if (sl.setId) {
+      var r = await sb.from('sets').update(payload).eq('id', sl.setId);
+      if (r.error) throw r.error;
+    } else {
+      var r2 = await sb.from('sets').insert(payload).select('id').single();
+      if (r2.error) throw r2.error;
+      sl.setId = r2.data.id;
+      if (sl.done && !sl.completedAt) sl.completedAt = payload.completed_at;
+    }
+  } catch(err) {
+    console.error('persistSet error:', err);
+    var name = ((plan.days[di] || {}).exercises || [])[ei] ? plan.days[di].exercises[ei].name : 'exercise';
+    showToast('Set ' + (si+1) + ' of ' + name + " didn't save", function() { persistSet(di, ei, si); });
+  }
+}
+
+// Fan out exercise-level fields (rpe/note/sub) to all persisted sets in this exercise.
+async function updateExerciseFanOut(di, ei) {
+  if (!todayState || !todayState.workoutId) return; // nothing persisted yet — memory-only
+  var exState = todayState.exercises['ex_' + ei];
+  if (!exState) return;
+  var hasPersisted = exState.sets.some(function(s){ return s && s.setId; });
+  if (!hasPersisted) return;
+  try {
+    var patch = {
+      rpe: exState.rpe != null ? exState.rpe : null,
+      substitution: exState.sub || null,
+      note: exState.note || null,
+    };
+    var r = await sb.from('sets').update(patch)
+      .eq('workout_id', todayState.workoutId).eq('exercise_order', ei);
+    if (r.error) throw r.error;
+  } catch(err) {
+    console.error('updateExerciseFanOut error:', err);
+    showToast("Exercise details didn't save", function() { updateExerciseFanOut(di, ei); });
+  }
+}
+
+// ---- Handlers ----
+async function logSet(di, ei, si, field, val) {
+  if (viewModeFor(di) !== 'editable') return;
+  var st = getOrInitToday(di);
+  if (st.dayIndex !== di && st.workoutId) { showToast("Today's workout is on a different day", null); return; }
+  var exState = getOrInitExercise(st, ei);
+  var sl = getOrInitSet(exState, si);
+  var parsed = val === '' ? null : parseFloat(val);
+  sl[field] = (parsed == null || isNaN(parsed)) ? null : parsed;
+  if (!sl.startedAt) sl.startedAt = new Date().toISOString();
+  // Edit-after-done: if the row exists, push the update; else memory only.
+  if (sl.setId) await persistSet(di, ei, si);
   buildDay(di);
 }
 
-function toggleSet(di, ei, si) {
-  var dk = 'day_' + di, ek = 'ex_' + ei;
-  if (!logData[dk]) logData[dk] = { exercises: {}, date: new Date().toISOString() };
-  if (!logData[dk].exercises[ek]) logData[dk].exercises[ek] = { sets: [], rpe: null, note: '', sub: '' };
-  if (!logData[dk].exercises[ek].sets[si]) logData[dk].exercises[ek].sets[si] = {};
-  logData[dk].exercises[ek].sets[si].done = !logData[dk].exercises[ek].sets[si].done;
-  logData[dk].date = new Date().toISOString();
-  saveLog();
+async function toggleSet(di, ei, si) {
+  if (viewModeFor(di) !== 'editable') return;
+  var st = getOrInitToday(di);
+  if (st.workoutId && st.dayIndex !== di) {
+    showToast("Today's workout is on a different day", null);
+    return;
+  }
+  st.dayIndex = di;
+  var exState = getOrInitExercise(st, ei);
+  var sl = getOrInitSet(exState, si);
+  var wasDone = !!sl.done;
+  sl.done = !wasDone;
+  if (sl.done) {
+    sl.completedAt = new Date().toISOString();
+    if (!sl.startedAt) sl.startedAt = sl.completedAt;
+  }
+  await persistSet(di, ei, si);
+  buildTabs();
   buildDay(di);
-  if (logData[dk].exercises[ek].sets[si].done && plan.days[di] && plan.days[di].exercises[ei]) {
+  if (sl.done && plan.days[di] && plan.days[di].exercises[ei]) {
     startRestTimer(plan.days[di].exercises[ei].rest || 60);
   }
 }
 
-function logRPE(di, ei, rpe) {
-  var dk = 'day_' + di, ek = 'ex_' + ei;
-  if (!logData[dk]) logData[dk] = { exercises: {}, date: new Date().toISOString() };
-  if (!logData[dk].exercises[ek]) logData[dk].exercises[ek] = { sets: [], rpe: null, note: '', sub: '' };
-  logData[dk].exercises[ek].rpe = logData[dk].exercises[ek].rpe === rpe ? null : rpe;
-  saveLog(); buildDay(di);
+async function logRPE(di, ei, rpe) {
+  if (viewModeFor(di) !== 'editable') return;
+  var st = getOrInitToday(di);
+  var exState = getOrInitExercise(st, ei);
+  exState.rpe = (exState.rpe === rpe) ? null : rpe;
+  await updateExerciseFanOut(di, ei);
+  buildDay(di);
 }
 
-function logNote(di, ei, n) {
-  var dk = 'day_' + di, ek = 'ex_' + ei;
-  if (!logData[dk]) logData[dk] = { exercises: {}, date: new Date().toISOString() };
-  if (!logData[dk].exercises[ek]) logData[dk].exercises[ek] = { sets: [], rpe: null, note: '', sub: '' };
-  logData[dk].exercises[ek].note = n; saveLog();
+async function logNote(di, ei, n) {
+  if (viewModeFor(di) !== 'editable') return;
+  var st = getOrInitToday(di);
+  var exState = getOrInitExercise(st, ei);
+  exState.note = n;
+  await updateExerciseFanOut(di, ei);
 }
 
-function logSub(di, ei, s) {
-  var dk = 'day_' + di, ek = 'ex_' + ei;
-  if (!logData[dk]) logData[dk] = { exercises: {}, date: new Date().toISOString() };
-  if (!logData[dk].exercises[ek]) logData[dk].exercises[ek] = { sets: [], rpe: null, note: '', sub: '' };
-  logData[dk].exercises[ek].sub = s; saveLog();
+async function logSub(di, ei, s) {
+  if (viewModeFor(di) !== 'editable') return;
+  var st = getOrInitToday(di);
+  var exState = getOrInitExercise(st, ei);
+  exState.sub = s;
+  await updateExerciseFanOut(di, ei);
+}
+
+// ---- Toast ----
+var toastCounter = 0;
+function showToast(msg, retryFn) {
+  toastCounter++;
+  var id = toastCounter;
+  var stack = document.getElementById('toastStack');
+  if (!stack) return;
+  var el = document.createElement('div');
+  el.className = 'toast';
+  el.setAttribute('data-id', id);
+  var msgEl = document.createElement('div'); msgEl.className = 'toast-msg'; msgEl.textContent = msg;
+  el.appendChild(msgEl);
+  if (retryFn) {
+    var r = document.createElement('div'); r.className = 'toast-retry'; r.textContent = 'tap to retry';
+    el.appendChild(r);
+  }
+  el.addEventListener('click', function() {
+    dismissToast(id);
+    if (retryFn) retryFn();
+  });
+  stack.appendChild(el);
+  setTimeout(function() { dismissToast(id); }, 9000);
+}
+function dismissToast(id) {
+  var el = document.querySelector('.toast[data-id="' + id + '"]');
+  if (el) el.remove();
 }
 
 function startRestTimer(sec) {
@@ -747,21 +1087,42 @@ function updateRestDisplay() {
   document.getElementById('restTime').textContent = m + ':' + (s < 10 ? '0' : '') + s;
 }
 
-function saveLog() { localStorage.setItem('workoutLog', JSON.stringify(logData)); }
-
+// ---- Import ----
+// Historical workouts and sets rows are NEVER modified on import.
+// See DECISIONS.md → "No more log wipes".
 function handleImport(event) {
   var file = event.target.files[0]; if (!file) return;
   var reader = new FileReader();
-  reader.onload = function(e) {
+  reader.onload = async function(e) {
     try {
       var data = JSON.parse(e.target.result);
-      if (data.plan) plan = data.plan;
-      else if (data.days) plan = data;
+      var newPlan;
+      if (data.plan) newPlan = data.plan;
+      else if (data.days) newPlan = data;
       else { alert('Invalid format'); return; }
-      logData = {};
-      localStorage.setItem('workoutPlan', JSON.stringify(plan));
-      localStorage.setItem('workoutLog', '{}');
+
+      var r1 = await sb.from('plans').update({ is_active: false })
+        .eq('user_id', userId).eq('is_active', true);
+      if (r1.error) { alert('Import failed: ' + r1.error.message); return; }
+
+      var r2 = await sb.from('plans').insert({
+        user_id: userId,
+        title: newPlan.title || null,
+        week: newPlan.week || null,
+        data: newPlan,
+        is_active: true,
+      }).select().single();
+      if (r2.error) { alert('Import failed: ' + r2.error.message); return; }
+
+      activePlanId = r2.data.id;
+      plan = newPlan;
+      planCache[activePlanId] = plan;
+      // Reset in-memory view only; past workouts/sets remain untouched in the DB.
+      todayState = null;
+      historicalCache = {};
+      exerciseIdCache = {};
       currentDay = 0;
+
       document.getElementById('emptyState').style.display = 'none';
       document.getElementById('summaryBar').style.display = 'flex';
       document.getElementById('planTitle').textContent = plan.title || 'Workout Tracker';
@@ -774,33 +1135,69 @@ function handleImport(event) {
   event.target.value = '';
 }
 
-function exportData() {
-  if (!plan) { alert('No plan loaded'); return; }
-  var obj = { plan_title: plan.title, plan_week: plan.week, exported_at: new Date().toISOString(),
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, days: [] };
-  for (var di = 0; di < plan.days.length; di++) {
-    var day = plan.days[di];
-    var dl = logData['day_' + di] || { exercises: {} };
-    var d = { day_number: di+1, day_name: day.name, logged_date: dl.date || null, exercises: [] };
-    for (var ei = 0; ei < day.exercises.length; ei++) {
-      var ex = day.exercises[ei];
-      var el = (dl.exercises || {})['ex_' + ei] || { sets: [], rpe: null, note: '', sub: '' };
-      var x = { name: ex.name, substituted_with: el.sub || null, rpe: el.rpe, note: el.note || null, sets: [] };
-      for (var si = 0; si < ex.sets.length; si++) {
-        var set = ex.sets[si], sl = el.sets[si] || {};
-        x.sets.push({ prescribed_weight: set.weight, prescribed_reps: set.reps_target || set.reps_range,
-          prescribed_rest: set.rest, actual_weight: sl.weight || null, actual_reps: sl.reps || null,
-          completed: sl.done || false, unit: set.unit || 'lbs' });
-      }
-      d.exercises.push(x);
+async function exportData() {
+  if (!plan || !activePlanId) { alert('No plan loaded'); return; }
+  try {
+    var wRes = await sb.from('workouts').select('*, sets(*)')
+      .eq('user_id', userId).eq('plan_id', activePlanId)
+      .order('performed_at', { ascending: true });
+    if (wRes.error) { alert('Export failed: ' + wRes.error.message); return; }
+    var obj = {
+      plan_title: plan.title, plan_week: plan.week,
+      exported_at: new Date().toISOString(),
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      days: [],
+    };
+    var byDay = {};
+    var rows = wRes.data || [];
+    for (var i = 0; i < rows.length; i++) {
+      if (byDay[rows[i].day_index] == null) byDay[rows[i].day_index] = [];
+      byDay[rows[i].day_index].push(rows[i]);
     }
-    obj.days.push(d);
+    for (var di = 0; di < plan.days.length; di++) {
+      var day = plan.days[di];
+      var ws = byDay[di] || [];
+      var latest = ws.length ? ws[ws.length - 1] : null;
+      var state = latest ? stateFromWorkout(latest) : null;
+      var d = {
+        day_number: di + 1, day_name: day.name,
+        logged_date: latest ? latest.performed_at : null,
+        exercises: [],
+      };
+      for (var ei = 0; ei < day.exercises.length; ei++) {
+        var ex = day.exercises[ei];
+        var exState = state && state.exercises['ex_' + ei];
+        var x = {
+          name: ex.name,
+          substituted_with: (exState && exState.sub) || null,
+          rpe: (exState && exState.rpe != null) ? exState.rpe : null,
+          note: (exState && exState.note) || null,
+          sets: [],
+        };
+        for (var si = 0; si < ex.sets.length; si++) {
+          var set = ex.sets[si], sl = (exState && exState.sets[si]) || {};
+          x.sets.push({
+            prescribed_weight: set.weight,
+            prescribed_reps: set.reps_target || set.reps_range,
+            prescribed_rest: set.rest,
+            actual_weight: sl.weight != null ? sl.weight : null,
+            actual_reps: sl.reps != null ? sl.reps : null,
+            completed: !!sl.done,
+            unit: set.unit || 'lbs',
+          });
+        }
+        d.exercises.push(x);
+      }
+      obj.days.push(d);
+    }
+    var blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a'); a.href = url;
+    a.download = 'workout-export-' + new Date().toISOString().slice(0,10) + '.json';
+    a.click(); URL.revokeObjectURL(url);
+  } catch(err) {
+    alert('Export failed: ' + err.message);
   }
-  var blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
-  var url = URL.createObjectURL(blob);
-  var a = document.createElement('a'); a.href = url;
-  a.download = 'workout-export-' + new Date().toISOString().slice(0,10) + '.json';
-  a.click(); URL.revokeObjectURL(url);
 }
 
 // ---- Auth gate ----
@@ -838,8 +1235,14 @@ btnSignOut.addEventListener('click', function() {
 function applySession(session) {
   if (session && session.user) {
     document.body.classList.remove('unauthed');
-    init();
+    if (hydratedForUser === session.user.id) return;
+    hydratedForUser = session.user.id;
+    activePlanId = null; plan = null; todayState = null;
+    historicalCache = {}; planCache = {}; exerciseIdCache = {};
+    currentDay = 0;
+    hydrate();
   } else {
+    hydratedForUser = null;
     document.body.classList.add('unauthed');
   }
 }
