@@ -1099,11 +1099,11 @@ function handleImport(event) {
       var newPlan;
       if (data.plan) newPlan = data.plan;
       else if (data.days) newPlan = data;
-      else { alert('Invalid format'); return; }
+      else { showToast('Invalid plan file format', null); return; }
 
       var r1 = await sb.from('plans').update({ is_active: false })
         .eq('user_id', userId).eq('is_active', true);
-      if (r1.error) { alert('Import failed: ' + r1.error.message); return; }
+      if (r1.error) { showToast('Import failed: ' + r1.error.message, null); return; }
 
       var r2 = await sb.from('plans').insert({
         user_id: userId,
@@ -1112,7 +1112,7 @@ function handleImport(event) {
         data: newPlan,
         is_active: true,
       }).select().single();
-      if (r2.error) { alert('Import failed: ' + r2.error.message); return; }
+      if (r2.error) { showToast('Import failed: ' + r2.error.message, null); return; }
 
       activePlanId = r2.data.id;
       plan = newPlan;
@@ -1129,19 +1129,22 @@ function handleImport(event) {
       document.getElementById('planWeek').textContent = plan.week || '';
       buildTabs(); buildDay(0);
       document.getElementById('importModal').classList.remove('show');
-    } catch(err) { alert('Error: ' + err.message); }
+    } catch(err) {
+      console.error(err);
+      showToast('Import error: ' + err.message, null);
+    }
   };
   reader.readAsText(file);
   event.target.value = '';
 }
 
 async function exportData() {
-  if (!plan || !activePlanId) { alert('No plan loaded'); return; }
+  if (!plan || !activePlanId) { showToast('No plan loaded', null); return; }
   try {
     var wRes = await sb.from('workouts').select('*, sets(*)')
       .eq('user_id', userId).eq('plan_id', activePlanId)
       .order('performed_at', { ascending: true });
-    if (wRes.error) { alert('Export failed: ' + wRes.error.message); return; }
+    if (wRes.error) { showToast('Export failed: ' + wRes.error.message, null); return; }
     var obj = {
       plan_title: plan.title, plan_week: plan.week,
       exported_at: new Date().toISOString(),
@@ -1196,7 +1199,8 @@ async function exportData() {
     a.download = 'workout-export-' + new Date().toISOString().slice(0,10) + '.json';
     a.click(); URL.revokeObjectURL(url);
   } catch(err) {
-    alert('Export failed: ' + err.message);
+    console.error(err);
+    showToast('Export failed: ' + err.message, null);
   }
 }
 
