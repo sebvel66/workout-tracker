@@ -4,25 +4,15 @@ Context for a fresh Claude Code instance picking up v1 (cross-device persistence
 
 ## Next session pickup
 
-Priority order:
+v1 is complete and pushed through commit `0724324`. The whole pre-v1 plan — schema + migrations, magic-link auth gate, localStorage → Supabase data-layer rewrite, `#emptyState` crash fix, and alert-to-toast cleanup — is in `origin/main` and verified end-to-end. `BUG-TEST-13.md` has the root-cause writeup from the crash caught during testing.
 
-1. **Finish the data-layer rewrite test pass and commits.** BOTH sets of changes are currently uncommitted together in the working directory on `index.html`:
-   - **Change A — crash fix:** `#emptyState` moved out of `#workoutContainer` (HTML structural move) + `body.unauthed #emptyState` CSS rule so it stays hidden behind the auth gate.
-   - **Change B — alert-to-toast cleanup:** all seven `alert()` calls in `handleImport` / `exportData` converted to `showToast(...)`, with `console.error(err)` added before the two `catch`-block toasts so stack traces still reach DevTools.
-   - `BUG-TEST-13.md` documents the crash root cause.
+Forward-looking work is tracked in [`ROADMAP.md`](ROADMAP.md), grouped by AI/coaching, UX, data model, and known v1.1 limitations. Items flagged high priority there:
 
-   Because both sets of changes live in the same file, they need to be staged separately — use `git add -p` (or stage the specific hunks manually) to split them into two commits in sequence, **not** one combined commit.
+- **"Done = did as prescribed" shortcut** — cuts the most common unnecessary data entry at the gym.
+- **Browse historical weeks** — prerequisite for meaningful AI coaching context.
+- **Longer / sticky error toasts** — one-constant fix; error toasts should persist until dismissed.
 
-   Steps:
-   - Hard-reload (Cmd+Shift+R).
-   - Run test 13 (sign in → import week 1 → log a few sets → import week 2 → verify no crash and the UI re-renders with the new plan).
-   - Hard-reload mid-workout to exercise the `hydrate()` path.
-   - Verify the signed-out state: auth gate shows, `#emptyState` is hidden behind it.
-   - **Commit 1 (after test 13 passes):** stage only the Change A hunks (HTML move + `.unauthed` CSS rule). Commit message like "Fix #emptyState crash on re-import — move element out of workoutContainer." Also stage `BUG-TEST-13.md` with this commit.
-   - **Commit 2 (after a visual diff review of the staged alert-to-toast hunks):** stage the remaining Change B hunks. Commit message like "Replace remaining alert() calls with showToast() — non-blocking error UX, no more swallowed stack traces."
-   - Then finish test checklist items 14–17 (export, toast/retry, sign out, legacy-localStorage residue).
-   - Then push everything.
-2. **Do NOT push previous commits** until the full test pass is complete.
+Four v1.1 limitation fixes are documented in "Known v1 limitations" below with specific mitigations already named (multi-tab dup, first-insert retry dup, midnight boundary drift, one-editable-tab-per-day).
 
 ## Where we left off (2026-04-12 session)
 
