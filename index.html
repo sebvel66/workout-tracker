@@ -437,6 +437,41 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
   padding: 8px 14px; border-radius: 8px; cursor: pointer; flex-shrink: 0;
 }
 
+/* Ad-hoc tab + header */
+.day-tab.ad-hoc {
+  border-color: rgba(167, 139, 250, 0.35);
+  color: var(--purple);
+}
+.day-tab.ad-hoc.active {
+  color: var(--purple);
+  background: rgba(167, 139, 250, 0.12);
+  border-color: var(--purple);
+}
+.day-tab.ad-hoc.has-data::after { background: var(--purple); }
+
+.day-tab.new-session-tab {
+  border-style: dashed;
+  color: var(--text3);
+  font-size: 16px; font-weight: 700;
+  min-width: 40px;
+}
+.day-tab.new-session-tab:active { color: var(--text); }
+
+.adhoc-header { margin-bottom: 16px; }
+.adhoc-title-input {
+  width: 100%; background: transparent; border: none; border-bottom: 1px solid var(--border);
+  color: var(--text); font-family: 'Outfit', sans-serif;
+  font-size: 22px; font-weight: 700; letter-spacing: -0.5px;
+  padding: 4px 0; outline: none;
+}
+.adhoc-title-input::placeholder { color: var(--text3); font-weight: 500; }
+.adhoc-title-input:focus { border-bottom-color: var(--purple); }
+.adhoc-date {
+  font-size: 12px; color: var(--text3);
+  font-family: 'JetBrains Mono', monospace;
+  margin-top: 4px;
+}
+
 /* Add exercise / extras */
 .add-exercise-btn {
   display: block; width: 100%; margin-top: 4px;
@@ -477,6 +512,25 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
   letter-spacing: 0.5px;
 }
 .add-set-btn:active { background: var(--surface2); color: var(--text); }
+
+.set-row.deletable { grid-template-columns: 32px 1fr 1fr 40px 28px; }
+.set-delete {
+  width: 24px; height: 24px; border-radius: 6px;
+  background: transparent; border: none;
+  color: var(--text3); font-size: 16px; line-height: 1;
+  cursor: pointer; padding: 0; align-self: center;
+  -webkit-tap-highlight-color: transparent;
+}
+.set-delete:active { color: var(--danger); background: rgba(248, 113, 113, 0.08); }
+
+.card-delete {
+  width: 24px; height: 24px; border-radius: 6px;
+  background: transparent; border: none;
+  color: var(--text3); font-size: 18px; line-height: 1;
+  cursor: pointer; padding: 0; flex-shrink: 0; margin-left: 6px;
+  -webkit-tap-highlight-color: transparent;
+}
+.card-delete:active { color: var(--danger); background: rgba(248, 113, 113, 0.08); }
 
 /* Exercise picker modal */
 .picker-modal {
@@ -786,8 +840,24 @@ var restSeconds = 0;
 var sessionTimerInterval = null;
 var hydratedForUser = null;
 
-// todayState: { workoutId, planId, dayIndex, exercises: { ex_<ei>: { rpe, note, sub, sets: [{setId, weight, reps, done, startedAt, completedAt, exerciseId}] } } }
-// null until the first set is persisted today.
+// todayPlanStates: map of plan-based workouts for today, keyed by day_index.
+// Each plan-day tab independently tracks its own today-workout, so a user
+// can log Monday and Tuesday back-to-back on the same calendar date. Each
+// entry is lazy-created on first set-done for that day_index. Shape:
+// { [dayIndex]: { workoutId, planId, dayIndex, startedAt, endedAt,
+//                 exercises: { ex_<ei>: { rpe, note, sub, sets: [...],
+//                                         isExtra?, exerciseId?, exerciseMeta? } } } }
+var todayPlanStates = {};
+
+// todayAdHocs: ad-hoc workouts started today (plan_id = NULL, day_index = NULL).
+// Each entry has the same exercises shape as a plan state plus isAdHoc: true
+// and an optional title.
+var todayAdHocs = [];
+
+// todayState: pointer to whichever workout state is currently focused in the
+// UI (updated by focusTab). Mutating handlers (toggleSet / logSet / logRPE /
+// logNote / logSub / completeSession) operate on todayState so they work
+// identically for plan-based and ad-hoc sessions.
 var todayState = null;
 
 var historicalCache = {};     // dayIndex -> state (read-only past workouts)
@@ -864,11 +934,19 @@ document.getElementById('dayTabs').addEventListener('click', async function(e) {
     tab = tab.parentElement;
   }
   if (!tab || !tab.classList.contains('day-tab')) return;
+  // "+ New Session" tab creates a fresh ad-hoc workout.
+  if (tab.hasAttribute('data-new-session')) {
+    await createAdHocSession();
+    return;
+  }
   var idx = tab.getAttribute('data-day');
   if (idx === null) return;
-  currentDay = parseInt(idx, 10);
-  // Lazy-load historical if this tab isn't today's editable tab and we haven't cached it.
-  if (todayState && todayState.dayIndex !== currentDay && !historicalCache[currentDay]) {
+  // Plan-day tabs carry integer data-day; ad-hoc tabs carry "ah_<uuid>".
+  var newDay = idx.indexOf('ah_') === 0 ? idx : parseInt(idx, 10);
+  focusTab(newDay);
+  // Lazy-load historical only for plan-day tabs that don't match the current
+  // plan workout's dayIndex.
+  if (!isAdHocKey(currentDay) && !todayPlanStates[currentDay] && !historicalCache[currentDay]) {
     await loadHistorical(currentDay);
   }
   buildTabs();
@@ -878,6 +956,28 @@ document.getElementById('dayTabs').addEventListener('click', async function(e) {
 // WORKOUT CONTAINER clicks
 document.getElementById('workoutContainer').addEventListener('click', function(e) {
   var target = e.target;
+  // Delete buttons are checked FIRST. The card-delete × lives inside
+  // .exercise-header, so without this ordering the header-expand handler
+  // below would swallow the click and toggle the card instead of deleting.
+  var delSetBtnEarly = target.closest ? target.closest('.set-delete') : null;
+  if (delSetBtnEarly) {
+    if (delSetBtnEarly.disabled) return;
+    deleteSet(
+      currentDay,
+      parseInt(delSetBtnEarly.getAttribute('data-ei'), 10),
+      parseInt(delSetBtnEarly.getAttribute('data-si'), 10)
+    );
+    return;
+  }
+  var delCardBtnEarly = target.closest ? target.closest('.card-delete') : null;
+  if (delCardBtnEarly) {
+    if (delCardBtnEarly.disabled) return;
+    deleteExerciseCard(
+      currentDay,
+      parseInt(delCardBtnEarly.getAttribute('data-ei'), 10)
+    );
+    return;
+  }
   // Expand card
   var header = target.closest ? target.closest('.exercise-header') : null;
   if (header) {
@@ -917,7 +1017,7 @@ document.getElementById('workoutContainer').addEventListener('click', function(e
   if (checkBtn) {
     if (checkBtn.disabled) return;
     toggleSet(
-      parseInt(checkBtn.getAttribute('data-di')),
+      currentDay,
       parseInt(checkBtn.getAttribute('data-ei')),
       parseInt(checkBtn.getAttribute('data-si'))
     );
@@ -928,7 +1028,7 @@ document.getElementById('workoutContainer').addEventListener('click', function(e
   if (rpeBtn) {
     if (rpeBtn.disabled) return;
     logRPE(
-      parseInt(rpeBtn.getAttribute('data-di')),
+      currentDay,
       parseInt(rpeBtn.getAttribute('data-ei')),
       parseInt(rpeBtn.getAttribute('data-rpe'))
     );
@@ -941,14 +1041,17 @@ document.getElementById('workoutContainer').addEventListener('change', function(
   var t = e.target;
   if (t.disabled) return;
   if (t.classList.contains('set-input')) {
-    logSet(parseInt(t.getAttribute('data-di')), parseInt(t.getAttribute('data-ei')),
+    logSet(currentDay, parseInt(t.getAttribute('data-ei')),
       parseInt(t.getAttribute('data-si')), t.getAttribute('data-field'), t.value);
   }
   if (t.classList.contains('sub-input')) {
-    logSub(parseInt(t.getAttribute('data-di')), parseInt(t.getAttribute('data-ei')), t.value);
+    logSub(currentDay, parseInt(t.getAttribute('data-ei')), t.value);
   }
   if (t.classList.contains('exercise-note-input')) {
-    logNote(parseInt(t.getAttribute('data-di')), parseInt(t.getAttribute('data-ei')), t.value);
+    logNote(currentDay, parseInt(t.getAttribute('data-ei')), t.value);
+  }
+  if (t.classList.contains('adhoc-title-input')) {
+    updateAdHocTitle(t.getAttribute('data-workout-id'), t.value);
   }
 });
 
@@ -987,27 +1090,47 @@ async function hydrate() {
       .eq('user_id', userId)
       .gte('performed_at', bounds.start.toISOString())
       .lt('performed_at', bounds.end.toISOString())
-      .order('performed_at', { ascending: false }).limit(1);
-    if (wRes.error) { showToast("Failed to load today's workout", null); }
-    else if (wRes.data && wRes.data.length) {
-      var todayRow = wRes.data[0];
-      // If today's workout is pinned to a different plan than the active one
-      // (typical after a mid-day plan import), don't promote it to todayState.
-      // The workout stays in the DB untouched and becomes visible via the
-      // historical path once the calendar rolls over.
-      if (todayRow.plan_id && todayRow.plan_id !== activePlanId) {
-        todayState = null;
-      } else {
-        // Load pinned plan first so stateFromWorkout can tag extras correctly.
-        if (todayRow.plan_id && !planCache[todayRow.plan_id]) {
-          var pr = await sb.from('plans').select('data').eq('id', todayRow.plan_id).maybeSingle();
-          if (pr.data) planCache[todayRow.plan_id] = pr.data.data;
+      .order('performed_at', { ascending: true });
+    if (wRes.error) { showToast("Failed to load today's workouts", null); }
+    else {
+      var rows = wRes.data || [];
+      for (var i = 0; i < rows.length; i++) {
+        var row = rows[i];
+        if (row.plan_id === null) {
+          // Ad-hoc session.
+          var adState = stateFromWorkout(row);
+          adState.title = row.title || null;
+          adState.isAdHoc = true;
+          todayAdHocs.push(adState);
+        } else if (row.plan_id === activePlanId) {
+          // Plan-based workout matching the currently active plan.
+          if (!planCache[row.plan_id]) {
+            var pr = await sb.from('plans').select('data').eq('id', row.plan_id).maybeSingle();
+            if (pr.data) planCache[row.plan_id] = pr.data.data;
+          }
+          var planState = stateFromWorkout(row);
+          if (planState.dayIndex != null) {
+            todayPlanStates[planState.dayIndex] = planState;
+            seedExerciseIdCache(planState);
+          }
         }
-        todayState = stateFromWorkout(todayRow);
-        currentDay = todayState.dayIndex;
-        seedExerciseIdCache(todayState);
+        // Else (row.plan_id !== activePlanId && row.plan_id !== null):
+        // old-plan workout from a mid-day import — skipped per Feature 3 fix.
       }
     }
+
+    // Default focus: today's plan workout if any, else plan day 0, else first ad-hoc.
+    var planDayKeys = Object.keys(todayPlanStates).map(Number).sort(function(a, b) { return a - b; });
+    if (planDayKeys.length) {
+      currentDay = planDayKeys[0];
+    } else if (plan) {
+      currentDay = 0;
+    } else if (todayAdHocs.length) {
+      currentDay = 'ah_' + todayAdHocs[0].workoutId;
+    } else {
+      currentDay = 0;
+    }
+    focusTab(currentDay);
 
     buildTabs();
     buildDay(currentDay);
@@ -1038,6 +1161,30 @@ function _planForState(state) {
   return plan;
 }
 
+function isAdHocKey(di) {
+  return typeof di === 'string' && di.indexOf('ah_') === 0;
+}
+
+function findAdHoc(di) {
+  if (!isAdHocKey(di)) return null;
+  var id = di.slice(3);
+  for (var i = 0; i < todayAdHocs.length; i++) {
+    if (todayAdHocs[i].workoutId === id) return todayAdHocs[i];
+  }
+  return null;
+}
+
+function focusTab(di) {
+  currentDay = di;
+  if (isAdHocKey(di)) {
+    todayState = findAdHoc(di) || null;
+  } else {
+    // Plan-day tab: todayState follows the plan-state for that day (may be
+    // null until first set-done creates it lazily).
+    todayState = todayPlanStates[di] || null;
+  }
+}
+
 function dayBounds(date) {
   var start = new Date(date); start.setHours(0,0,0,0);
   var end = new Date(start); end.setDate(end.getDate() + 1);
@@ -1050,6 +1197,7 @@ function stateFromWorkout(row) {
     startedAt: row.started_at, endedAt: row.ended_at,
     exercises: {}
   };
+  var isAdHocWorkout = row.plan_id === null;
   // Plan length at that workout's pinned plan (may be 0 if plan not yet cached).
   var pinnedPlan = row.plan_id && planCache[row.plan_id];
   var planLen = (pinnedPlan && pinnedPlan.days && pinnedPlan.days[row.day_index])
@@ -1060,11 +1208,15 @@ function stateFromWorkout(row) {
     var ek = 'ex_' + s.exercise_order;
     if (!state.exercises[ek]) {
       state.exercises[ek] = { rpe: null, note: '', sub: '', sets: [] };
-      if (planLen && s.exercise_order >= planLen) {
-        state.exercises[ek].isExtra = true;
+      // For ad-hoc workouts, every exercise has no prescription — attach meta
+      // but don't flag isExtra (the "added" badge only applies on plan days).
+      // For plan-based workouts, sets past plan length are extras.
+      var isExtraOnPlan = !isAdHocWorkout && planLen && s.exercise_order >= planLen;
+      if (isAdHocWorkout || isExtraOnPlan) {
         state.exercises[ek].exerciseId = s.exercise_id;
         state.exercises[ek].exerciseMeta = exerciseLibraryById[s.exercise_id] || null;
       }
+      if (isExtraOnPlan) state.exercises[ek].isExtra = true;
     }
     state.exercises[ek].sets[s.set_order] = {
       setId: s.id, weight: s.weight, reps: s.reps, done: !!s.done,
@@ -1103,36 +1255,58 @@ async function loadHistorical(di) {
 }
 
 function viewModeFor(di) {
-  if (!todayState) return 'editable';
-  if (todayState.dayIndex === di) return 'editable';
+  if (isAdHocKey(di)) {
+    return findAdHoc(di) ? 'editable' : 'template';
+  }
+  // Each plan day tracks its own today-workout independently now: any tab
+  // without a historical past workout is editable (fresh if no today state yet).
+  if (todayPlanStates[di]) return 'editable';
   if (historicalCache[di]) return 'historical';
-  return 'template';
+  return 'editable';
 }
 
 function stateForDay(di) {
-  var mode = viewModeFor(di);
-  if (mode === 'editable') return todayState;
-  if (mode === 'historical') return historicalCache[di];
+  if (isAdHocKey(di)) return findAdHoc(di);
+  if (todayPlanStates[di]) return todayPlanStates[di];
+  if (historicalCache[di]) return historicalCache[di];
   return null;
 }
 
 // ---- Render ----
 function buildTabs() {
-  if (!plan) return;
   var el = document.getElementById('dayTabs');
+  if (!el) return;
+  if (!plan && todayAdHocs.length === 0) { el.innerHTML = ''; return; }
   var h = '';
-  for (var i = 0; i < plan.days.length; i++) {
-    var d = plan.days[i];
-    var cls = 'day-tab';
-    if (i === currentDay) cls += ' active';
-    var hasToday = todayState && todayState.dayIndex === i && Object.keys(todayState.exercises || {}).length > 0;
-    if (hasToday || historicalCache[i]) cls += ' has-data';
-    h += '<button class="' + cls + '" data-day="' + i + '">' + (d.short || 'D' + (i+1)) + '</button>';
+  if (plan) {
+    for (var i = 0; i < plan.days.length; i++) {
+      var d = plan.days[i];
+      var cls = 'day-tab';
+      if (currentDay === i) cls += ' active';
+      var planDayState = todayPlanStates[i];
+      var hasToday = planDayState && Object.keys(planDayState.exercises || {}).length > 0;
+      if (hasToday || historicalCache[i]) cls += ' has-data';
+      h += '<button class="' + cls + '" data-day="' + i + '">' + (d.short || 'D' + (i+1)) + '</button>';
+    }
   }
+  for (var j = 0; j < todayAdHocs.length; j++) {
+    var ah = todayAdHocs[j];
+    var cls2 = 'day-tab ad-hoc';
+    if (currentDay === 'ah_' + ah.workoutId) cls2 += ' active';
+    if (Object.keys(ah.exercises || {}).length > 0) cls2 += ' has-data';
+    var label = ah.title && ah.title.trim() ? ah.title.trim().slice(0, 10) : 'S' + (j + 1);
+    h += '<button class="' + cls2 + '" data-day="ah_' + ah.workoutId + '">' + escapeHtml(label) + '</button>';
+  }
+  h += '<button class="day-tab new-session-tab" data-new-session type="button">+</button>';
   el.innerHTML = h;
 }
 
 function buildDay(di) {
+  // Ad-hoc branch: renders title input, session bar, exercise cards, Add Exercise.
+  if (isAdHocKey(di)) {
+    buildAdHocDay(di);
+    return;
+  }
   if (!plan) return;
   var mode = viewModeFor(di);
   var state = stateForDay(di);
@@ -1233,11 +1407,11 @@ function buildDay(di) {
     var xcc = xad ? ' complete' : xsd ? ' partial' : '';
 
     h += '<div class="exercise-card' + xcc + '">';
-    h += '<div class="exercise-header"><div class="exercise-name">' + escapeHtml(xMeta.name) + '<span class="extras-badge">added</span></div><div class="exercise-status ' + xsc + '">' + xstat + '</div></div>';
+    h += '<div class="exercise-header"><div class="exercise-name">' + escapeHtml(xMeta.name) + '<span class="extras-badge">added</span></div><div class="exercise-status ' + xsc + '">' + xstat + '</div>' + (readOnly ? '' : '<button class="card-delete" data-di="' + di + '" data-ei="' + xei + '" aria-label="Delete exercise" type="button">×</button>') + '</div>';
     h += '<div class="sets-container">';
     for (var xsi2 = 0; xsi2 < xSetCount; xsi2++) {
       var xsl = xState.sets[xsi2] || {};
-      h += renderSetRow(di, xei, xsi2, xsl, null, xWeightMode, dis, '—');
+      h += renderSetRow(di, xei, xsi2, xsl, null, xWeightMode, dis, '—', !readOnly);
     }
     if (mode === 'editable') {
       h += '<button class="add-set-btn" data-add-set-ei="' + xei + '">+ Add Set</button>';
@@ -1269,19 +1443,109 @@ function buildDay(di) {
   }
 }
 
+function buildAdHocDay(di) {
+  var state = findAdHoc(di);
+  var c = document.getElementById('workoutContainer');
+  if (!state) {
+    c.innerHTML = '<div class="empty-state"><h3>Session not found</h3></div>';
+    stopTimerTick();
+    return;
+  }
+  var readOnly = false; // ad-hoc is always editable today; historical ad-hoc out of scope
+  var dis = '';
+  var dateLabel = state.startedAt
+    ? new Date(state.startedAt).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })
+    : '';
+
+  var h = '';
+  h += '<div class="adhoc-header">';
+  h += '<input type="text" class="adhoc-title-input" id="adhocTitleInput" placeholder="What are you working on?" value="' + escapeAttr(state.title || '') + '" data-workout-id="' + state.workoutId + '">';
+  h += '<div class="adhoc-date">' + escapeHtml(dateLabel) + '</div>';
+  h += '</div>';
+
+  // Session bar: ad-hoc always has a workoutId from the moment of creation,
+  // so it starts on the running-timer state.
+  if (state.startedAt && !state.endedAt) {
+    var elapsed = Date.now() - new Date(state.startedAt).getTime();
+    h += '<div class="session-bar"><div class="session-timer" id="sessionTimer">' + fmtElapsed(elapsed) + '</div>' +
+         '<button class="session-btn session-complete" id="btnCompleteSession">Complete Session</button></div>';
+  } else if (state.startedAt && state.endedAt) {
+    var doneMs = new Date(state.endedAt).getTime() - new Date(state.startedAt).getTime();
+    h += '<div class="session-bar done"><div class="session-duration">Session: ' + fmtDuration(doneMs) + '</div></div>';
+  }
+
+  var ts = 0, cs = 0;
+  var keys = Object.keys(state.exercises || {}).sort(function(a, b) {
+    return parseInt(a.slice(3), 10) - parseInt(b.slice(3), 10);
+  });
+
+  for (var xi = 0; xi < keys.length; xi++) {
+    var ek = keys[xi];
+    var ei = parseInt(ek.slice(3), 10);
+    var exState = state.exercises[ek];
+    var meta = exState.exerciseMeta || { name: 'Exercise', weight_mode: 'total' };
+    var weightMode = meta.weight_mode || 'total';
+    var setCount = exState.sets.length || 1;
+    ts += setCount;
+    var dn = 0;
+    for (var s = 0; s < exState.sets.length; s++) {
+      if (exState.sets[s] && exState.sets[s].done) dn++;
+    }
+    cs += dn;
+    var ad = dn === setCount, sd = dn > 0 && !ad;
+    var sc = ad ? 'complete' : sd ? 'partial' : 'pending';
+    var stat = ad ? dn + '/' + setCount + ' ✓' : dn + '/' + setCount;
+    var cc = ad ? ' complete' : sd ? ' partial' : '';
+
+    h += '<div class="exercise-card' + cc + '">';
+    h += '<div class="exercise-header"><div class="exercise-name">' + escapeHtml(meta.name) + '</div><div class="exercise-status ' + sc + '">' + stat + '</div><button class="card-delete" data-di="' + di + '" data-ei="' + ei + '" aria-label="Delete exercise" type="button">×</button></div>';
+    h += '<div class="sets-container">';
+    for (var si = 0; si < setCount; si++) {
+      var sl = exState.sets[si] || {};
+      h += renderSetRow(di, ei, si, sl, null, weightMode, dis, '—', true);
+    }
+    h += '<button class="add-set-btn" data-add-set-ei="' + ei + '">+ Add Set</button>';
+    h += '</div>';
+    h += '<div class="rpe-row"><div class="rpe-label">RPE</div><div class="rpe-buttons">';
+    var rv = [6,7,8,9,10];
+    for (var r = 0; r < rv.length; r++) {
+      h += '<button class="rpe-btn' + (exState.rpe === rv[r] ? ' selected' : '') + '" data-di="' + di + '" data-ei="' + ei + '" data-rpe="' + rv[r] + '"' + dis + '>' + rv[r] + '</button>';
+    }
+    h += '</div></div>';
+    h += '<div style="padding:0 14px 14px"><textarea class="exercise-note-input" rows="1" placeholder="Notes" data-di="' + di + '" data-ei="' + ei + '"' + dis + '>' + escapeHtml(exState.note || '') + '</textarea></div>';
+    h += '</div>';
+  }
+
+  h += '<button class="add-exercise-btn" id="btnAddExercise" type="button">+ Add Exercise</button>';
+
+  c.innerHTML = h;
+  document.getElementById('setsComplete').textContent = cs;
+  document.getElementById('setsTotal').textContent = ts;
+  document.getElementById('dayProgress').textContent = ts > 0 ? Math.round((cs / ts) * 100) + '%' : '0%';
+
+  // Timer ticker for ad-hoc: running if started but not ended.
+  if (todayState && todayState.isAdHoc && todayState.workoutId === state.workoutId
+      && state.startedAt && !state.endedAt) {
+    startTimerTick();
+  } else {
+    stopTimerTick();
+  }
+}
+
 function escapeHtml(s) { return String(s == null ? '' : s).replace(/[&<>]/g, function(c){ return c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;'; }); }
 function escapeAttr(s) { return escapeHtml(s).replace(/"/g, '&quot;'); }
 
-// Render one set-row. `prescribedSet` may be null (extras), `labelText` is the
-// S1/S2/... label source, `prText` is the pre-formatted prescription cell.
-function renderSetRow(di, ei, si, sl, prescribedSet, weightMode, disabledAttr, prText) {
+// Render one set-row. `prescribedSet` may be null (extras / ad-hoc), `prText`
+// is the pre-formatted prescription cell. `deletable` adds an inline × button
+// after the done checkbox (used on extras + ad-hoc sets only).
+function renderSetRow(di, ei, si, sl, prescribedSet, weightMode, disabledAttr, prText, deletable) {
   var weightCls = prescribedSet ? inputCls(sl.weight, prescribedSet.weight) : '';
   var repsCls = prescribedSet ? inputCls(sl.reps, prescribedSet.reps_target) : '';
   var weightPlaceholder = prescribedSet && prescribedSet.weight ? prescribedSet.weight : '—';
   var repsPlaceholder = prescribedSet && prescribedSet.reps_target ? prescribedSet.reps_target : '—';
 
   var out = '';
-  out += '<div class="set-row">';
+  out += '<div class="set-row' + (deletable ? ' deletable' : '') + '">';
   out += '<div class="set-label">S' + (si+1) + '</div>';
   out += '<div class="set-prescribed">' + (prText || '—') + '</div>';
   out += '<div class="set-actual">';
@@ -1297,6 +1561,9 @@ function renderSetRow(di, ei, si, sl, prescribedSet, weightMode, disabledAttr, p
   out += '</div>';
   out += '</div>';
   out += '<button class="set-check ' + (sl.done ? 'done' : '') + '" data-di="' + di + '" data-ei="' + ei + '" data-si="' + si + '"' + disabledAttr + '>' + (sl.done ? '✓' : '·') + '</button>';
+  if (deletable) {
+    out += '<button class="set-delete" data-di="' + di + '" data-ei="' + ei + '" data-si="' + si + '"' + disabledAttr + ' aria-label="Delete set" type="button">×</button>';
+  }
   out += '</div>';
   return out;
 }
@@ -1319,9 +1586,19 @@ function inputCls(a, t) {
 }
 
 // ---- Local state helpers ----
+// Returns the state object to mutate for a given tab key. For ad-hoc tabs,
+// returns the existing ad-hoc state (must already exist — created via
+// createAdHocSession). For plan-day tabs, lazy-creates the todayPlanStates
+// entry for that dayIndex if needed and keeps todayState pointed at it.
 function getOrInitToday(di) {
-  if (!todayState) todayState = { workoutId: null, planId: null, dayIndex: di, exercises: {} };
-  return todayState;
+  if (isAdHocKey(di)) {
+    return findAdHoc(di);
+  }
+  if (!todayPlanStates[di]) {
+    todayPlanStates[di] = { workoutId: null, planId: null, dayIndex: di, exercises: {} };
+  }
+  todayState = todayPlanStates[di];
+  return todayPlanStates[di];
 }
 function getOrInitExercise(state, ei) {
   var ek = 'ex_' + ei;
@@ -1417,7 +1694,10 @@ function buildSetPayload(di, ei, si) {
   var exState = todayState.exercises['ex_' + ei] || { rpe: null, note: '', sub: '', sets: [] };
   var sl = exState.sets[si] || {};
   var exerciseId, prescribedWeight, prescribedReps;
-  if (exState.isExtra) {
+  // Ad-hoc sessions and "extras" on plan days both carry exerciseId in state
+  // and have no prescription. Plan-day prescribed exercises look up by name
+  // against the library-seeded cache.
+  if (todayState.isAdHoc || exState.isExtra) {
     exerciseId = exState.exerciseId;
     prescribedWeight = null;
     prescribedReps = null;
@@ -1452,8 +1732,9 @@ async function persistSet(di, ei, si) {
     await ensureWorkout(di);
     var exState = todayState.exercises['ex_' + ei];
     var displayName;
-    if (exState.isExtra) {
-      // Extras already carry exerciseId (resolved via the picker/custom-create).
+    if (todayState.isAdHoc || exState.isExtra) {
+      // Ad-hoc sessions and extras on plan days both carry exerciseId in
+      // state (resolved via the picker / custom-create); nothing to upsert.
       displayName = (exState.exerciseMeta && exState.exerciseMeta.name) || 'exercise';
     } else {
       var ex = plan.days[di].exercises[ei];
@@ -1478,10 +1759,10 @@ async function persistSet(di, ei, si) {
     }
   } catch(err) {
     console.error('persistSet error:', err);
-    var extra = todayState.exercises['ex_' + ei];
-    var fallback = extra && extra.isExtra && extra.exerciseMeta
+    var extra = todayState && todayState.exercises['ex_' + ei];
+    var fallback = extra && (extra.isExtra || (todayState && todayState.isAdHoc)) && extra.exerciseMeta
       ? extra.exerciseMeta.name
-      : (((plan.days[di] || {}).exercises || [])[ei] ? plan.days[di].exercises[ei].name : 'exercise');
+      : (((plan && plan.days[di]) || {}).exercises || [])[ei] ? plan.days[di].exercises[ei].name : 'exercise';
     showToast('Set ' + (si+1) + ' of ' + fallback + " didn't save", function() { persistSet(di, ei, si); });
   }
 }
@@ -1512,7 +1793,7 @@ async function updateExerciseFanOut(di, ei) {
 async function logSet(di, ei, si, field, val) {
   if (viewModeFor(di) !== 'editable') return;
   var st = getOrInitToday(di);
-  if (st.dayIndex !== di && st.workoutId) { showToast("Today's workout is on a different day", null); return; }
+  if (!st) return;
   var exState = getOrInitExercise(st, ei);
   var sl = getOrInitSet(exState, si);
   var parsed = val === '' ? null : parseFloat(val);
@@ -1526,11 +1807,10 @@ async function logSet(di, ei, si, field, val) {
 async function toggleSet(di, ei, si) {
   if (viewModeFor(di) !== 'editable') return;
   var st = getOrInitToday(di);
-  if (st.workoutId && st.dayIndex !== di) {
-    showToast("Today's workout is on a different day", null);
-    return;
-  }
-  st.dayIndex = di;
+  if (!st) return;
+  // Plan-day state pins its dayIndex to the integer di. Ad-hoc state has
+  // dayIndex = null and is keyed by workoutId; never overwrite either here.
+  if (!st.isAdHoc && st.dayIndex == null) st.dayIndex = di;
   var exState = getOrInitExercise(st, ei);
   var sl = getOrInitSet(exState, si);
   var wasDone = !!sl.done;
@@ -1578,33 +1858,45 @@ async function logSub(di, ei, s) {
   await updateExerciseFanOut(di, ei);
 }
 
-// ---- Extras: Add Exercise / Add Set ----
-function nextExtraIndex() {
-  var base = plan && plan.days[currentDay] ? plan.days[currentDay].exercises.length : 0;
-  if (!todayState) return base;
-  var max = base - 1;
-  for (var k in todayState.exercises) {
-    if (todayState.exercises[k].isExtra) {
+// ---- Add Exercise / Add Set (plan extras + ad-hoc sessions) ----
+// For plan-day focus: next index = plan.days[currentDay].exercises.length + extras count.
+// For ad-hoc focus: next index = count of exercises already in the session.
+function nextExerciseIndex() {
+  if (!todayState) return 0;
+  if (todayState.isAdHoc) {
+    var max = -1;
+    for (var k in todayState.exercises) {
       var n = parseInt(k.slice(3), 10);
       if (n > max) max = n;
     }
+    return max + 1;
   }
-  return max + 1;
+  var base = plan && plan.days[currentDay] ? plan.days[currentDay].exercises.length : 0;
+  var max2 = base - 1;
+  for (var k2 in todayState.exercises) {
+    if (todayState.exercises[k2].isExtra) {
+      var n2 = parseInt(k2.slice(3), 10);
+      if (n2 > max2) max2 = n2;
+    }
+  }
+  return max2 + 1;
 }
 
-function addExtraToToday(exerciseRow) {
+function addExerciseToSession(exerciseRow) {
   if (!exerciseRow) return;
   if (viewModeFor(currentDay) !== 'editable') return;
   var st = getOrInitToday(currentDay);
-  var ei = nextExtraIndex();
+  if (!st) return;
+  var ei = nextExerciseIndex();
   var ek = 'ex_' + ei;
   st.exercises[ek] = {
     rpe: null, note: '', sub: '', sets: [{}],
-    isExtra: true,
+    // Mark isExtra only on plan days (drives the "added" badge + divider).
+    // Ad-hoc sessions render every exercise uniformly with no badge.
+    isExtra: !st.isAdHoc,
     exerciseId: exerciseRow.id,
     exerciseMeta: exerciseRow,
   };
-  // Seed the id cache so prescribed-path lookups don't try to re-upsert.
   exerciseIdCache[exerciseRow.name] = exerciseRow.id;
   buildDay(currentDay);
 }
@@ -1614,6 +1906,124 @@ function addExtraSet(ei) {
   if (!todayState || !todayState.exercises['ex_' + ei]) return;
   todayState.exercises['ex_' + ei].sets.push({});
   buildDay(currentDay);
+}
+
+// Delete a single set from an extras-on-plan-day exercise or an ad-hoc
+// exercise. Never fires on prescribed sets (no delete button rendered).
+// If the set was persisted, remove the row and renumber higher set_orders
+// so the (workout_id, exercise_order, set_order) sequence stays contiguous.
+async function deleteSet(di, ei, si) {
+  if (viewModeFor(di) !== 'editable') return;
+  if (!todayState) return;
+  var exState = todayState.exercises['ex_' + ei];
+  if (!exState) return;
+  if (!exState.isExtra && !todayState.isAdHoc) return;  // safety: only user-added
+  var sl = exState.sets[si];
+  if (!sl) return;
+  var persisted = !!sl.setId;
+  if (persisted && !confirm('Delete this set?')) return;
+  try {
+    if (persisted) {
+      var r = await sb.from('sets').delete().eq('id', sl.setId);
+      if (r.error) throw r.error;
+      // Decrement set_order on any persisted higher-indexed sets for this
+      // exercise. Parallel .update() calls — small N in practice.
+      var updates = [];
+      for (var k = si + 1; k < exState.sets.length; k++) {
+        var row = exState.sets[k];
+        if (row && row.setId) {
+          updates.push(sb.from('sets').update({ set_order: k - 1 }).eq('id', row.setId));
+        }
+      }
+      if (updates.length) {
+        var results = await Promise.all(updates);
+        for (var u = 0; u < results.length; u++) {
+          if (results[u].error) throw results[u].error;
+        }
+      }
+    }
+  } catch(err) {
+    console.error('deleteSet error:', err);
+    showToast("Couldn't delete set: " + err.message, null);
+    return;
+  }
+  exState.sets.splice(si, 1);
+  buildTabs();
+  buildDay(currentDay);
+}
+
+// Delete an entire extras-on-plan-day or ad-hoc exercise along with any
+// logged sets. Confirms because it's multi-row destructive.
+async function deleteExerciseCard(di, ei) {
+  if (viewModeFor(di) !== 'editable') return;
+  if (!todayState) return;
+  var ek = 'ex_' + ei;
+  var exState = todayState.exercises[ek];
+  if (!exState) return;
+  if (!exState.isExtra && !todayState.isAdHoc) return;  // safety
+  var name = (exState.exerciseMeta && exState.exerciseMeta.name) || 'this exercise';
+  if (!confirm('Delete ' + name + ' and any logged sets?')) return;
+  try {
+    if (todayState.workoutId) {
+      var r = await sb.from('sets').delete()
+        .eq('workout_id', todayState.workoutId)
+        .eq('exercise_order', ei);
+      if (r.error) throw r.error;
+    }
+  } catch(err) {
+    console.error('deleteExerciseCard error:', err);
+    showToast("Couldn't delete exercise: " + err.message, null);
+    return;
+  }
+  delete todayState.exercises[ek];
+  buildTabs();
+  buildDay(currentDay);
+}
+
+// ---- Ad-hoc session management ----
+async function createAdHocSession() {
+  if (!userId) return;
+  var now = new Date().toISOString();
+  try {
+    // title is omitted from the insert so this works even if the title
+    // column migration hasn't been applied yet. Postgres defaults unspecified
+    // nullable columns to NULL, which matches the intended initial state.
+    var res = await sb.from('workouts').insert({
+      user_id: userId, plan_id: null, day_index: null,
+      performed_at: now, started_at: now,
+    }).select().single();
+    if (res.error) throw res.error;
+    var adState = {
+      workoutId: res.data.id, planId: null, dayIndex: null,
+      startedAt: now, endedAt: null,
+      title: null, isAdHoc: true,
+      exercises: {},
+    };
+    todayAdHocs.push(adState);
+    focusTab('ah_' + res.data.id);
+    buildTabs();
+    buildDay(currentDay);
+  } catch(err) {
+    console.error('createAdHocSession error:', err);
+    showToast("Couldn't start ad-hoc session: " + err.message, null);
+  }
+}
+
+async function updateAdHocTitle(workoutId, title) {
+  var trimmed = (title || '').trim();
+  var state = null;
+  for (var i = 0; i < todayAdHocs.length; i++) {
+    if (todayAdHocs[i].workoutId === workoutId) { state = todayAdHocs[i]; break; }
+  }
+  if (state) state.title = trimmed || null;
+  try {
+    var r = await sb.from('workouts').update({ title: trimmed || null }).eq('id', workoutId);
+    if (r.error) throw r.error;
+    buildTabs();
+  } catch(err) {
+    console.error('updateAdHocTitle error:', err);
+    showToast("Title didn't save", function() { updateAdHocTitle(workoutId, title); });
+  }
 }
 
 // ---- Exercise picker ----
@@ -1718,7 +2128,7 @@ function selectExerciseFromPicker(exerciseId) {
   var row = exerciseLibraryById[exerciseId];
   if (!row) { showToast('Exercise not found', null); return; }
   closePicker();
-  addExtraToToday(row);
+  addExerciseToSession(row);
 }
 
 // ---- Create custom exercise form ----
@@ -1916,8 +2326,10 @@ function handleImport(event) {
       activePlanId = r2.data.id;
       plan = newPlan;
       planCache[activePlanId] = plan;
-      // Reset in-memory view only; past workouts/sets remain untouched in the DB.
+      // Reset plan-related in-memory view only; past workouts/sets remain
+      // untouched in the DB. Ad-hoc sessions are plan-agnostic and stay.
       todayState = null;
+      todayPlanStates = {};
       historicalCache = {};
       exerciseIdCache = {};
       currentDay = 0;
@@ -2040,7 +2452,8 @@ function applySession(session) {
     document.body.classList.remove('unauthed');
     if (hydratedForUser === session.user.id) return;
     hydratedForUser = session.user.id;
-    activePlanId = null; plan = null; todayState = null;
+    activePlanId = null; plan = null;
+    todayState = null; todayPlanStates = {}; todayAdHocs = [];
     historicalCache = {}; planCache = {}; exerciseIdCache = {};
     exerciseLibrary = []; exerciseLibraryByName = {}; exerciseLibraryById = {};
     recentExercises = [];
@@ -2050,6 +2463,8 @@ function applySession(session) {
   } else {
     hydratedForUser = null;
     stopTimerTick();
+    todayPlanStates = {};
+    todayAdHocs = [];
     exerciseLibrary = [];
     exerciseLibraryByName = {};
     exerciseLibraryById = {};
