@@ -1,0 +1,252 @@
+-- Seed the global exercise library.
+--
+-- Rows are inserted with user_id = NULL and is_custom = false so they are
+-- globally visible via the exercises_select RLS policy (user_id = auth.uid()
+-- OR user_id IS NULL). Because the exercises_insert RLS policy only allows
+-- user_id = auth.uid(), this migration MUST be run via the Supabase SQL
+-- Editor (service_role context) — the anon client will not be able to insert
+-- these rows.
+--
+-- Names are pre-normalized (trim + lowercase) to match the app's canonical
+-- form; the exercises_name_global_unique partial index enforces uniqueness
+-- on the normalized name across all seed rows.
+--
+-- Idempotent: ON CONFLICT on the partial unique index does nothing on re-run.
+
+insert into exercises (user_id, name, equipment, muscle_group, movement_pattern, weight_mode, is_custom) values
+  -- Chest
+  (null, 'barbell bench press',              'barbell',       'chest',     'horizontal press', 'total',      false),
+  (null, 'dumbbell bench press',             'dumbbell',      'chest',     'horizontal press', 'per_side',   false),
+  (null, 'incline barbell bench press',      'barbell',       'chest',     'horizontal press', 'total',      false),
+  (null, 'incline dumbbell bench press',     'dumbbell',      'chest',     'horizontal press', 'per_side',   false),
+  (null, 'decline barbell bench press',      'barbell',       'chest',     'horizontal press', 'total',      false),
+  (null, 'decline dumbbell bench press',     'dumbbell',      'chest',     'horizontal press', 'per_side',   false),
+  (null, 'smith machine bench press',        'smith machine', 'chest',     'horizontal press', 'total',      false),
+  (null, 'smith machine incline bench press','smith machine', 'chest',     'horizontal press', 'total',      false),
+  (null, 'machine chest press',              'machine',       'chest',     'horizontal press', 'total',      false),
+  (null, 'flat dumbbell fly',                'dumbbell',      'chest',     'isolation',        'per_side',   false),
+  (null, 'incline dumbbell fly',             'dumbbell',      'chest',     'isolation',        'per_side',   false),
+  (null, 'cable fly',                        'cable',         'chest',     'isolation',        'per_side',   false),
+  (null, 'low cable fly',                    'cable',         'chest',     'isolation',        'per_side',   false),
+  (null, 'high cable fly',                   'cable',         'chest',     'isolation',        'per_side',   false),
+  (null, 'pec deck',                         'machine',       'chest',     'isolation',        'total',      false),
+  (null, 'push-up',                          'bodyweight',    'chest',     'horizontal press', 'bodyweight', false),
+  (null, 'dip (chest)',                      'bodyweight',    'chest',     'vertical press',   'bodyweight', false),
+  (null, 'cable crossover',                  'cable',         'chest',     'isolation',        'per_side',   false),
+  (null, 'incline cable fly',                'cable',         'chest',     'isolation',        'per_side',   false),
+  (null, 'machine fly',                      'machine',       'chest',     'isolation',        'total',      false),
+  (null, 'floor press (barbell)',            'barbell',       'chest',     'horizontal press', 'total',      false),
+  (null, 'floor press (dumbbell)',           'dumbbell',      'chest',     'horizontal press', 'per_side',   false),
+  (null, 'neutral grip dumbbell press',      'dumbbell',      'chest',     'horizontal press', 'per_side',   false),
+  (null, 'weighted dip',                     'bodyweight',    'chest',     'vertical press',   'bodyweight', false),
+  (null, 'deficit push-up',                  'bodyweight',    'chest',     'horizontal press', 'bodyweight', false),
+  (null, 'close grip bench press',           'barbell',       'triceps',   'horizontal press', 'total',      false),
+
+  -- Back
+  (null, 'pull-up',                          'bodyweight',    'back',      'vertical pull',    'bodyweight', false),
+  (null, 'chin-up',                          'bodyweight',    'back',      'vertical pull',    'bodyweight', false),
+  (null, 'weighted pull-up',                 'bodyweight',    'back',      'vertical pull',    'bodyweight', false),
+  (null, 'lat pulldown',                     'cable',         'back',      'vertical pull',    'total',      false),
+  (null, 'wide grip lat pulldown',           'cable',         'back',      'vertical pull',    'total',      false),
+  (null, 'close grip lat pulldown',          'cable',         'back',      'vertical pull',    'total',      false),
+  (null, 'neutral grip lat pulldown',        'cable',         'back',      'vertical pull',    'total',      false),
+  (null, 'barbell row',                      'barbell',       'back',      'horizontal pull',  'total',      false),
+  (null, 'pendlay row',                      'barbell',       'back',      'horizontal pull',  'total',      false),
+  (null, 'dumbbell row',                     'dumbbell',      'back',      'horizontal pull',  'per_side',   false),
+  (null, 'chest-supported row',              'dumbbell',      'back',      'horizontal pull',  'per_side',   false),
+  (null, 'chest-supported machine row',      'machine',       'back',      'horizontal pull',  'total',      false),
+  (null, 'cable row',                        'cable',         'back',      'horizontal pull',  'total',      false),
+  (null, 'seated cable row',                 'cable',         'back',      'horizontal pull',  'total',      false),
+  (null, 't-bar row',                        'barbell',       'back',      'horizontal pull',  'total',      false),
+  (null, 'machine row',                      'machine',       'back',      'horizontal pull',  'total',      false),
+  (null, 'inverted row',                     'bodyweight',    'back',      'horizontal pull',  'bodyweight', false),
+  (null, 'straight arm pulldown',            'cable',         'back',      'isolation',        'total',      false),
+  (null, 'meadows row',                      'barbell',       'back',      'horizontal pull',  'per_side',   false),
+  (null, 'seal row',                         'barbell',       'back',      'horizontal pull',  'total',      false),
+  (null, 'landmine row',                     'barbell',       'back',      'horizontal pull',  'per_side',   false),
+  (null, 'conventional deadlift',            'barbell',       'back',      'hip hinge',        'total',      false),
+  (null, 'sumo deadlift',                    'barbell',       'back',      'hip hinge',        'total',      false),
+  (null, 'trap bar deadlift',                'barbell',       'back',      'hip hinge',        'total',      false),
+  (null, 'deficit deadlift',                 'barbell',       'back',      'hip hinge',        'total',      false),
+  (null, 'rack pull',                        'barbell',       'back',      'hip hinge',        'total',      false),
+
+  -- Shoulders
+  (null, 'overhead press',                   'barbell',       'shoulders', 'vertical press',   'total',      false),
+  (null, 'dumbbell overhead press',          'dumbbell',      'shoulders', 'vertical press',   'per_side',   false),
+  (null, 'seated dumbbell press',            'dumbbell',      'shoulders', 'vertical press',   'per_side',   false),
+  (null, 'arnold press',                     'dumbbell',      'shoulders', 'vertical press',   'per_side',   false),
+  (null, 'machine shoulder press',           'machine',       'shoulders', 'vertical press',   'total',      false),
+  (null, 'smith machine overhead press',     'smith machine', 'shoulders', 'vertical press',   'total',      false),
+  (null, 'push press',                       'barbell',       'shoulders', 'vertical press',   'total',      false),
+  (null, 'lateral raise',                    'dumbbell',      'shoulders', 'isolation',        'per_side',   false),
+  (null, 'cable lateral raise',              'cable',         'shoulders', 'isolation',        'per_side',   false),
+  (null, 'machine lateral raise',            'machine',       'shoulders', 'isolation',        'total',      false),
+  (null, 'front raise',                      'dumbbell',      'shoulders', 'isolation',        'per_side',   false),
+  (null, 'rear delt fly',                    'dumbbell',      'shoulders', 'isolation',        'per_side',   false),
+  (null, 'cable rear delt fly',              'cable',         'shoulders', 'isolation',        'per_side',   false),
+  (null, 'reverse pec deck',                 'machine',       'shoulders', 'isolation',        'total',      false),
+  (null, 'face pull',                        'cable',         'shoulders', 'isolation',        'total',      false),
+  (null, 'upright row',                      'barbell',       'shoulders', 'isolation',        'total',      false),
+  (null, 'lu raise',                         'dumbbell',      'shoulders', 'isolation',        'per_side',   false),
+  (null, 'landmine press',                   'barbell',       'shoulders', 'vertical press',   'total',      false),
+  (null, 'band pull-apart',                  'band',          'shoulders', 'isolation',        'none',       false),
+  (null, 'band face pull',                   'band',          'shoulders', 'isolation',        'none',       false),
+
+  -- Biceps
+  (null, 'barbell curl',                     'barbell',       'biceps',    'isolation',        'total',      false),
+  (null, 'ez bar curl',                      'barbell',       'biceps',    'isolation',        'total',      false),
+  (null, 'dumbbell curl',                    'dumbbell',      'biceps',    'isolation',        'per_side',   false),
+  (null, 'hammer curl',                      'dumbbell',      'biceps',    'isolation',        'per_side',   false),
+  (null, 'incline dumbbell curl',            'dumbbell',      'biceps',    'isolation',        'per_side',   false),
+  (null, 'concentration curl',               'dumbbell',      'biceps',    'isolation',        'per_side',   false),
+  (null, 'preacher curl',                    'barbell',       'biceps',    'isolation',        'total',      false),
+  (null, 'machine preacher curl',            'machine',       'biceps',    'isolation',        'total',      false),
+  (null, 'cable curl',                       'cable',         'biceps',    'isolation',        'total',      false),
+  (null, 'spider curl',                      'dumbbell',      'biceps',    'isolation',        'per_side',   false),
+  (null, 'bayesian curl',                    'cable',         'biceps',    'isolation',        'per_side',   false),
+
+  -- Triceps
+  (null, 'tricep pushdown',                  'cable',         'triceps',   'isolation',        'total',      false),
+  (null, 'rope pushdown',                    'cable',         'triceps',   'isolation',        'total',      false),
+  (null, 'overhead tricep extension (cable)',   'cable',      'triceps',   'isolation',        'total',      false),
+  (null, 'overhead tricep extension (dumbbell)','dumbbell',   'triceps',   'isolation',        'per_side',   false),
+  (null, 'skull crusher',                    'barbell',       'triceps',   'isolation',        'total',      false),
+  (null, 'dumbbell skull crusher',           'dumbbell',      'triceps',   'isolation',        'per_side',   false),
+  (null, 'dip (tricep)',                     'bodyweight',    'triceps',   'vertical press',   'bodyweight', false),
+  (null, 'machine dip',                      'machine',       'triceps',   'vertical press',   'total',      false),
+  (null, 'kickback',                         'dumbbell',      'triceps',   'isolation',        'per_side',   false),
+  (null, 'cable kickback',                   'cable',         'triceps',   'isolation',        'per_side',   false),
+  (null, 'diamond push-up',                  'bodyweight',    'triceps',   'horizontal press', 'bodyweight', false),
+
+  -- Quads
+  (null, 'barbell back squat',               'barbell',       'quads',     'squat',            'total',      false),
+  (null, 'barbell front squat',              'barbell',       'quads',     'squat',            'total',      false),
+  (null, 'smith machine squat',              'smith machine', 'quads',     'squat',            'total',      false),
+  (null, 'goblet squat',                     'dumbbell',      'quads',     'squat',            'total',      false),
+  (null, 'hack squat',                       'machine',       'quads',     'squat',            'total',      false),
+  (null, 'leg press',                        'machine',       'quads',     'squat',            'total',      false),
+  (null, 'leg extension',                    'machine',       'quads',     'isolation',        'total',      false),
+  (null, 'bulgarian split squat',            'dumbbell',      'quads',     'squat',            'per_side',   false),
+  (null, 'walking lunge',                    'dumbbell',      'quads',     'squat',            'per_side',   false),
+  (null, 'reverse lunge',                    'dumbbell',      'quads',     'squat',            'per_side',   false),
+  (null, 'step-up',                          'dumbbell',      'quads',     'squat',            'per_side',   false),
+  (null, 'pendulum squat',                   'machine',       'quads',     'squat',            'total',      false),
+  (null, 'belt squat',                       'machine',       'quads',     'squat',            'total',      false),
+  (null, 'safety bar squat',                 'barbell',       'quads',     'squat',            'total',      false),
+  (null, 'box squat',                        'barbell',       'quads',     'squat',            'total',      false),
+  (null, 'pause squat',                      'barbell',       'quads',     'squat',            'total',      false),
+  (null, 'sissy squat',                      'bodyweight',    'quads',     'isolation',        'bodyweight', false),
+  (null, 'wall sit',                         'bodyweight',    'quads',     'isometric',        'none',       false),
+
+  -- Hamstrings
+  (null, 'barbell romanian deadlift',        'barbell',       'hamstrings','hip hinge',        'total',      false),
+  (null, 'dumbbell romanian deadlift',       'dumbbell',      'hamstrings','hip hinge',        'per_side',   false),
+  (null, 'single leg romanian deadlift',     'dumbbell',      'hamstrings','hip hinge',        'per_side',   false),
+  (null, 'stiff leg deadlift',               'barbell',       'hamstrings','hip hinge',        'total',      false),
+  (null, 'lying leg curl',                   'machine',       'hamstrings','isolation',        'total',      false),
+  (null, 'seated leg curl',                  'machine',       'hamstrings','isolation',        'total',      false),
+  (null, 'single leg curl',                  'machine',       'hamstrings','isolation',        'per_side',   false),
+  (null, 'nordic curl',                      'bodyweight',    'hamstrings','isolation',        'bodyweight', false),
+  (null, 'glute ham raise',                  'machine',       'hamstrings','isolation',        'bodyweight', false),
+  (null, 'good morning',                     'barbell',       'hamstrings','hip hinge',        'total',      false),
+  (null, 'cable pull-through',               'cable',         'hamstrings','hip hinge',        'total',      false),
+
+  -- Glutes
+  (null, 'hip thrust',                       'barbell',       'glutes',    'hip extension',    'total',      false),
+  (null, 'dumbbell hip thrust',              'dumbbell',      'glutes',    'hip extension',    'total',      false),
+  (null, 'smith machine hip thrust',         'smith machine', 'glutes',    'hip extension',    'total',      false),
+  (null, 'machine hip thrust',               'machine',       'glutes',    'hip extension',    'total',      false),
+  (null, 'glute bridge',                     'bodyweight',    'glutes',    'hip extension',    'bodyweight', false),
+  (null, 'cable glute kickback',             'cable',         'glutes',    'isolation',        'per_side',   false),
+  (null, 'hip abduction machine',            'machine',       'glutes',    'isolation',        'total',      false),
+  (null, 'hip adduction machine',            'machine',       'glutes',    'isolation',        'total',      false),
+  (null, 'banded hip circle',                'band',          'glutes',    'isolation',        'none',       false),
+  (null, 'clamshell',                        'band',          'glutes',    'isolation',        'none',       false),
+
+  -- Calves
+  (null, 'standing calf raise',              'machine',       'calves',    'isolation',        'total',      false),
+  (null, 'seated calf raise',                'machine',       'calves',    'isolation',        'total',      false),
+  (null, 'smith machine calf raise',         'smith machine', 'calves',    'isolation',        'total',      false),
+  (null, 'leg press calf raise',             'machine',       'calves',    'isolation',        'total',      false),
+  (null, 'bodyweight calf raise',            'bodyweight',    'calves',    'isolation',        'bodyweight', false),
+  (null, 'single leg calf raise',            'bodyweight',    'calves',    'isolation',        'bodyweight', false),
+  (null, 'calf raise (dumbbell)',            'dumbbell',      'calves',    'isolation',        'per_side',   false),
+  (null, 'tibialis raise',                   'bodyweight',    'calves',    'isolation',        'bodyweight', false),
+
+  -- Core
+  (null, 'cable crunch',                     'cable',         'core',      'isolation',        'total',      false),
+  (null, 'machine crunch',                   'machine',       'core',      'isolation',        'total',      false),
+  (null, 'weighted crunch',                  'dumbbell',      'core',      'isolation',        'total',      false),
+  (null, 'hanging leg raise',                'bodyweight',    'core',      'isolation',        'bodyweight', false),
+  (null, 'hanging knee raise',               'bodyweight',    'core',      'isolation',        'bodyweight', false),
+  (null, 'ab wheel rollout',                 'bodyweight',    'core',      'isolation',        'bodyweight', false),
+  (null, 'weighted reverse crunch',          'dumbbell',      'core',      'isolation',        'total',      false),
+  (null, 'reverse crunch',                   'bodyweight',    'core',      'isolation',        'bodyweight', false),
+  (null, 'plank',                            'bodyweight',    'core',      'isometric',        'none',       false),
+  (null, 'side plank',                       'bodyweight',    'core',      'isometric',        'none',       false),
+  (null, 'copenhagen plank',                 'bodyweight',    'core',      'isometric',        'none',       false),
+  (null, 'pallof press',                     'cable',         'core',      'isolation',        'total',      false),
+  (null, 'russian twist',                    'dumbbell',      'core',      'isolation',        'total',      false),
+  (null, 'dead bug',                         'bodyweight',    'core',      'isolation',        'none',       false),
+  (null, 'hollow body hold',                 'bodyweight',    'core',      'isometric',        'none',       false),
+  (null, 'dragon flag',                      'bodyweight',    'core',      'isolation',        'bodyweight', false),
+  (null, 'suitcase carry',                   'dumbbell',      'core',      'carry',            'per_side',   false),
+
+  -- Traps
+  (null, 'barbell shrug',                    'barbell',       'traps',     'isolation',        'total',      false),
+  (null, 'dumbbell shrug',                   'dumbbell',      'traps',     'isolation',        'per_side',   false),
+  (null, 'farmer''s carry',                  'dumbbell',      'traps',     'carry',            'per_side',   false),
+  (null, 'trap bar carry',                   'barbell',       'traps',     'carry',            'total',      false),
+
+  -- Forearms
+  (null, 'wrist curl',                       'barbell',       'forearms',  'isolation',        'total',      false),
+  (null, 'dumbbell wrist curl',              'dumbbell',      'forearms',  'isolation',        'per_side',   false),
+  (null, 'dead hang',                        'bodyweight',    'forearms',  'isometric',        'bodyweight', false),
+  (null, 'reverse curl',                     'barbell',       'forearms',  'isolation',        'total',      false),
+
+  -- Lower back
+  (null, 'back extension',                   'bodyweight',    'lower back','hip hinge',        'bodyweight', false),
+  (null, 'weighted back extension',          'dumbbell',      'lower back','hip hinge',        'total',      false),
+  (null, 'reverse hyper',                    'machine',       'lower back','hip extension',    'total',      false),
+  (null, 'superman',                         'bodyweight',    'lower back','isolation',        'none',       false),
+
+  -- Full body
+  (null, 'power clean',                      'barbell',       'full body', 'olympic',          'total',      false),
+  (null, 'hang clean',                       'barbell',       'full body', 'olympic',          'total',      false),
+  (null, 'snatch',                           'barbell',       'full body', 'olympic',          'total',      false),
+  (null, 'dumbbell snatch',                  'dumbbell',      'full body', 'olympic',          'per_side',   false),
+  (null, 'thruster',                         'barbell',       'full body', 'compound',         'total',      false),
+  (null, 'dumbbell thruster',                'dumbbell',      'full body', 'compound',         'per_side',   false),
+  (null, 'kettlebell swing',                 'dumbbell',      'full body', 'hip hinge',        'total',      false),
+  (null, 'turkish get-up',                   'dumbbell',      'full body', 'compound',         'per_side',   false),
+  (null, 'burpee',                           'bodyweight',    'full body', 'compound',         'none',       false),
+  (null, 'battle rope',                      'other',         'full body', 'cardio',           'none',       false),
+  (null, 'sled push',                        'other',         'full body', 'compound',         'total',      false),
+  (null, 'sled pull',                        'other',         'full body', 'compound',         'total',      false),
+  (null, 'box jump',                         'bodyweight',    'full body', 'plyometric',       'none',       false),
+
+  -- Cardio
+  (null, 'treadmill run',                    'machine',       'cardio',    'cardio',           'none',       false),
+  (null, 'treadmill walk',                   'machine',       'cardio',    'cardio',           'none',       false),
+  (null, 'incline treadmill walk',           'machine',       'cardio',    'cardio',           'none',       false),
+  (null, 'stairmaster',                      'machine',       'cardio',    'cardio',           'none',       false),
+  (null, 'elliptical',                       'machine',       'cardio',    'cardio',           'none',       false),
+  (null, 'stationary bike',                  'machine',       'cardio',    'cardio',           'none',       false),
+  (null, 'rowing machine',                   'machine',       'cardio',    'cardio',           'none',       false),
+  (null, 'assault bike',                     'machine',       'cardio',    'cardio',           'none',       false),
+  (null, 'jump rope',                        'other',         'cardio',    'cardio',           'none',       false),
+  (null, 'outdoor run',                      'bodyweight',    'cardio',    'cardio',           'none',       false),
+  (null, 'outdoor walk',                     'bodyweight',    'cardio',    'cardio',           'none',       false),
+  (null, 'cycling',                          'other',         'cardio',    'cardio',           'none',       false),
+
+  -- Mobility
+  (null, 'foam roll (upper back)',           'other',         'mobility',  'mobility',         'none',       false),
+  (null, 'foam roll (quads)',                'other',         'mobility',  'mobility',         'none',       false),
+  (null, 'foam roll (glutes)',               'other',         'mobility',  'mobility',         'none',       false),
+  (null, 'hip flexor stretch',               'bodyweight',    'mobility',  'mobility',         'none',       false),
+  (null, 'pigeon stretch',                   'bodyweight',    'mobility',  'mobility',         'none',       false),
+  (null, 'cat-cow',                          'bodyweight',    'mobility',  'mobility',         'none',       false),
+  (null, 'world''s greatest stretch',        'bodyweight',    'mobility',  'mobility',         'none',       false),
+  (null, 'thoracic spine rotation',          'bodyweight',    'mobility',  'mobility',         'none',       false),
+  (null, 'shoulder dislocates',              'band',          'mobility',  'mobility',         'none',       false)
+on conflict (name) where user_id is null do nothing;
