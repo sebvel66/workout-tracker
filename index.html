@@ -1001,6 +1001,12 @@ async function toggleSet(di, ei, si) {
   if (sl.done) {
     sl.completedAt = new Date().toISOString();
     if (!sl.startedAt) sl.startedAt = sl.completedAt;
+    // Auto-fill empty fields from prescribed values; never overwrite user input.
+    var prescribed = plan.days[di] && plan.days[di].exercises[ei] && plan.days[di].exercises[ei].sets[si];
+    if (prescribed) {
+      if (sl.weight == null && prescribed.weight != null) sl.weight = prescribed.weight;
+      if (sl.reps == null && prescribed.reps_target != null) sl.reps = prescribed.reps_target;
+    }
   }
   await persistSet(di, ei, si);
   buildTabs();
