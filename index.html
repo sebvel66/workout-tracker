@@ -414,6 +414,25 @@ body.unauthed #emptyState { display: none !important; }
   outline: none; margin-bottom: 10px;
 }
 .auth-email:focus { border-color: var(--accent); }
+.auth-code {
+  width: 100%; background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 22px; font-weight: 700;
+  padding: 12px 14px; border-radius: 10px;
+  outline: none; margin-bottom: 10px;
+  letter-spacing: 6px; text-align: center;
+}
+.auth-code:focus { border-color: var(--accent); }
+.auth-links {
+  display: flex; gap: 12px; justify-content: center; margin-top: 10px;
+}
+.auth-link {
+  background: transparent; border: none; color: var(--text2);
+  font-family: 'Outfit', sans-serif; font-size: 12px; font-weight: 500;
+  padding: 4px 6px; cursor: pointer; text-decoration: underline;
+  -webkit-tap-highlight-color: transparent;
+}
+.auth-link:active { color: var(--text); }
 .auth-submit {
   width: 100%; background: var(--accent2); color: #000; border: none;
   font-family: 'Outfit', sans-serif; font-size: 14px; font-weight: 600;
@@ -806,11 +825,16 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
 <section class="auth-gate" id="authGate">
   <div class="auth-card">
     <h1>Workout Tracker</h1>
-    <p>Enter your email and we'll send you a magic link to sign in.</p>
+    <p id="authDesc">Enter your email and we'll send you a sign-in code.</p>
     <form id="authForm">
       <input type="email" class="auth-email" id="authEmail" placeholder="you@example.com" autocomplete="email" required>
-      <button type="submit" class="auth-submit" id="authSubmit">Send magic link</button>
+      <input type="text" class="auth-code" id="authCode" placeholder="Sign-in code" autocomplete="one-time-code" inputmode="numeric" pattern="[0-9]{4,10}" maxlength="10" style="display:none">
+      <button type="submit" class="auth-submit" id="authSubmit">Send code</button>
     </form>
+    <div class="auth-links" id="authLinks" style="display:none">
+      <button type="button" class="auth-link" id="authResend">Resend code</button>
+      <button type="button" class="auth-link" id="authBack">Change email</button>
+    </div>
     <div class="auth-status" id="authStatus"></div>
   </div>
 </section>
@@ -1022,7 +1046,7 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
 // -----------------------------------------------------------------------------
 // Bump this on every deploy. Displayed at the bottom of the app so stale-
 // cache issues can be diagnosed from the client ("which version am I on?").
-var APP_VERSION = 'v2.0.3';
+var APP_VERSION = 'v2.0.4';
 
 var SUPABASE_URL = 'https://kgrmlgrzaxbwpkmziwxp.supabase.co';
 var SUPABASE_ANON_KEY = 'sb_publishable_Yh8YMh9yq0gQ77OD-oiQ1A_9MHS_6rB';
@@ -3176,31 +3200,109 @@ async function runExport() {
 }
 
 // ---- Auth gate ----
+// Two-step OTP flow instead of magic-link-only:
+// 1. User types email, we call signInWithOtp to send a 6-digit code.
+// 2. User types the code, we call verifyOtp to establish the session.
+// The magic link itself still works as a fallback (we keep the redirectTo
+// so clicking the link in Safari still works), but the primary flow stays
+// entirely inside the PWA — critical for iOS home-screen installs where
+// Safari-opened magic links can't reach the standalone app.
 var authForm = document.getElementById('authForm');
 var authEmail = document.getElementById('authEmail');
+var authCode = document.getElementById('authCode');
 var authSubmit = document.getElementById('authSubmit');
 var authStatus = document.getElementById('authStatus');
+var authDesc = document.getElementById('authDesc');
+var authLinks = document.getElementById('authLinks');
+var authResend = document.getElementById('authResend');
+var authBack = document.getElementById('authBack');
 var btnSignOut = document.getElementById('btnSignOut');
+
+var authStep = 'email';       // 'email' | 'code'
+var authPendingEmail = '';    // the email we sent the code to
 
 function setAuthStatus(msg, kind) {
   authStatus.textContent = msg || '';
   authStatus.className = 'auth-status' + (kind ? ' ' + kind : '');
 }
 
-authForm.addEventListener('submit', function(e) {
-  e.preventDefault();
-  var email = (authEmail.value || '').trim();
-  if (!email) return;
+function setAuthStep(step) {
+  authStep = step;
+  if (step === 'email') {
+    authDesc.textContent = "Enter your email and we'll send you a sign-in code.";
+    authEmail.style.display = '';
+    authCode.style.display = 'none';
+    authCode.value = '';
+    authSubmit.textContent = 'Send code';
+    authLinks.style.display = 'none';
+    setTimeout(function(){ authEmail.focus(); }, 50);
+  } else {
+    authDesc.textContent = 'Enter the code sent to ' + authPendingEmail + '.';
+    authEmail.style.display = 'none';
+    authCode.style.display = '';
+    authSubmit.textContent = 'Verify';
+    authLinks.style.display = 'flex';
+    setTimeout(function(){ authCode.focus(); }, 50);
+  }
+}
+
+async function sendLoginCode(email) {
   authSubmit.disabled = true;
-  setAuthStatus('Sending…');
-  sb.auth.signInWithOtp({
+  setAuthStatus('Sending code…');
+  var res = await sb.auth.signInWithOtp({
     email: email,
-    options: { emailRedirectTo: window.location.origin }
-  }).then(function(res) {
-    authSubmit.disabled = false;
-    if (res.error) setAuthStatus(res.error.message, 'err');
-    else setAuthStatus('Check your email for the link.', 'ok');
+    options: { emailRedirectTo: window.location.origin },
   });
+  authSubmit.disabled = false;
+  if (res.error) {
+    setAuthStatus(res.error.message, 'err');
+    return false;
+  }
+  return true;
+}
+
+authForm.addEventListener('submit', async function(e) {
+  e.preventDefault();
+  if (authStep === 'email') {
+    var email = (authEmail.value || '').trim();
+    if (!email) return;
+    var ok = await sendLoginCode(email);
+    if (!ok) return;
+    authPendingEmail = email;
+    setAuthStep('code');
+    setAuthStatus('Code sent — check your email.', 'ok');
+  } else {
+    var code = (authCode.value || '').trim();
+    if (!/^\d{4,10}$/.test(code)) {
+      setAuthStatus('Enter the code from your email (digits only).', 'err');
+      return;
+    }
+    authSubmit.disabled = true;
+    setAuthStatus('Verifying…');
+    var res = await sb.auth.verifyOtp({
+      email: authPendingEmail,
+      token: code,
+      type: 'email',
+    });
+    authSubmit.disabled = false;
+    if (res.error) {
+      setAuthStatus(res.error.message, 'err');
+      return;
+    }
+    // Session is now set; onAuthStateChange fires applySession → hydrate.
+  }
+});
+
+authResend.addEventListener('click', async function() {
+  if (!authPendingEmail) return;
+  await sendLoginCode(authPendingEmail);
+  setAuthStatus('New code sent.', 'ok');
+});
+
+authBack.addEventListener('click', function() {
+  authPendingEmail = '';
+  setAuthStep('email');
+  setAuthStatus('');
 });
 
 btnSignOut.addEventListener('click', function() {
@@ -3226,6 +3328,9 @@ function applySession(session) {
     hydratedForUser = null;
     stopTimerTick();
     sessionTodayStart = null;
+    authPendingEmail = '';
+    setAuthStep('email');
+    setAuthStatus('');
     todayPlanStates = {};
     todayAdHocs = [];
     exerciseLibrary = [];
