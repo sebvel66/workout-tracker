@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Workout Tracker</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -386,6 +386,20 @@ body.unauthed #emptyState { display: none !important; }
   margin-left: 8px; vertical-align: middle;
 }
 
+.version-footer {
+  position: fixed;
+  bottom: calc(78px + var(--safe-bottom));  /* sit just above the fixed summary-bar */
+  right: 10px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--text3);
+  opacity: 0.6;
+  letter-spacing: 0.5px;
+  z-index: 110;  /* above summary-bar (100) so it's never covered */
+  pointer-events: none;
+}
+body.unauthed .version-footer { display: none; }
+
 .toast-stack {
   position: fixed; left: 12px; right: 12px;
   bottom: calc(100px + var(--safe-bottom));
@@ -675,7 +689,7 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
     <div>
       <div class="header-title" id="planTitle">Workout Tracker</div>
       <div class="header-week" id="planWeek">No plan loaded</div>
-      <div class="version">v3 <button class="signout-btn" id="btnSignOut" type="button">sign out</button></div>
+      <div class="version"><button class="signout-btn" id="btnSignOut" type="button">sign out</button></div>
     </div>
     <div class="header-actions">
       <button class="header-btn" id="btnImport">Import</button>
@@ -804,6 +818,8 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
   </div>
 </div>
 
+<div class="version-footer" id="versionFooter"></div>
+
 <div class="toast-stack" id="toastStack"></div>
 
 <div class="rest-timer-overlay" id="restOverlay"></div>
@@ -826,6 +842,10 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
 // visitor full admin access to the database. The service_role key belongs only
 // in server-side environments, never in any file served to a browser.
 // -----------------------------------------------------------------------------
+// Bump this on every deploy. Displayed at the bottom of the app so stale-
+// cache issues can be diagnosed from the client ("which version am I on?").
+var APP_VERSION = 'v2.0.0';
+
 var SUPABASE_URL = 'https://kgrmlgrzaxbwpkmziwxp.supabase.co';
 var SUPABASE_ANON_KEY = 'sb_publishable_Yh8YMh9yq0gQ77OD-oiQ1A_9MHS_6rB';
 var sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
@@ -839,6 +859,13 @@ var restInterval = null;
 var restSeconds = 0;
 var sessionTimerInterval = null;
 var hydratedForUser = null;
+
+// Paint the version tag in the bottom-right as soon as state is declared.
+// DOM is already parsed here (the <script> sits at the end of <body>).
+(function paintVersion() {
+  var el = document.getElementById('versionFooter');
+  if (el) el.textContent = APP_VERSION;
+})();
 
 // sessionTodayStart: snapshot of "today's midnight" taken once per hydrate.
 // Reused everywhere that needs to determine the today/historical boundary,
@@ -2256,10 +2283,11 @@ function showToast(msg, retryFn) {
   });
   stack.appendChild(el);
   // Toasts that offer a retry (i.e. a write failed and the user needs to
-  // react) stay visible until the user taps them. Plain informational toasts
-  // auto-dismiss after ~18s so they're not missed mid-set but don't linger.
+  // react) stay visible until the user taps them — errors never auto-dismiss.
+  // Plain informational toasts auto-dismiss after 20s so they're not missed
+  // mid-set but don't linger.
   if (!retryFn) {
-    setTimeout(function() { dismissToast(id); }, 18000);
+    setTimeout(function() { dismissToast(id); }, 20000);
   }
 }
 function dismissToast(id) {
