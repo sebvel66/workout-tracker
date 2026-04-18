@@ -450,6 +450,13 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
   font-family: 'Outfit', sans-serif; font-size: 12px; font-weight: 600;
   padding: 8px 14px; border-radius: 8px; cursor: pointer; flex-shrink: 0;
 }
+.session-bar.done.resumable { justify-content: space-between; }
+.session-btn.session-resume {
+  background: transparent; color: var(--text2); border: 1px solid var(--border);
+  font-family: 'Outfit', sans-serif; font-size: 12px; font-weight: 600;
+  padding: 8px 14px; border-radius: 8px; cursor: pointer; flex-shrink: 0;
+}
+.session-btn.session-resume:active { background: var(--surface2); color: var(--text); }
 
 /* Ad-hoc tab + header */
 .day-tab.ad-hoc {
@@ -1046,6 +1053,12 @@ document.getElementById('workoutContainer').addEventListener('click', function(e
     completeSession();
     return;
   }
+  var resumeBtn = target.closest ? target.closest('#btnResumeSession') : null;
+  if (resumeBtn) {
+    if (resumeBtn.disabled) return;
+    resumeSession();
+    return;
+  }
   // Set check
   var checkBtn = target.closest ? target.closest('.set-check') : null;
   if (checkBtn) {
@@ -1256,6 +1269,7 @@ function stateFromWorkout(row) {
   var state = {
     workoutId: row.id, planId: row.plan_id, dayIndex: row.day_index,
     startedAt: row.started_at, endedAt: row.ended_at,
+    pausedMs: row.paused_ms || 0,
     exercises: {}
   };
   var isAdHocWorkout = row.plan_id === null;
@@ -1388,16 +1402,14 @@ function buildDay(di) {
     if (!todayState || !todayState.workoutId) {
       h += '<button class="session-btn session-start" id="btnStartSession">Start Session</button>';
     } else if (todayState.startedAt && !todayState.endedAt) {
-      var elapsed = Date.now() - new Date(todayState.startedAt).getTime();
-      h += '<div class="session-bar"><div class="session-timer" id="sessionTimer">' + fmtElapsed(elapsed) + '</div>' +
+      h += '<div class="session-bar"><div class="session-timer" id="sessionTimer">' + fmtElapsed(sessionElapsedMs(todayState)) + '</div>' +
            '<button class="session-btn session-complete" id="btnCompleteSession">Complete Session</button></div>';
     } else if (todayState.startedAt && todayState.endedAt) {
-      var doneMs = new Date(todayState.endedAt).getTime() - new Date(todayState.startedAt).getTime();
-      h += '<div class="session-bar done"><div class="session-duration">Session: ' + fmtDuration(doneMs) + '</div></div>';
+      h += '<div class="session-bar done resumable"><div class="session-duration">Session: ' + fmtDuration(sessionElapsedMs(todayState)) + '</div>' +
+           '<button class="session-btn session-resume" id="btnResumeSession" type="button">Resume</button></div>';
     }
   } else if (mode === 'historical' && state && state.startedAt && state.endedAt) {
-    var histMs = new Date(state.endedAt).getTime() - new Date(state.startedAt).getTime();
-    h += '<div class="session-bar done"><div class="session-duration">Session: ' + fmtDuration(histMs) + '</div></div>';
+    h += '<div class="session-bar done"><div class="session-duration">Session: ' + fmtDuration(sessionElapsedMs(state)) + '</div></div>';
   }
 
   for (var ei = 0; ei < dayPlan.exercises.length; ei++) {
@@ -1527,12 +1539,11 @@ function buildAdHocDay(di) {
   // Session bar: ad-hoc always has a workoutId from the moment of creation,
   // so it starts on the running-timer state.
   if (state.startedAt && !state.endedAt) {
-    var elapsed = Date.now() - new Date(state.startedAt).getTime();
-    h += '<div class="session-bar"><div class="session-timer" id="sessionTimer">' + fmtElapsed(elapsed) + '</div>' +
+    h += '<div class="session-bar"><div class="session-timer" id="sessionTimer">' + fmtElapsed(sessionElapsedMs(state)) + '</div>' +
          '<button class="session-btn session-complete" id="btnCompleteSession">Complete Session</button></div>';
   } else if (state.startedAt && state.endedAt) {
-    var doneMs = new Date(state.endedAt).getTime() - new Date(state.startedAt).getTime();
-    h += '<div class="session-bar done"><div class="session-duration">Session: ' + fmtDuration(doneMs) + '</div></div>';
+    h += '<div class="session-bar done resumable"><div class="session-duration">Session: ' + fmtDuration(sessionElapsedMs(state)) + '</div>' +
+         '<button class="session-btn session-resume" id="btnResumeSession" type="button">Resume</button></div>';
   }
 
   var ts = 0, cs = 0;
@@ -2313,13 +2324,24 @@ function fmtDuration(ms) {
   return h > 0 ? (h + 'h ' + pad2(m) + 'm') : (m + 'm');
 }
 
+// Effective elapsed ms for a session: wall-clock from started_at to either
+// ended_at or now, minus any accumulated pause time. Works for both active
+// and completed sessions.
+function sessionElapsedMs(state, nowMs) {
+  if (!state || !state.startedAt) return 0;
+  var start = new Date(state.startedAt).getTime();
+  var end = state.endedAt ? new Date(state.endedAt).getTime() : (nowMs || Date.now());
+  var paused = state.pausedMs || 0;
+  return Math.max(0, end - start - paused);
+}
+
 function startTimerTick() {
   stopTimerTick();
   if (!todayState || !todayState.startedAt || todayState.endedAt) return;
   sessionTimerInterval = setInterval(function() {
     var el = document.getElementById('sessionTimer');
     if (!el) { stopTimerTick(); return; }
-    el.textContent = fmtElapsed(Date.now() - new Date(todayState.startedAt).getTime());
+    el.textContent = fmtElapsed(sessionElapsedMs(todayState));
   }, 1000);
 }
 
@@ -2330,11 +2352,7 @@ function stopTimerTick() {
 async function startSession(di) {
   if (viewModeFor(di) !== 'editable') return;
   var st = getOrInitToday(di);
-  if (st.workoutId && st.dayIndex !== di) {
-    showToast("Today's workout is on a different day", null);
-    return;
-  }
-  st.dayIndex = di;
+  if (!st) return;
   try {
     await ensureWorkout(di);
   } catch(err) {
@@ -2359,6 +2377,34 @@ async function completeSession() {
   }
   todayState.endedAt = now;
   stopTimerTick();
+  buildDay(currentDay);
+}
+
+// Un-complete a session — primarily for accidental "Complete Session" taps,
+// but also handles genuine pause/resume cycles (bathroom breaks, waiting for
+// equipment). started_at is preserved as the literal first-touch moment;
+// the gap between ended_at and now is added to paused_ms, which every timer
+// display subtracts. Multiple Complete/Resume cycles accumulate into the
+// same paused_ms field.
+async function resumeSession() {
+  if (!todayState || !todayState.workoutId) return;
+  if (!todayState.endedAt) return;  // already running
+  var endedAtMs = new Date(todayState.endedAt).getTime();
+  var gapMs = Math.max(0, Date.now() - endedAtMs);
+  var newPausedMs = (todayState.pausedMs || 0) + gapMs;
+  try {
+    var r = await sb.from('workouts').update({
+      ended_at: null,
+      paused_ms: newPausedMs,
+    }).eq('id', todayState.workoutId);
+    if (r.error) throw r.error;
+  } catch(err) {
+    console.error('resumeSession error:', err);
+    showToast("Couldn't resume session", function() { resumeSession(); });
+    return;
+  }
+  todayState.endedAt = null;
+  todayState.pausedMs = newPausedMs;
   buildDay(currentDay);
 }
 

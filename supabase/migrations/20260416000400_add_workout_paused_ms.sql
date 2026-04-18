@@ -1,0 +1,21 @@
+-- Track total paused milliseconds per workout so the displayed session
+-- timer can exclude pause gaps without mutating started_at.
+--
+-- A pause happens whenever the user taps Complete Session and then later
+-- taps Resume (primarily for accidental completions, but also any bathroom
+-- break / waiting-for-equipment scenario). Each resume adds
+--   (now - ended_at)
+-- to paused_ms. started_at stays as the literal moment of first set-touch
+-- per the DECISIONS.md semantic — paused_ms is the offset the UI and any
+-- future analytics apply.
+--
+-- Effective session duration for a completed workout:
+--   ended_at - started_at - paused_ms
+-- Effective elapsed for a running (no ended_at) workout:
+--   now - started_at - paused_ms
+--
+-- Historical rows default to paused_ms = 0, which makes their effective
+-- duration identical to the current (ended_at - started_at) — no backfill
+-- or behavior change for anything that's already been logged.
+
+alter table workouts add column paused_ms bigint not null default 0;
