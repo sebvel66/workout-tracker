@@ -79,6 +79,47 @@ html, body {
 
 .day-tabs-wrapper { padding-top: 6px; }
 
+.day-picker-row {
+  display: flex; gap: 8px; align-items: stretch;
+}
+.day-picker {
+  flex: 1; min-width: 0;
+  background: var(--surface2);
+  border: 2px solid var(--border);
+  color: var(--text);
+  font-family: 'Outfit', sans-serif;
+  font-size: 14px; font-weight: 600;
+  padding: 10px 34px 10px 14px;
+  border-radius: 10px;
+  outline: none;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  /* custom chevron since we killed the native appearance */
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path fill='%239898a4' d='M1 1l5 5 5-5'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+}
+.day-picker:focus { border-color: var(--accent); }
+.day-picker option { background: var(--surface2); color: var(--text); }
+.day-picker optgroup { color: var(--text3); font-family: 'JetBrains Mono', monospace; }
+
+.new-session-btn {
+  flex-shrink: 0;
+  background: var(--surface2);
+  border: 2px dashed var(--border);
+  color: var(--text2);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 18px; font-weight: 700;
+  padding: 0 16px;
+  border-radius: 10px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.new-session-btn:active {
+  background: var(--surface3); color: var(--text);
+}
+
 .day-tabs {
   display: flex;
   gap: 8px;
@@ -769,7 +810,10 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
     </div>
   </div>
   <div class="day-tabs-wrapper">
-    <div class="day-tabs" id="dayTabs"></div>
+    <div class="day-picker-row">
+      <select class="day-picker" id="dayPicker"></select>
+      <button class="new-session-btn" id="btnNewSession" type="button" title="New ad-hoc session">+</button>
+    </div>
   </div>
 </div>
 
@@ -928,7 +972,7 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
 // -----------------------------------------------------------------------------
 // Bump this on every deploy. Displayed at the bottom of the app so stale-
 // cache issues can be diagnosed from the client ("which version am I on?").
-var APP_VERSION = 'v2.0.0';
+var APP_VERSION = 'v2.0.1';
 
 var SUPABASE_URL = 'https://kgrmlgrzaxbwpkmziwxp.supabase.co';
 var SUPABASE_ANON_KEY = 'sb_publishable_Yh8YMh9yq0gQ77OD-oiQ1A_9MHS_6rB';
@@ -1068,31 +1112,21 @@ document.getElementById('customFormOverlay').addEventListener('click', function(
   if (e.target === this) closeCustomForm();
 });
 
-// TAB CLICKS
-document.getElementById('dayTabs').addEventListener('click', async function(e) {
-  var tab = e.target;
-  while (tab && tab !== this && !tab.classList.contains('day-tab')) {
-    tab = tab.parentElement;
-  }
-  if (!tab || !tab.classList.contains('day-tab')) return;
-  // "+ New Session" tab creates a fresh ad-hoc workout.
-  if (tab.hasAttribute('data-new-session')) {
-    await createAdHocSession();
-    return;
-  }
-  var idx = tab.getAttribute('data-day');
-  if (idx === null) return;
-  // Plan-day tabs carry integer data-day; ad-hoc tabs carry "ah_<uuid>".
-  var newDay = idx.indexOf('ah_') === 0 ? idx : parseInt(idx, 10);
+// Day picker (replaces the old horizontal tab strip).
+document.getElementById('dayPicker').addEventListener('change', async function(e) {
+  var v = e.target.value;
+  if (!v) return;
+  var newDay = v.indexOf('ah_') === 0 ? v : parseInt(v, 10);
   focusTab(newDay);
-  // Lazy-load historical only for plan-day tabs that don't match the current
-  // plan workout's dayIndex.
+  // Lazy-load historical only for plan-day tabs that don't have today's data
+  // and aren't cached yet.
   if (!isAdHocKey(currentDay) && !todayPlanStates[currentDay] && !historicalCache[currentDay]) {
     await loadHistorical(currentDay);
   }
   buildTabs();
   buildDay(currentDay);
 });
+document.getElementById('btnNewSession').addEventListener('click', createAdHocSession);
 
 // WORKOUT CONTAINER clicks
 document.getElementById('workoutContainer').addEventListener('click', function(e) {
@@ -1222,7 +1256,7 @@ async function hydrate() {
       document.getElementById('summaryBar').style.display = 'none';
       document.getElementById('planTitle').textContent = 'Workout Tracker';
       document.getElementById('planWeek').textContent = 'No plan loaded';
-      document.getElementById('dayTabs').innerHTML = '';
+      document.getElementById('dayPicker').innerHTML = '';
       return;
     }
     activePlanId = planRes.data.id;
@@ -1449,31 +1483,37 @@ function stateForDay(di) {
 
 // ---- Render ----
 function buildTabs() {
-  var el = document.getElementById('dayTabs');
-  if (!el) return;
-  if (!plan && todayAdHocs.length === 0) { el.innerHTML = ''; return; }
+  var sel = document.getElementById('dayPicker');
+  if (!sel) return;
   var h = '';
   if (plan) {
+    h += '<optgroup label="Plan days">';
     for (var i = 0; i < plan.days.length; i++) {
       var d = plan.days[i];
-      var cls = 'day-tab';
-      if (currentDay === i) cls += ' active';
       var planDayState = todayPlanStates[i];
       var hasToday = planDayState && Object.keys(planDayState.exercises || {}).length > 0;
-      if (hasToday || historicalCache[i]) cls += ' has-data';
-      h += '<button class="' + cls + '" data-day="' + i + '">' + (d.short || 'D' + (i+1)) + '</button>';
+      var hasData = hasToday || historicalCache[i];
+      var dot = hasData ? '● ' : '';
+      var label = d.short ? d.short + ' — ' + (d.name || '') : (d.name || 'Day ' + (i + 1));
+      var sel_attr = currentDay === i ? ' selected' : '';
+      h += '<option value="' + i + '"' + sel_attr + '>' + dot + escapeHtml(label) + '</option>';
     }
+    h += '</optgroup>';
   }
-  for (var j = 0; j < todayAdHocs.length; j++) {
-    var ah = todayAdHocs[j];
-    var cls2 = 'day-tab ad-hoc';
-    if (currentDay === 'ah_' + ah.workoutId) cls2 += ' active';
-    if (Object.keys(ah.exercises || {}).length > 0) cls2 += ' has-data';
-    var label = ah.title && ah.title.trim() ? ah.title.trim().slice(0, 10) : 'S' + (j + 1);
-    h += '<button class="' + cls2 + '" data-day="ah_' + ah.workoutId + '">' + escapeHtml(label) + '</button>';
+  if (todayAdHocs.length) {
+    h += '<optgroup label="Ad-hoc sessions">';
+    for (var j = 0; j < todayAdHocs.length; j++) {
+      var ah = todayAdHocs[j];
+      var hasAdData = Object.keys(ah.exercises || {}).length > 0;
+      var adDot = hasAdData ? '● ' : '';
+      var adLabel = ah.title && ah.title.trim() ? ah.title.trim() : 'Session ' + (j + 1);
+      var adKey = 'ah_' + ah.workoutId;
+      var adSel = currentDay === adKey ? ' selected' : '';
+      h += '<option value="' + adKey + '"' + adSel + '>' + adDot + 'S' + (j + 1) + ' — ' + escapeHtml(adLabel) + '</option>';
+    }
+    h += '</optgroup>';
   }
-  h += '<button class="day-tab new-session-tab" data-new-session type="button">+</button>';
-  el.innerHTML = h;
+  sel.innerHTML = h;
 }
 
 function buildDay(di) {
