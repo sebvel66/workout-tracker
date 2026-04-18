@@ -789,6 +789,15 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
 }
 .custom-form-actions .cancel { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
 .custom-form-actions .save { background: var(--accent2); color: #000; border: none; }
+.export-format-row { display: flex; gap: 8px; }
+.export-format-option {
+  flex: 1; display: flex; align-items: center; gap: 8px;
+  background: var(--surface2); border: 1px solid var(--border);
+  padding: 10px 12px; border-radius: 8px;
+  color: var(--text); font-size: 14px; cursor: pointer;
+  text-transform: none; letter-spacing: normal;
+}
+.export-format-option input { accent-color: var(--accent); }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
@@ -944,6 +953,33 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
   </div>
 </div>
 
+<div class="modal-overlay" id="exportOverlay">
+  <div class="modal">
+    <h3>Export workouts</h3>
+    <div class="custom-form">
+      <div>
+        <label for="exportStart">From</label>
+        <input type="date" id="exportStart">
+      </div>
+      <div>
+        <label for="exportEnd">To</label>
+        <input type="date" id="exportEnd">
+      </div>
+      <div>
+        <label>Format</label>
+        <div class="export-format-row">
+          <label class="export-format-option"><input type="radio" name="exportFormat" value="csv" checked> CSV</label>
+          <label class="export-format-option"><input type="radio" name="exportFormat" value="json"> JSON</label>
+        </div>
+      </div>
+    </div>
+    <div class="custom-form-actions">
+      <button class="cancel" id="btnExportCancel" type="button">Cancel</button>
+      <button class="save" id="btnExportRun" type="button">Export</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="historyOverlay">
   <div class="history-modal">
     <div class="history-header">
@@ -986,7 +1022,7 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
 // -----------------------------------------------------------------------------
 // Bump this on every deploy. Displayed at the bottom of the app so stale-
 // cache issues can be diagnosed from the client ("which version am I on?").
-var APP_VERSION = 'v2.0.2';
+var APP_VERSION = 'v2.0.3';
 
 var SUPABASE_URL = 'https://kgrmlgrzaxbwpkmziwxp.supabase.co';
 var SUPABASE_ANON_KEY = 'sb_publishable_Yh8YMh9yq0gQ77OD-oiQ1A_9MHS_6rB';
@@ -1060,7 +1096,12 @@ var historyPageSize = 20;
 document.getElementById('btnImport').addEventListener('click', function() {
   document.getElementById('importModal').classList.add('show');
 });
-document.getElementById('btnExport').addEventListener('click', exportData);
+document.getElementById('btnExport').addEventListener('click', openExportModal);
+document.getElementById('btnExportCancel').addEventListener('click', closeExportModal);
+document.getElementById('btnExportRun').addEventListener('click', runExport);
+document.getElementById('exportOverlay').addEventListener('click', function(e) {
+  if (e.target === this) closeExportModal();
+});
 document.getElementById('btnHistory').addEventListener('click', openHistory);
 document.getElementById('btnHistoryClose').addEventListener('click', closeHistory);
 document.getElementById('btnHistoryBack').addEventListener('click', backToHistoryList);
@@ -2932,68 +2973,204 @@ function handleImport(event) {
   event.target.value = '';
 }
 
-async function exportData() {
-  if (!plan || !activePlanId) { showToast('No plan loaded', null); return; }
+// ---- Export ----
+// Open the export modal, defaulting the range to the last 30 days (end = today).
+function openExportModal() {
+  var today = new Date();
+  var start = new Date(today); start.setDate(start.getDate() - 30);
+  document.getElementById('exportStart').value = localDateString(start);
+  document.getElementById('exportEnd').value = localDateString(today);
+  var radios = document.getElementsByName('exportFormat');
+  for (var i = 0; i < radios.length; i++) radios[i].checked = radios[i].value === 'csv';
+  document.getElementById('exportOverlay').classList.add('show');
+}
+
+function closeExportModal() {
+  document.getElementById('exportOverlay').classList.remove('show');
+}
+
+function exportCsvEscape(v) {
+  if (v == null) return '';
+  var s = String(v);
+  if (s.indexOf('"') !== -1 || s.indexOf(',') !== -1 || s.indexOf('\n') !== -1 || s.indexOf('\r') !== -1) {
+    return '"' + s.replace(/"/g, '""') + '"';
+  }
+  return s;
+}
+
+function downloadBlob(blob, filename) {
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a'); a.href = url; a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// Run the export. Queries every workout (plan + ad-hoc) with performed_at in
+// the selected [start, end) window and writes either CSV (one row per set)
+// or JSON (flat by workout with nested sets).
+async function runExport() {
+  var startVal = document.getElementById('exportStart').value;
+  var endVal = document.getElementById('exportEnd').value;
+  if (!startVal || !endVal) { showToast('Pick a start and end date', null); return; }
+  if (startVal > endVal) { showToast('Start date must be on or before end date', null); return; }
+  var format = 'csv';
+  var radios = document.getElementsByName('exportFormat');
+  for (var r = 0; r < radios.length; r++) if (radios[r].checked) format = radios[r].value;
+
+  // end is exclusive: add one day so the user's chosen end-date is inclusive.
+  var startDate = new Date(startVal + 'T00:00:00');
+  var endDateExclusive = new Date(endVal + 'T00:00:00');
+  endDateExclusive.setDate(endDateExclusive.getDate() + 1);
+
   try {
-    var wRes = await sb.from('workouts').select('*, sets(*)')
-      .eq('user_id', userId).eq('plan_id', activePlanId)
+    var wRes = await sb.from('workouts')
+      .select('*, sets(*, exercises(name, equipment, muscle_group, weight_mode))')
+      .eq('user_id', userId)
+      .gte('performed_at', startDate.toISOString())
+      .lt('performed_at', endDateExclusive.toISOString())
       .order('performed_at', { ascending: true });
-    if (wRes.error) { showToast('Export failed: ' + wRes.error.message, null); return; }
-    var obj = {
-      plan_title: plan.title, plan_week: plan.week,
-      exported_at: new Date().toISOString(),
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      days: [],
-    };
-    var byDay = {};
+    if (wRes.error) throw wRes.error;
+
     var rows = wRes.data || [];
+
+    // Pre-fetch any pinned plan blobs not yet cached so day_name and
+    // prescribed values can be resolved in one pass.
+    var uncachedPlanIds = {};
     for (var i = 0; i < rows.length; i++) {
-      if (byDay[rows[i].day_index] == null) byDay[rows[i].day_index] = [];
-      byDay[rows[i].day_index].push(rows[i]);
+      var pid = rows[i].plan_id;
+      if (pid && !planCache[pid]) uncachedPlanIds[pid] = true;
     }
-    for (var di = 0; di < plan.days.length; di++) {
-      var day = plan.days[di];
-      var ws = byDay[di] || [];
-      var latest = ws.length ? ws[ws.length - 1] : null;
-      var state = latest ? stateFromWorkout(latest) : null;
-      var d = {
-        day_number: di + 1, day_name: day.name,
-        logged_date: latest ? latest.performed_at : null,
-        exercises: [],
-      };
-      for (var ei = 0; ei < day.exercises.length; ei++) {
-        var ex = day.exercises[ei];
-        var exState = state && state.exercises['ex_' + ei];
-        var x = {
-          name: ex.name,
-          substituted_with: (exState && exState.sub) || null,
-          rpe: (exState && exState.rpe != null) ? exState.rpe : null,
-          note: (exState && exState.note) || null,
-          sets: [],
-        };
-        for (var si = 0; si < ex.sets.length; si++) {
-          var set = ex.sets[si], sl = (exState && exState.sets[si]) || {};
-          x.sets.push({
-            prescribed_weight: set.weight,
-            prescribed_reps: set.reps_target || set.reps_range,
-            prescribed_rest: set.rest,
-            actual_weight: sl.weight != null ? sl.weight : null,
-            actual_reps: sl.reps != null ? sl.reps : null,
-            completed: !!sl.done,
-            unit: set.unit || 'lbs',
-          });
+    var planIdList = Object.keys(uncachedPlanIds);
+    if (planIdList.length) {
+      var pr = await sb.from('plans').select('id, title, data').in('id', planIdList);
+      if (pr.data) {
+        for (var p = 0; p < pr.data.length; p++) {
+          planCache[pr.data[p].id] = pr.data[p].data;
+          // Stash title too so CSV/JSON can show it even when the plan isn't active.
+          planCache[pr.data[p].id]._title = pr.data[p].title;
         }
-        d.exercises.push(x);
       }
-      obj.days.push(d);
     }
-    var blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
-    var url = URL.createObjectURL(blob);
-    var a = document.createElement('a'); a.href = url;
-    a.download = 'workout-export-' + new Date().toISOString().slice(0,10) + '.json';
-    a.click(); URL.revokeObjectURL(url);
+
+    var filenameBase = 'workout-export-' + startVal + '-to-' + endVal;
+    if (format === 'json') {
+      var payload = {
+        exported_at: new Date().toISOString(),
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        range: { start: startVal, end: endVal },
+        workouts: rows.map(function(w) {
+          var planBlob = w.plan_id ? planCache[w.plan_id] : null;
+          var dayPlan = (planBlob && planBlob.days && planBlob.days[w.day_index]) || null;
+          var duration = (w.started_at && w.ended_at)
+            ? (new Date(w.ended_at).getTime() - new Date(w.started_at).getTime() - (w.paused_ms || 0))
+            : null;
+          return {
+            workout_id: w.id,
+            performed_at: w.performed_at,
+            started_at: w.started_at,
+            ended_at: w.ended_at,
+            paused_ms: w.paused_ms || 0,
+            duration_ms: duration,
+            is_ad_hoc: w.plan_id === null,
+            plan_id: w.plan_id,
+            plan_title: planBlob ? (planBlob.title || planBlob._title || null) : null,
+            day_index: w.day_index,
+            day_name: dayPlan ? dayPlan.name : null,
+            title: w.title || null,
+            sets: (w.sets || [])
+              .slice()
+              .sort(function(a, b) {
+                if (a.exercise_order !== b.exercise_order) return a.exercise_order - b.exercise_order;
+                return a.set_order - b.set_order;
+              })
+              .map(function(s) {
+                var ex = s.exercises || {};
+                return {
+                  exercise_name: ex.name || null,
+                  equipment: ex.equipment || null,
+                  muscle_group: ex.muscle_group || null,
+                  weight_mode: ex.weight_mode || null,
+                  exercise_order: s.exercise_order,
+                  set_order: s.set_order,
+                  prescribed_weight: s.prescribed_weight,
+                  prescribed_reps: s.prescribed_reps,
+                  actual_weight: s.weight,
+                  actual_reps: s.reps,
+                  rpe: s.rpe,
+                  done: !!s.done,
+                  completed_at: s.completed_at,
+                  substitution: s.substitution,
+                  note: s.note,
+                };
+              }),
+          };
+        }),
+      };
+      downloadBlob(
+        new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }),
+        filenameBase + '.json'
+      );
+    } else {
+      var cols = [
+        'performed_at', 'plan_title', 'day_name', 'is_ad_hoc', 'workout_title',
+        'exercise_name', 'equipment', 'muscle_group', 'weight_mode',
+        'exercise_order', 'set_order',
+        'prescribed_weight', 'prescribed_reps',
+        'actual_weight', 'actual_reps',
+        'rpe', 'done', 'completed_at', 'substitution', 'note',
+        'session_duration_ms',
+      ];
+      var lines = [cols.join(',')];
+      for (var k = 0; k < rows.length; k++) {
+        var w = rows[k];
+        var planBlob = w.plan_id ? planCache[w.plan_id] : null;
+        var dayPlan = (planBlob && planBlob.days && planBlob.days[w.day_index]) || null;
+        var planTitle = planBlob ? (planBlob.title || planBlob._title || '') : '';
+        var dayName = dayPlan ? dayPlan.name : '';
+        var duration = (w.started_at && w.ended_at)
+          ? (new Date(w.ended_at).getTime() - new Date(w.started_at).getTime() - (w.paused_ms || 0))
+          : '';
+        var sets = (w.sets || []).slice().sort(function(a, b) {
+          if (a.exercise_order !== b.exercise_order) return a.exercise_order - b.exercise_order;
+          return a.set_order - b.set_order;
+        });
+        for (var m = 0; m < sets.length; m++) {
+          var s = sets[m];
+          var ex = s.exercises || {};
+          var row = [
+            w.performed_at,
+            planTitle,
+            dayName,
+            w.plan_id === null ? 'true' : 'false',
+            w.title || '',
+            ex.name || '',
+            ex.equipment || '',
+            ex.muscle_group || '',
+            ex.weight_mode || '',
+            s.exercise_order,
+            s.set_order,
+            s.prescribed_weight != null ? s.prescribed_weight : '',
+            s.prescribed_reps != null ? s.prescribed_reps : '',
+            s.weight != null ? s.weight : '',
+            s.reps != null ? s.reps : '',
+            s.rpe != null ? s.rpe : '',
+            s.done ? 'true' : 'false',
+            s.completed_at || '',
+            s.substitution || '',
+            s.note || '',
+            duration,
+          ].map(exportCsvEscape).join(',');
+          lines.push(row);
+        }
+      }
+      downloadBlob(
+        new Blob([lines.join('\n')], { type: 'text/csv' }),
+        filenameBase + '.csv'
+      );
+    }
+    closeExportModal();
   } catch(err) {
-    console.error(err);
+    console.error('runExport error:', err);
     showToast('Export failed: ' + err.message, null);
   }
 }
