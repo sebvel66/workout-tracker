@@ -30,5 +30,4 @@ Consolidated from HANDOFF.md and DECISIONS.md as of 2026-04-16. Nothing new here
 
 ## Known limitations to fix (v1.1)
 
-- **Multi-tab duplicate workouts.** Two tabs can each create a `workouts` row for the same day before either persists. *Fix specified:* generated `performed_on date` column on `workouts` plus a partial unique index on `(user_id, day_index, performed_on)`.
-- **First-insert retry dup.** Network flake on the first `workouts` insert can't distinguish "never persisted" from "response lost," so retry can dup. *Fix specified:* same unique index as multi-tab — one fix resolves both.
+*(No open v1.1 limitations right now — all previously documented items have been addressed. Keep adding here as new ones surface.)*

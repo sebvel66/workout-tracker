@@ -1211,6 +1211,20 @@ function sessionBounds() {
   return { start: start, end: end };
 }
 
+function localDateString(date) {
+  var y = date.getFullYear();
+  var m = String(date.getMonth() + 1); if (m.length < 2) m = '0' + m;
+  var d = String(date.getDate()); if (d.length < 2) d = '0' + d;
+  return y + '-' + m + '-' + d;
+}
+
+// Canonical "today" date string (YYYY-MM-DD in the user's local timezone)
+// for writing to workouts.performed_on. Matches the sessionBounds snapshot
+// so the DB uniqueness key lines up with what hydrate treats as today.
+function sessionTodayDateString() {
+  return localDateString(sessionTodayStart || dayBounds(new Date()).start);
+}
+
 function stateFromWorkout(row) {
   var state = {
     workoutId: row.id, planId: row.plan_id, dayIndex: row.day_index,
@@ -1698,10 +1712,30 @@ async function ensureWorkout(di) {
   var st = getOrInitToday(di);
   if (st.workoutId) return st.workoutId;
   var now = new Date().toISOString();
+  var performedOn = sessionTodayDateString();
   var res = await sb.from('workouts').insert({
     user_id: userId, plan_id: activePlanId, day_index: di,
     performed_at: now, started_at: now,
+    performed_on: performedOn,
   }).select().single();
+  // 23505 = unique_violation. Means another tab or a retried insert already
+  // created the row for (user_id, plan_id, day_index, performed_on) — the
+  // partial unique index is defending against exactly this. Re-query the
+  // existing row and adopt it instead of creating a duplicate.
+  if (res.error && res.error.code === '23505') {
+    var lookup = await sb.from('workouts').select('*')
+      .eq('user_id', userId)
+      .eq('plan_id', activePlanId)
+      .eq('day_index', di)
+      .eq('performed_on', performedOn)
+      .maybeSingle();
+    if (lookup.error || !lookup.data) throw res.error;
+    st.workoutId = lookup.data.id;
+    st.planId = activePlanId;
+    st.dayIndex = di;
+    st.startedAt = lookup.data.started_at || now;
+    return st.workoutId;
+  }
   if (res.error) throw res.error;
   st.workoutId = res.data.id;
   st.planId = activePlanId;
@@ -2008,9 +2042,12 @@ async function createAdHocSession() {
     // title is omitted from the insert so this works even if the title
     // column migration hasn't been applied yet. Postgres defaults unspecified
     // nullable columns to NULL, which matches the intended initial state.
+    // performed_on uses the user-local date so the row's calendar date
+    // lines up with what the app considers "today" for hydration.
     var res = await sb.from('workouts').insert({
       user_id: userId, plan_id: null, day_index: null,
       performed_at: now, started_at: now,
+      performed_on: sessionTodayDateString(),
     }).select().single();
     if (res.error) throw res.error;
     var adState = {
