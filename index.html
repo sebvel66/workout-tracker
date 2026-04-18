@@ -840,6 +840,13 @@ var restSeconds = 0;
 var sessionTimerInterval = null;
 var hydratedForUser = null;
 
+// sessionTodayStart: snapshot of "today's midnight" taken once per hydrate.
+// Reused everywhere that needs to determine the today/historical boundary,
+// so a session that straddles midnight doesn't silently slip the boundary
+// underfoot and relabel already-logged sets as a new day. Reset on sign-out
+// and re-taken on the next hydrate (sign-in or reload).
+var sessionTodayStart = null;
+
 // todayPlanStates: map of plan-based workouts for today, keyed by day_index.
 // Each plan-day tab independently tracks its own today-workout, so a user
 // can log Monday and Tuesday back-to-back on the same calendar date. Each
@@ -1058,6 +1065,10 @@ document.getElementById('workoutContainer').addEventListener('change', function(
 // ---- Hydration ----
 async function hydrate() {
   try {
+    // Snapshot the today-boundary once per hydrate. Subsequent in-session
+    // reads go through sessionBounds() and see the same answer even if
+    // the calendar rolls over mid-workout.
+    sessionTodayStart = dayBounds(new Date()).start;
     var ures = await sb.auth.getUser();
     if (!ures.data || !ures.data.user) return;
     userId = ures.data.user.id;
@@ -1085,7 +1096,7 @@ async function hydrate() {
     await loadExerciseLibrary();
     await loadRecentExercises();
 
-    var bounds = dayBounds(new Date());
+    var bounds = sessionBounds();
     var wRes = await sb.from('workouts').select('*, sets(*)')
       .eq('user_id', userId)
       .gte('performed_at', bounds.start.toISOString())
@@ -1191,6 +1202,15 @@ function dayBounds(date) {
   return { start: start, end: end };
 }
 
+// Session-stable today window. sessionTodayStart is snapshotted at the top
+// of hydrate; any caller that needs the today/past boundary uses this helper
+// so mid-session midnight crossings don't change the answer.
+function sessionBounds() {
+  var start = sessionTodayStart || dayBounds(new Date()).start;
+  var end = new Date(start); end.setDate(end.getDate() + 1);
+  return { start: start, end: end };
+}
+
 function stateFromWorkout(row) {
   var state = {
     workoutId: row.id, planId: row.plan_id, dayIndex: row.day_index,
@@ -1233,7 +1253,7 @@ function stateFromWorkout(row) {
 async function loadHistorical(di) {
   if (historicalCache[di]) return historicalCache[di];
   try {
-    var bounds = dayBounds(new Date());
+    var bounds = sessionBounds();
     var res = await sb.from('workouts').select('*, sets(*)')
       .eq('user_id', userId).eq('day_index', di)
       .lt('performed_at', bounds.start.toISOString())
@@ -2198,7 +2218,12 @@ function showToast(msg, retryFn) {
     if (retryFn) retryFn();
   });
   stack.appendChild(el);
-  setTimeout(function() { dismissToast(id); }, 9000);
+  // Toasts that offer a retry (i.e. a write failed and the user needs to
+  // react) stay visible until the user taps them. Plain informational toasts
+  // auto-dismiss after ~18s so they're not missed mid-set but don't linger.
+  if (!retryFn) {
+    setTimeout(function() { dismissToast(id); }, 18000);
+  }
 }
 function dismissToast(id) {
   var el = document.querySelector('.toast[data-id="' + id + '"]');
@@ -2463,6 +2488,7 @@ function applySession(session) {
   } else {
     hydratedForUser = null;
     stopTimerTick();
+    sessionTodayStart = null;
     todayPlanStates = {};
     todayAdHocs = [];
     exerciseLibrary = [];

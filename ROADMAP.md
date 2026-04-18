@@ -19,7 +19,6 @@ Consolidated from HANDOFF.md and DECISIONS.md as of 2026-04-16. Nothing new here
 - **Ad-hoc sessions without an active plan.** Right now the tab strip (including the "+ New Session" button) only renders when an active plan exists, so a user without a plan can't start an ad-hoc. Rework the empty-state flow so ad-hoc is always accessible. *Idea only.*
 - **Rename and delete ad-hoc sessions.** Title can be set once via the input at the top of the session, but there's no way to rename after first save other than re-editing, and no way to delete an accidentally-created ad-hoc session. Add explicit rename/delete affordances. *Idea only.*
 - **Undoable toast for delete.** Set and exercise delete currently use a blocking `confirm()` dialog for persisted items. An undoable-toast pattern ("Set deleted — Undo") would be nicer mobile UX but adds complexity (queue, re-insert with original set_order, fan-out restore). *Idea only* — post-v1 polish.
-- **Longer toast persistence.** Bump auto-dismiss from 9s to ~20s, or make error toasts sticky-until-dismissed. *Idea only.* **Quick fix** — one constant change. Error toasts specifically should persist until manually dismissed rather than auto-dismissing.
 - **Plan editing in-app.** Listed as a v1 non-goal. *Idea only* — no design.
 - **Historical analytics UI.** Listed as a v1 non-goal. *Idea only* — no design.
 - **Custom domain SMTP sender.** Currently using shared `onboarding@resend.dev`. Upgrading to a custom domain is optional polish for post-v1. *Idea only*, noted in HANDOFF.md → "Done."
@@ -31,8 +30,5 @@ Consolidated from HANDOFF.md and DECISIONS.md as of 2026-04-16. Nothing new here
 
 ## Known limitations to fix (v1.1)
 
-All four are documented in HANDOFF.md → "Known v1 limitations" with the specific fix named.
-
 - **Multi-tab duplicate workouts.** Two tabs can each create a `workouts` row for the same day before either persists. *Fix specified:* generated `performed_on date` column on `workouts` plus a partial unique index on `(user_id, day_index, performed_on)`.
 - **First-insert retry dup.** Network flake on the first `workouts` insert can't distinguish "never persisted" from "response lost," so retry can dup. *Fix specified:* same unique index as multi-tab — one fix resolves both.
-- **Midnight boundary drift.** "Today" is computed on every write/hydrate via `new Date()`, so a session straddling midnight can log late sets under a new day. *Fix specified:* snapshot `todayStart` on hydration and hold it steady in memory for the session.
