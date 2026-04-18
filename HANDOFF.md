@@ -4,15 +4,22 @@ Context for a fresh Claude Code instance picking up v1 (cross-device persistence
 
 ## Next session pickup
 
-v1 is complete and pushed through commit `0724324`. The whole pre-v1 plan — schema + migrations, magic-link auth gate, localStorage → Supabase data-layer rewrite, `#emptyState` crash fix, and alert-to-toast cleanup — is in `origin/main` and verified end-to-end. `BUG-TEST-13.md` has the root-cause writeup from the crash caught during testing.
+**All of Session A (v1 + v1.1 polish) shipped and pushed.** App is `v2.0.0` per the bottom-right footer. Feature checklist from Session A is complete:
 
-Forward-looking work is tracked in [`ROADMAP.md`](ROADMAP.md), grouped by AI/coaching, UX, data model, and known v1.1 limitations. Items flagged high priority there:
+- Auto-populate prescribed values on done-tap.
+- Session start / complete with visible timer; Resume button un-completes (via `paused_ms` offset so `started_at` stays literal).
+- Exercise library (taxonomy, ~200 seed exercises, picker modal with search + chips + recents + custom-exercise creation).
+- Ad-hoc off-plan sessions with their own tabs, titles, timers.
+- Multi-day-per-calendar (every plan day independently editable today).
+- Weight-mode display (per-side, added-wt, no-weight).
+- Delete × for user-added sets and exercise cards.
+- Historical session browser (modal, paginated, plan + ad-hoc combined, today's completed sessions surface immediately).
 
-- **"Done = did as prescribed" shortcut** — cuts the most common unnecessary data entry at the gym.
-- **Browse historical weeks** — prerequisite for meaningful AI coaching context.
-- **Longer / sticky error toasts** — one-constant fix; error toasts should persist until dismissed.
+**All v1.1 known-limitations are closed.** Multi-tab / retry dup (partial unique index), midnight drift (`sessionTodayStart` snapshot), one-editable-tab-per-calendar (`todayPlanStates` map), and ad-hoc resume semantics (`paused_ms`) all landed.
 
-Four v1.1 limitation fixes are documented in "Known v1 limitations" below with specific mitigations already named (multi-tab dup, first-insert retry dup, midnight boundary drift, one-editable-tab-per-day).
+**Forward-looking work** is in [`ROADMAP.md`](ROADMAP.md). Nothing critical is blocking; remaining items are post-v1 polish (rest timer controls, rename/delete ad-hoc sessions, undoable delete, old-plan banner on import day) plus the big Session B scope: **AI-generated workouts and progression analytics**. The v1 schema was explicitly built to support that without further migrations — per-set RPE, prescribed-vs-actual columns, `completed_at` semantics, and now `paused_ms` for accurate session duration are all already in place.
+
+Latest architectural decisions worth reviewing before Session B kicks off: [`DECISIONS.md`](DECISIONS.md) entries for `paused_ms` and the `(user_id, plan_id, day_index, performed_on)` unique index — both non-obvious choices that future analytics queries should respect.
 
 ## Where we left off (2026-04-12 session)
 
@@ -167,10 +174,12 @@ Indexes target three expected query shapes: "all sets for exercise X over time,"
 
 ## Known v1 limitations
 
-- **Multi-tab duplicate workouts.** Two browser tabs open on the same day could each independently hit "first set done" before either has persisted a `workouts` row, producing two rows for the same day. Single-tab use is safe — the in-memory `currentWorkoutId` guard prevents it within a tab. Mitigation deferred to v1.1 via a generated `performed_on date` column on `workouts` plus a partial unique index on `(user_id, day_index, performed_on)`. Documented here so future-me doesn't debug it fresh if it ever surfaces.
-- **First-insert retry dup.** If the very first `workouts` insert of a session fails mid-flight (network flake) and the user retries, the retry can't distinguish "never persisted" from "persisted but response lost," so a duplicate row is possible. Narrow failure window; worst case is one stray workouts row that's easy to detect and delete. Same class as the multi-tab limitation — both resolved by the v1.1 unique index.
-- **Midnight boundary drift.** "Today" is computed on every write/hydrate via `new Date()`, so a session that straddles midnight could see the boundary slip and log the late sets as a new day. Unlikely in practice; fix for v1.1 is to snapshot `todayStart` on hydration and hold it steady in memory for the session.
-- **One editable tab per calendar day.** Current rule: `todayState` is pinned to the first `day_index` the user taps "done" on, and every other tab flips to disabled until the calendar rolls over. This blocks logging two different day_index workouts on the same calendar date (e.g., doing Monday in the morning and Tuesday at night). v1.1 candidate: loosen the rule to one editable tab per `(date, day_index)` pair so each tab independently tracks its own today-workout. Roughly a 10-line change to `hydrate()` and `viewModeFor()`.
+*(All previously documented limitations are closed.)*
+
+**Resolved in Session A:**
+- Multi-tab / first-insert retry dup → partial unique index on `(user_id, plan_id, day_index, performed_on)` + client 23505 re-query. See `DECISIONS.md`.
+- Midnight boundary drift → `sessionTodayStart` snapshotted at hydrate, used by everything via `sessionBounds()` / `sessionTodayDateString()`.
+- One editable tab per calendar day → `todayPlanStates` is now a map keyed by dayIndex, so every plan day tab independently tracks its own today-workout.
 
 ## Pre-deploy tasks
 

@@ -2,6 +2,41 @@
 
 Running log of architecture/behavior decisions for the workout tracker. Newest first.
 
+## 2026-04-17 — Session pause/resume via `paused_ms` offset column
+
+When a user pauses a session (Complete Session tap, often accidental) and later resumes, the displayed timer must pick up at the same elapsed value it showed at pause — not the wall-clock since `started_at`, which would include the pause gap. Two approaches considered:
+
+- **Shift `started_at` forward by the pause duration.** Simple, no schema change, but mutates a field DECISIONS.md already committed to as "the literal moment of first set-touch." Breaks the semantic across any subsequent analysis that relied on start timestamps.
+- **Separate `paused_ms bigint` offset column.** Adds a column, accumulates pause gaps, every display subtracts it. Preserves `started_at` as literal.
+
+Chose the offset column ([supabase/migrations/20260416000400_add_workout_paused_ms.sql](supabase/migrations/20260416000400_add_workout_paused_ms.sql)).
+
+**How to apply:**
+- On Resume: add `(now - ended_at)` to `paused_ms`, clear `ended_at`, persist both. `started_at` stays untouched.
+- Every timer / duration display uses `sessionElapsedMs(state)` which computes `(ended_at || now) - started_at - paused_ms`.
+- Multiple Complete → Resume cycles accumulate into the same column.
+- Historical rows default to `paused_ms = 0`; their effective duration is unchanged.
+
+## 2026-04-16 — Per-plan dup prevention: `performed_on` + partial unique index on `(user_id, plan_id, day_index, performed_on)`
+
+Closes two limitations (multi-tab duplicate workouts, first-insert retry dup) with one DB-level constraint.
+
+**Shape that works:**
+```sql
+create unique index workouts_plan_day_once_per_date
+  on workouts (user_id, plan_id, day_index, performed_on)
+  where plan_id is not null;
+```
+
+Ad-hoc workouts (plan_id NULL) are intentionally excluded so "+ New Session" can create many per day.
+
+**Why the key includes `plan_id`:** the first pass omitted it and keyed on `(user_id, day_index, performed_on)` only. That was too strict — it blocked a user from starting a new-plan workout on the same calendar day that already had an old-plan workout, which collides with the Feature 3 mid-day-import behavior (old-plan workouts are kept in the DB marked historical while the newly active plan takes over). Including `plan_id` still catches the actual race cases (multi-tab and retry both race within a single plan_id) while allowing legitimate plan-switch-mid-day inserts. Corrected in [supabase/migrations/20260417000000_fix_workout_uniqueness_per_plan.sql](supabase/migrations/20260417000000_fix_workout_uniqueness_per_plan.sql).
+
+**How to apply:**
+- Client always sends `performed_on` on insert (user-local `YYYY-MM-DD` from `sessionTodayDateString()`, tied to the hydration snapshot).
+- On Postgres error `23505` (unique_violation) during insert, the client re-queries by `(user_id, plan_id, day_index, performed_on)` and adopts the existing row instead of creating a duplicate.
+- `current_date` is set as the column DEFAULT as a server-side fallback for any row inserted outside the app flow.
+
 ## 2026-04-12 — Active plan uniqueness
 
 At most one `plans` row per user may have `is_active = true`, enforced at the database level via a partial unique index:
