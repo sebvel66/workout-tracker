@@ -366,6 +366,16 @@ html, body {
   background: var(--surface3); border: 1px solid var(--border); color: var(--text2);
   font-family: 'Outfit', sans-serif; font-size: 13px; padding: 8px 20px; border-radius: 8px; cursor: pointer;
 }
+.rest-timer-controls {
+  display: flex; gap: 10px; align-items: center; justify-content: center;
+}
+.rest-timer-adjust {
+  background: transparent; border: 1px solid var(--border); color: var(--text2);
+  font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600;
+  padding: 8px 12px; border-radius: 8px; cursor: pointer; min-width: 56px;
+  -webkit-tap-highlight-color: transparent;
+}
+.rest-timer-adjust:active { background: var(--surface2); color: var(--text); }
 
 .rest-timer-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 299; display: none; }
 .rest-timer-overlay.show { display: block; }
@@ -954,7 +964,11 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
 <div class="rest-timer" id="restTimer">
   <div class="rest-timer-time" id="restTime">0:00</div>
   <div class="rest-timer-label">Rest Period</div>
-  <button class="rest-timer-btn" id="btnStopRest">Skip</button>
+  <div class="rest-timer-controls">
+    <button class="rest-timer-adjust" id="btnRestMinus" type="button">−15s</button>
+    <button class="rest-timer-btn" id="btnStopRest">Skip</button>
+    <button class="rest-timer-adjust" id="btnRestPlus" type="button">+15s</button>
+  </div>
 </div>
 
 <script>
@@ -972,7 +986,7 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
 // -----------------------------------------------------------------------------
 // Bump this on every deploy. Displayed at the bottom of the app so stale-
 // cache issues can be diagnosed from the client ("which version am I on?").
-var APP_VERSION = 'v2.0.1';
+var APP_VERSION = 'v2.0.2';
 
 var SUPABASE_URL = 'https://kgrmlgrzaxbwpkmziwxp.supabase.co';
 var SUPABASE_ANON_KEY = 'sb_publishable_Yh8YMh9yq0gQ77OD-oiQ1A_9MHS_6rB';
@@ -1075,6 +1089,14 @@ document.getElementById('importModal').addEventListener('click', function(e) {
 document.getElementById('btnRest').addEventListener('click', function() { startRestTimer(90); });
 document.getElementById('btnStopRest').addEventListener('click', stopRestTimer);
 document.getElementById('restOverlay').addEventListener('click', stopRestTimer);
+document.getElementById('btnRestPlus').addEventListener('click', function() {
+  if (restInterval) { restSeconds += 15; updateRestDisplay(); }
+});
+document.getElementById('btnRestMinus').addEventListener('click', function() {
+  if (!restInterval) return;
+  restSeconds = Math.max(5, restSeconds - 15);
+  updateRestDisplay();
+});
 
 // Exercise picker listeners
 document.getElementById('btnPickerClose').addEventListener('click', closePicker);
