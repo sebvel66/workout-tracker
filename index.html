@@ -408,6 +408,34 @@ body.unauthed #emptyState { display: none !important; }
 @keyframes toastIn { from { transform: translateY(8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 
 input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: default; }
+
+.session-btn.session-start {
+  display: block; width: 100%; margin-bottom: 16px;
+  background: var(--accent2); color: #000; border: none;
+  font-family: 'Outfit', sans-serif; font-size: 14px; font-weight: 600;
+  padding: 14px; border-radius: 10px; cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.session-bar {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 12px 14px; margin-bottom: 16px;
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
+}
+.session-bar.done { justify-content: center; border-color: rgba(74, 222, 128, 0.3); }
+.session-timer {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 20px; font-weight: 700; color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.session-duration {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px; font-weight: 600; color: var(--text2);
+}
+.session-btn.session-complete {
+  background: var(--surface2); color: var(--text); border: 1px solid var(--border);
+  font-family: 'Outfit', sans-serif; font-size: 12px; font-weight: 600;
+  padding: 8px 14px; border-radius: 8px; cursor: pointer; flex-shrink: 0;
+}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
@@ -514,6 +542,7 @@ var plan = null;              // active plan's data blob
 var currentDay = 0;
 var restInterval = null;
 var restSeconds = 0;
+var sessionTimerInterval = null;
 var hydratedForUser = null;
 
 // todayState: { workoutId, planId, dayIndex, exercises: { ex_<ei>: { rpe, note, sub, sets: [{setId, weight, reps, done, startedAt, completedAt, exerciseId}] } } }
@@ -569,6 +598,19 @@ document.getElementById('workoutContainer').addEventListener('click', function(e
   if (header) {
     var card = header.parentElement;
     if (card) card.classList.toggle('expanded');
+    return;
+  }
+  // Session start/complete
+  var startBtn = target.closest ? target.closest('#btnStartSession') : null;
+  if (startBtn) {
+    if (startBtn.disabled) return;
+    startSession(currentDay);
+    return;
+  }
+  var completeBtn = target.closest ? target.closest('#btnCompleteSession') : null;
+  if (completeBtn) {
+    if (completeBtn.disabled) return;
+    completeSession();
     return;
   }
   // Set check
@@ -691,7 +733,11 @@ function dayBounds(date) {
 }
 
 function stateFromWorkout(row) {
-  var state = { workoutId: row.id, planId: row.plan_id, dayIndex: row.day_index, exercises: {} };
+  var state = {
+    workoutId: row.id, planId: row.plan_id, dayIndex: row.day_index,
+    startedAt: row.started_at, endedAt: row.ended_at,
+    exercises: {}
+  };
   var sets = row.sets || [];
   for (var i = 0; i < sets.length; i++) {
     var s = sets[i];
@@ -778,6 +824,23 @@ function buildDay(di) {
   var h = '<div class="day-header"><h2>' + escapeHtml(dayPlan.name) + modeLabel + '</h2>' +
           '<div class="day-meta">' + (dayPlan.sets_total || '') + ' · ' + (dayPlan.duration || '') + '</div></div>';
 
+  // Session bar: Start button → running timer + Complete button → final duration text.
+  if (mode === 'editable') {
+    if (!todayState || !todayState.workoutId) {
+      h += '<button class="session-btn session-start" id="btnStartSession">Start Session</button>';
+    } else if (todayState.startedAt && !todayState.endedAt) {
+      var elapsed = Date.now() - new Date(todayState.startedAt).getTime();
+      h += '<div class="session-bar"><div class="session-timer" id="sessionTimer">' + fmtElapsed(elapsed) + '</div>' +
+           '<button class="session-btn session-complete" id="btnCompleteSession">Complete Session</button></div>';
+    } else if (todayState.startedAt && todayState.endedAt) {
+      var doneMs = new Date(todayState.endedAt).getTime() - new Date(todayState.startedAt).getTime();
+      h += '<div class="session-bar done"><div class="session-duration">Session: ' + fmtDuration(doneMs) + '</div></div>';
+    }
+  } else if (mode === 'historical' && state && state.startedAt && state.endedAt) {
+    var histMs = new Date(state.endedAt).getTime() - new Date(state.startedAt).getTime();
+    h += '<div class="session-bar done"><div class="session-duration">Session: ' + fmtDuration(histMs) + '</div></div>';
+  }
+
   for (var ei = 0; ei < dayPlan.exercises.length; ei++) {
     var ex = dayPlan.exercises[ei];
     var ek = 'ex_' + ei;
@@ -833,6 +896,13 @@ function buildDay(di) {
   document.getElementById('setsComplete').textContent = cs;
   document.getElementById('setsTotal').textContent = ts;
   document.getElementById('dayProgress').textContent = ts > 0 ? Math.round((cs / ts) * 100) + '%' : '0%';
+
+  // Manage the session timer ticker based on the rendered state.
+  if (mode === 'editable' && todayState && todayState.startedAt && !todayState.endedAt && todayState.dayIndex === di) {
+    startTimerTick();
+  } else {
+    stopTimerTick();
+  }
 }
 
 function escapeHtml(s) { return String(s == null ? '' : s).replace(/[&<>]/g, function(c){ return c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;'; }); }
@@ -899,6 +969,7 @@ async function ensureWorkout(di) {
   st.workoutId = res.data.id;
   st.planId = activePlanId;
   st.dayIndex = di;
+  st.startedAt = now;
   return st.workoutId;
 }
 
@@ -1069,6 +1140,73 @@ function dismissToast(id) {
   if (el) el.remove();
 }
 
+// ---- Session timer ----
+function fmtElapsed(ms) {
+  var s = Math.max(0, Math.floor(ms / 1000));
+  var h = Math.floor(s / 3600);
+  var m = Math.floor((s % 3600) / 60);
+  var sec = s % 60;
+  var pad = function(n) { return n < 10 ? '0' + n : '' + n; };
+  return h > 0 ? (h + ':' + pad(m) + ':' + pad(sec)) : (pad(m) + ':' + pad(sec));
+}
+
+function fmtDuration(ms) {
+  var s = Math.max(0, Math.floor(ms / 1000));
+  var h = Math.floor(s / 3600);
+  var m = Math.floor((s % 3600) / 60);
+  var pad2 = function(n) { return n < 10 ? '0' + n : '' + n; };
+  return h > 0 ? (h + 'h ' + pad2(m) + 'm') : (m + 'm');
+}
+
+function startTimerTick() {
+  stopTimerTick();
+  if (!todayState || !todayState.startedAt || todayState.endedAt) return;
+  sessionTimerInterval = setInterval(function() {
+    var el = document.getElementById('sessionTimer');
+    if (!el) { stopTimerTick(); return; }
+    el.textContent = fmtElapsed(Date.now() - new Date(todayState.startedAt).getTime());
+  }, 1000);
+}
+
+function stopTimerTick() {
+  if (sessionTimerInterval) { clearInterval(sessionTimerInterval); sessionTimerInterval = null; }
+}
+
+async function startSession(di) {
+  if (viewModeFor(di) !== 'editable') return;
+  var st = getOrInitToday(di);
+  if (st.workoutId && st.dayIndex !== di) {
+    showToast("Today's workout is on a different day", null);
+    return;
+  }
+  st.dayIndex = di;
+  try {
+    await ensureWorkout(di);
+  } catch(err) {
+    console.error('startSession error:', err);
+    showToast("Couldn't start session", function() { startSession(di); });
+    return;
+  }
+  buildTabs();
+  buildDay(di);
+}
+
+async function completeSession() {
+  if (!todayState || !todayState.workoutId) return;
+  var now = new Date().toISOString();
+  try {
+    var r = await sb.from('workouts').update({ ended_at: now }).eq('id', todayState.workoutId);
+    if (r.error) throw r.error;
+  } catch(err) {
+    console.error('completeSession error:', err);
+    showToast("Couldn't complete session", function() { completeSession(); });
+    return;
+  }
+  todayState.endedAt = now;
+  stopTimerTick();
+  buildDay(currentDay);
+}
+
 function startRestTimer(sec) {
   if (typeof sec !== 'number' || sec <= 0) sec = 90;
   stopRestTimer(); restSeconds = sec;
@@ -1230,7 +1368,7 @@ authForm.addEventListener('submit', function(e) {
   setAuthStatus('Sending…');
   sb.auth.signInWithOtp({
     email: email,
-    options: { emailRedirectTo: window.location.href }
+    options: { emailRedirectTo: window.location.origin }
   }).then(function(res) {
     authSubmit.disabled = false;
     if (res.error) setAuthStatus(res.error.message, 'err');
@@ -1253,6 +1391,7 @@ function applySession(session) {
     hydrate();
   } else {
     hydratedForUser = null;
+    stopTimerTick();
     document.body.classList.add('unauthed');
   }
 }
