@@ -386,6 +386,70 @@ body.unauthed #emptyState { display: none !important; }
   margin-left: 8px; vertical-align: middle;
 }
 
+/* History browser */
+.history-modal {
+  background: var(--surface);
+  border-radius: 20px 20px 0 0;
+  padding-bottom: calc(16px + var(--safe-bottom));
+  width: 100%; max-width: 500px;
+  max-height: 92vh; display: flex; flex-direction: column;
+  animation: slideUp 0.3s ease;
+}
+.history-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 14px 14px 12px; border-bottom: 1px solid var(--border);
+}
+.history-title { font-size: 16px; font-weight: 700; flex: 1; text-align: center; }
+.history-close, .history-back {
+  background: transparent; border: none; color: var(--text2);
+  font-size: 22px; cursor: pointer; padding: 0 6px; line-height: 1;
+  width: 32px; text-align: center;
+  -webkit-tap-highlight-color: transparent;
+}
+.history-body { flex: 1; overflow-y: auto; }
+.history-row {
+  display: block; width: 100%; position: relative;
+  padding: 12px 14px; border-top: none; border-left: none; border-right: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent; color: var(--text);
+  font-family: 'Outfit', sans-serif;
+  text-align: left; cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.history-row:active { background: var(--surface2); }
+.history-row.ad-hoc { border-left: 3px solid var(--purple); padding-left: 11px; }
+.history-row-date {
+  font-size: 10px; color: var(--text3);
+  font-family: 'JetBrains Mono', monospace;
+  text-transform: uppercase; letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+.history-row-title { font-size: 14px; font-weight: 600; margin-bottom: 3px; letter-spacing: -0.2px; }
+.history-row-meta {
+  font-size: 11px; color: var(--text2);
+  font-family: 'JetBrains Mono', monospace;
+}
+.history-row-meta .sep { margin: 0 6px; color: var(--text3); }
+.history-load-more {
+  display: block; margin: 14px auto;
+  background: transparent; color: var(--text2);
+  border: 1px dashed var(--border); border-radius: 8px;
+  font-family: 'Outfit', sans-serif; font-size: 13px; font-weight: 500;
+  padding: 10px 24px; cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.history-load-more:active { background: var(--surface2); color: var(--text); }
+.history-empty {
+  text-align: center; padding: 40px 20px;
+  color: var(--text3); font-size: 13px;
+}
+.history-detail { padding: 16px; }
+.history-detail-header { margin-bottom: 16px; }
+.history-detail-meta {
+  font-size: 12px; color: var(--text3);
+  font-family: 'JetBrains Mono', monospace;
+}
+
 .version-footer {
   position: fixed;
   bottom: calc(78px + var(--safe-bottom));  /* sit just above the fixed summary-bar */
@@ -699,6 +763,7 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
       <div class="version"><button class="signout-btn" id="btnSignOut" type="button">sign out</button></div>
     </div>
     <div class="header-actions">
+      <button class="header-btn" id="btnHistory" type="button">History</button>
       <button class="header-btn" id="btnImport">Import</button>
       <button class="header-btn primary" id="btnExport">Export</button>
     </div>
@@ -825,6 +890,18 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
   </div>
 </div>
 
+<div class="modal-overlay" id="historyOverlay">
+  <div class="history-modal">
+    <div class="history-header">
+      <button class="history-back" id="btnHistoryBack" type="button" style="display:none">←</button>
+      <div style="width:32px;display:block" id="historyBackSpacer"></div>
+      <div class="history-title" id="historyTitle">History</div>
+      <button class="history-close" id="btnHistoryClose" type="button">×</button>
+    </div>
+    <div class="history-body" id="historyBody"></div>
+  </div>
+</div>
+
 <div class="version-footer" id="versionFooter"></div>
 
 <div class="toast-stack" id="toastStack"></div>
@@ -913,11 +990,34 @@ var recentExercises = [];        // most-recently-logged first, up to 10
 
 var pickerState = { search: '', equipment: [], muscleGroup: [] };
 
+// History browser state
+var historyWorkouts = [];       // summary rows loaded so far, reverse-chrono
+var historyDetails = {};        // workoutId -> { workout, state } full detail cache
+var historyLoading = false;
+var historyFullyLoaded = false;
+var historyView = 'list';       // 'list' | 'detail'
+var historyPageSize = 20;
+
 // ALL EVENT LISTENERS
 document.getElementById('btnImport').addEventListener('click', function() {
   document.getElementById('importModal').classList.add('show');
 });
 document.getElementById('btnExport').addEventListener('click', exportData);
+document.getElementById('btnHistory').addEventListener('click', openHistory);
+document.getElementById('btnHistoryClose').addEventListener('click', closeHistory);
+document.getElementById('btnHistoryBack').addEventListener('click', backToHistoryList);
+document.getElementById('historyOverlay').addEventListener('click', function(e) {
+  if (e.target === this) closeHistory();
+});
+document.getElementById('historyBody').addEventListener('click', function(e) {
+  var loadMore = e.target.closest ? e.target.closest('#btnHistoryLoadMore') : null;
+  if (loadMore) { loadHistoryPage(); return; }
+  var row = e.target.closest ? e.target.closest('.history-row') : null;
+  if (row) {
+    openHistoryDetail(row.getAttribute('data-workout-id'));
+    return;
+  }
+});
 document.getElementById('importZone').addEventListener('click', function() {
   document.getElementById('fileInput').click();
 });
@@ -2272,6 +2372,280 @@ async function submitCustomForm() {
   }
 }
 
+// ---- History browser ----
+async function openHistory() {
+  historyView = 'list';
+  document.getElementById('historyOverlay').classList.add('show');
+  renderHistoryList();
+  if (historyWorkouts.length === 0 && !historyFullyLoaded) {
+    await loadHistoryPage();
+  }
+}
+
+function closeHistory() {
+  document.getElementById('historyOverlay').classList.remove('show');
+}
+
+function backToHistoryList() {
+  historyView = 'list';
+  renderHistoryList();
+}
+
+async function loadHistoryPage() {
+  if (historyLoading || historyFullyLoaded) return;
+  historyLoading = true;
+  var offset = historyWorkouts.length;
+  var bounds = sessionBounds();
+  try {
+    // Include everything except today's in-progress workouts:
+    //   performed_at < today  OR  ended_at IS NOT NULL
+    // This surfaces today's completed sessions for end-of-day review while
+    // keeping actively-logging sessions out (they live on the regular tabs).
+    var res = await sb.from('workouts')
+      .select('id, plan_id, day_index, performed_at, started_at, ended_at, title, paused_ms, sets(done)')
+      .eq('user_id', userId)
+      .or('performed_at.lt.' + bounds.start.toISOString() + ',ended_at.not.is.null')
+      .order('performed_at', { ascending: false })
+      .range(offset, offset + historyPageSize - 1);
+    if (res.error) throw res.error;
+    var rows = res.data || [];
+    if (rows.length < historyPageSize) historyFullyLoaded = true;
+    for (var i = 0; i < rows.length; i++) {
+      rows[i].doneSetsCount = (rows[i].sets || []).filter(function(s){ return s.done; }).length;
+      delete rows[i].sets; // drop the raw sets array — we only needed the count
+    }
+    // Pre-fetch any plan blobs we'll need for the day names in the list.
+    var uncachedPlans = {};
+    for (var k = 0; k < rows.length; k++) {
+      if (rows[k].plan_id && !planCache[rows[k].plan_id]) {
+        uncachedPlans[rows[k].plan_id] = true;
+      }
+    }
+    var planIds = Object.keys(uncachedPlans);
+    if (planIds.length) {
+      var pr = await sb.from('plans').select('id, data').in('id', planIds);
+      if (pr.data) {
+        for (var p = 0; p < pr.data.length; p++) {
+          planCache[pr.data[p].id] = pr.data[p].data;
+        }
+      }
+    }
+    historyWorkouts = historyWorkouts.concat(rows);
+    if (historyView === 'list') renderHistoryList();
+  } catch(err) {
+    console.error('loadHistoryPage error:', err);
+    showToast("Couldn't load history", function(){ loadHistoryPage(); });
+  } finally {
+    historyLoading = false;
+  }
+}
+
+function historyRowDate(workout) {
+  var d = new Date(workout.performed_at);
+  return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
+function historyRowLabel(workout) {
+  if (workout.plan_id === null) {
+    return (workout.title && workout.title.trim()) || 'Ad-hoc session';
+  }
+  var blob = planCache[workout.plan_id];
+  if (blob && blob.days && blob.days[workout.day_index]) {
+    return blob.days[workout.day_index].name;
+  }
+  return workout.day_index != null ? 'Day ' + (workout.day_index + 1) : 'Workout';
+}
+
+function renderHistoryList() {
+  document.getElementById('btnHistoryBack').style.display = 'none';
+  document.getElementById('historyBackSpacer').style.display = 'block';
+  document.getElementById('historyTitle').textContent = 'History';
+  var body = document.getElementById('historyBody');
+  var h = '';
+  if (historyWorkouts.length === 0) {
+    h = historyFullyLoaded
+      ? '<div class="history-empty">No past workouts yet.</div>'
+      : '<div class="history-empty">Loading…</div>';
+  } else {
+    for (var i = 0; i < historyWorkouts.length; i++) {
+      var w = historyWorkouts[i];
+      var isAdHoc = w.plan_id === null;
+      var cls = 'history-row' + (isAdHoc ? ' ad-hoc' : '');
+      var metaParts = [];
+      if (w.started_at && w.ended_at) {
+        var ms = sessionElapsedMs({
+          startedAt: w.started_at, endedAt: w.ended_at,
+          pausedMs: w.paused_ms || 0,
+        });
+        metaParts.push(fmtDuration(ms));
+      }
+      metaParts.push((w.doneSetsCount || 0) + (w.doneSetsCount === 1 ? ' set' : ' sets'));
+      h += '<button type="button" class="' + cls + '" data-workout-id="' + w.id + '">';
+      h += '<div class="history-row-date">' + escapeHtml(historyRowDate(w)) + '</div>';
+      h += '<div class="history-row-title">' + escapeHtml(historyRowLabel(w)) + '</div>';
+      h += '<div class="history-row-meta">';
+      for (var j = 0; j < metaParts.length; j++) {
+        if (j > 0) h += ' <span class="sep">·</span> ';
+        h += escapeHtml(metaParts[j]);
+      }
+      h += '</div>';
+      h += '</button>';
+    }
+    if (!historyFullyLoaded) {
+      h += '<button type="button" class="history-load-more" id="btnHistoryLoadMore">Load more</button>';
+    }
+  }
+  body.innerHTML = h;
+}
+
+async function openHistoryDetail(workoutId) {
+  historyView = 'detail';
+  document.getElementById('btnHistoryBack').style.display = 'block';
+  document.getElementById('historyBackSpacer').style.display = 'none';
+  var body = document.getElementById('historyBody');
+  document.getElementById('historyTitle').textContent = 'Loading…';
+  body.innerHTML = '<div class="history-empty">Loading…</div>';
+
+  var detail = historyDetails[workoutId];
+  if (!detail) {
+    try {
+      var res = await sb.from('workouts').select('*, sets(*)')
+        .eq('id', workoutId).maybeSingle();
+      if (res.error || !res.data) throw res.error || new Error('Not found');
+      var row = res.data;
+      if (row.plan_id && !planCache[row.plan_id]) {
+        var pr = await sb.from('plans').select('data').eq('id', row.plan_id).maybeSingle();
+        if (pr.data) planCache[row.plan_id] = pr.data.data;
+      }
+      detail = { workout: row, state: stateFromWorkout(row) };
+      historyDetails[workoutId] = detail;
+    } catch(err) {
+      console.error('openHistoryDetail error:', err);
+      body.innerHTML = '<div class="history-empty">Couldn\'t load this workout.</div>';
+      document.getElementById('historyTitle').textContent = 'History';
+      return;
+    }
+  }
+  renderHistoryDetail(detail);
+}
+
+function renderHistoryDetail(detail) {
+  var body = document.getElementById('historyBody');
+  var state = detail.state;
+  var workout = detail.workout;
+  var isAdHoc = workout.plan_id === null;
+  var planBlob = workout.plan_id ? planCache[workout.plan_id] : null;
+  var dayPlan = (planBlob && planBlob.days && planBlob.days[workout.day_index]) || null;
+  var titleText = isAdHoc
+    ? ((workout.title && workout.title.trim()) || 'Ad-hoc session')
+    : (dayPlan ? dayPlan.name : 'Day ' + ((workout.day_index != null ? workout.day_index : 0) + 1));
+  document.getElementById('historyTitle').textContent = titleText;
+
+  var dateText = new Date(workout.performed_at).toLocaleDateString(undefined, {
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+  });
+
+  var h = '<div class="history-detail">';
+  h += '<div class="history-detail-header">';
+  h += '<div class="history-detail-meta">' + escapeHtml(dateText) + (isAdHoc ? ' · ad-hoc' : '') + '</div>';
+  if (state.startedAt && state.endedAt) {
+    var ms = sessionElapsedMs(state);
+    h += '<div class="session-bar done" style="margin-top:12px"><div class="session-duration">Session: ' + fmtDuration(ms) + '</div></div>';
+  }
+  h += '</div>';
+
+  if (isAdHoc) {
+    var keys = Object.keys(state.exercises || {}).sort(function(a, b) {
+      return parseInt(a.slice(3), 10) - parseInt(b.slice(3), 10);
+    });
+    for (var i = 0; i < keys.length; i++) {
+      var ek = keys[i];
+      var ei = parseInt(ek.slice(3), 10);
+      var exState = state.exercises[ek];
+      var meta = exState.exerciseMeta || { name: 'Exercise', weight_mode: 'total' };
+      h += renderHistoryExerciseCard(ei, exState, meta.name, meta.weight_mode || 'total', null);
+    }
+  } else if (dayPlan) {
+    var planLen = dayPlan.exercises.length;
+    for (var j = 0; j < planLen; j++) {
+      var ex = dayPlan.exercises[j];
+      var ek2 = 'ex_' + j;
+      var exState2 = state.exercises[ek2];
+      if (!exState2) continue; // nothing logged for this prescribed exercise
+      var wm = weightModeForName(ex.name);
+      h += renderHistoryExerciseCard(j, exState2, ex.name, wm, ex.sets);
+    }
+    var extraKeys = Object.keys(state.exercises || {}).filter(function(k) {
+      return parseInt(k.slice(3), 10) >= planLen;
+    }).sort(function(a, b) {
+      return parseInt(a.slice(3), 10) - parseInt(b.slice(3), 10);
+    });
+    if (extraKeys.length) h += '<div class="extras-divider">Added exercises</div>';
+    for (var k = 0; k < extraKeys.length; k++) {
+      var ek3 = extraKeys[k];
+      var ei3 = parseInt(ek3.slice(3), 10);
+      var exState3 = state.exercises[ek3];
+      var meta3 = exState3.exerciseMeta || { name: 'Exercise', weight_mode: 'total' };
+      h += renderHistoryExerciseCard(ei3, exState3, meta3.name, meta3.weight_mode || 'total', null);
+    }
+  } else {
+    h += '<div class="history-empty">Plan data for this workout isn\'t available; showing raw sets instead.</div>';
+    var fallbackKeys = Object.keys(state.exercises || {}).sort(function(a, b) {
+      return parseInt(a.slice(3), 10) - parseInt(b.slice(3), 10);
+    });
+    for (var m = 0; m < fallbackKeys.length; m++) {
+      var ek4 = fallbackKeys[m];
+      var ei4 = parseInt(ek4.slice(3), 10);
+      var exState4 = state.exercises[ek4];
+      var meta4 = exState4.exerciseMeta || { name: 'Exercise ' + (ei4 + 1), weight_mode: 'total' };
+      h += renderHistoryExerciseCard(ei4, exState4, meta4.name, meta4.weight_mode || 'total', null);
+    }
+  }
+  h += '</div>';
+  body.innerHTML = h;
+}
+
+function renderHistoryExerciseCard(ei, exState, name, weightMode, prescribedSets) {
+  var dn = 0;
+  var setCount = exState.sets.length;
+  for (var i = 0; i < exState.sets.length; i++) {
+    if (exState.sets[i] && exState.sets[i].done) dn++;
+  }
+  var ad = setCount > 0 && dn === setCount;
+  var sd = dn > 0 && !ad;
+  var sc = ad ? 'complete' : sd ? 'partial' : 'pending';
+  var stat = setCount > 0 ? (ad ? dn + '/' + setCount + ' ✓' : dn + '/' + setCount) : '';
+  var cc = ad ? ' complete' : sd ? ' partial' : '';
+
+  var h = '';
+  h += '<div class="exercise-card' + cc + '">';
+  h += '<div class="exercise-header"><div class="exercise-name">' + escapeHtml(name) + '</div><div class="exercise-status ' + sc + '">' + stat + '</div></div>';
+  h += '<div class="sets-container">';
+  for (var si = 0; si < setCount; si++) {
+    var sl = exState.sets[si] || {};
+    var prescribed = prescribedSets ? prescribedSets[si] : null;
+    var prText = prescribed ? fmtP(prescribed) : '—';
+    h += renderSetRow('history', ei, si, sl, prescribed, weightMode, ' disabled', prText, false);
+  }
+  h += '</div>';
+  if (exState.rpe != null) {
+    h += '<div class="rpe-row"><div class="rpe-label">RPE</div><div class="rpe-buttons">';
+    var rv = [6,7,8,9,10];
+    for (var r = 0; r < rv.length; r++) {
+      h += '<button class="rpe-btn' + (exState.rpe === rv[r] ? ' selected' : '') + '" disabled>' + rv[r] + '</button>';
+    }
+    h += '</div></div>';
+  }
+  if (exState.sub) {
+    h += '<div class="sub-row"><div class="sub-label">SUB:</div><div style="font-size:12px;color:var(--text2);flex:1">' + escapeHtml(exState.sub) + '</div></div>';
+  }
+  if (exState.note) {
+    h += '<div style="padding:10px 14px 14px"><div class="exercise-note" style="display:block;padding:0">' + escapeHtml(exState.note) + '</div></div>';
+  }
+  h += '</div>';
+  return h;
+}
+
 // ---- Toast ----
 var toastCounter = 0;
 function showToast(msg, retryFn) {
@@ -2378,6 +2752,7 @@ async function completeSession() {
   todayState.endedAt = now;
   stopTimerTick();
   buildDay(currentDay);
+  invalidateHistoryCache();
 }
 
 // Un-complete a session — primarily for accidental "Complete Session" taps,
@@ -2406,6 +2781,16 @@ async function resumeSession() {
   todayState.endedAt = null;
   todayState.pausedMs = newPausedMs;
   buildDay(currentDay);
+  invalidateHistoryCache();
+}
+
+// Force the history browser to re-query on its next open. Called whenever
+// a workout's "finished" status changes (Complete or Resume) so the list
+// reflects the current state rather than a stale snapshot.
+function invalidateHistoryCache() {
+  historyWorkouts = [];
+  historyDetails = {};
+  historyFullyLoaded = false;
 }
 
 function startRestTimer(sec) {
@@ -2594,6 +2979,8 @@ function applySession(session) {
     exerciseLibrary = []; exerciseLibraryByName = {}; exerciseLibraryById = {};
     recentExercises = [];
     pickerState = { search: '', equipment: [], muscleGroup: [] };
+    historyWorkouts = []; historyDetails = {};
+    historyLoading = false; historyFullyLoaded = false; historyView = 'list';
     currentDay = 0;
     hydrate();
   } else {
@@ -2607,6 +2994,11 @@ function applySession(session) {
     exerciseLibraryById = {};
     recentExercises = [];
     pickerState = { search: '', equipment: [], muscleGroup: [] };
+    historyWorkouts = [];
+    historyDetails = {};
+    historyLoading = false;
+    historyFullyLoaded = false;
+    historyView = 'list';
     document.body.classList.add('unauthed');
   }
 }
