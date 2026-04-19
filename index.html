@@ -1119,7 +1119,7 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
 // -----------------------------------------------------------------------------
 // Bump this on every deploy. Displayed at the bottom of the app so stale-
 // cache issues can be diagnosed from the client ("which version am I on?").
-var APP_VERSION = 'v2.0.8';
+var APP_VERSION = 'v2.0.9';
 
 var SUPABASE_URL = 'https://kgrmlgrzaxbwpkmziwxp.supabase.co';
 var SUPABASE_ANON_KEY = 'sb_publishable_Yh8YMh9yq0gQ77OD-oiQ1A_9MHS_6rB';
@@ -2028,9 +2028,9 @@ async function loadExerciseLibrary() {
   exerciseLibraryById = {};
   for (var i = 0; i < exerciseLibrary.length; i++) {
     var row = exerciseLibrary[i];
-    exerciseLibraryByName[row.name] = row;
+    exerciseLibraryByName[normName(row.name)] = row;
     exerciseLibraryById[row.id] = row;
-    exerciseIdCache[row.name] = row.id;
+    exerciseIdCache[normName(row.name)] = row.id;
   }
 }
 
