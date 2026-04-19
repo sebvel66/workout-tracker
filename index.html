@@ -683,6 +683,22 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
 }
 .add-exercise-btn:active { background: var(--surface); color: var(--text); }
 
+.delete-session-btn {
+  display: block; margin: 28px auto 8px;
+  background: transparent; color: var(--danger);
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; font-weight: 600;
+  padding: 8px 16px;
+  letter-spacing: 0.5px; text-transform: uppercase;
+  cursor: pointer; opacity: 0.55;
+  -webkit-tap-highlight-color: transparent;
+}
+.delete-session-btn:active {
+  background: rgba(248, 113, 113, 0.12); opacity: 1;
+}
+
 .extras-divider {
   text-transform: uppercase; letter-spacing: 1px;
   font-family: 'JetBrains Mono', monospace; font-size: 10px;
@@ -1103,7 +1119,7 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
 // -----------------------------------------------------------------------------
 // Bump this on every deploy. Displayed at the bottom of the app so stale-
 // cache issues can be diagnosed from the client ("which version am I on?").
-var APP_VERSION = 'v2.0.7';
+var APP_VERSION = 'v2.0.8';
 
 var SUPABASE_URL = 'https://kgrmlgrzaxbwpkmziwxp.supabase.co';
 var SUPABASE_ANON_KEY = 'sb_publishable_Yh8YMh9yq0gQ77OD-oiQ1A_9MHS_6rB';
@@ -1320,6 +1336,13 @@ document.getElementById('workoutContainer').addEventListener('click', function(e
   if (addExBtn) {
     if (addExBtn.disabled) return;
     openPicker();
+    return;
+  }
+  // Delete whole ad-hoc session
+  var delAdHocBtn = target.closest ? target.closest('#btnDeleteAdHoc') : null;
+  if (delAdHocBtn) {
+    if (delAdHocBtn.disabled) return;
+    deleteAdHocSession();
     return;
   }
   // Add Set on an extras exercise
@@ -1884,6 +1907,7 @@ function buildAdHocDay(di) {
   }
 
   h += '<button class="add-exercise-btn" id="btnAddExercise" type="button">+ Add Exercise</button>';
+  h += '<button class="delete-session-btn" id="btnDeleteAdHoc" type="button">Delete session</button>';
 
   c.innerHTML = h;
   document.getElementById('setsComplete').textContent = cs;
@@ -2399,6 +2423,39 @@ async function createAdHocSession() {
     console.error('createAdHocSession error:', err);
     showToast("Couldn't start ad-hoc session: " + err.message, null);
   }
+}
+
+// Delete the currently-focused ad-hoc session along with all its sets
+// (sets cascade via the workout_id FK). Confirms because the action is
+// destructive and irreversible. Silent no-op for plan workouts — they
+// have per-card delete for their extras and aren't full-session-deletable.
+async function deleteAdHocSession() {
+  if (!isAdHocKey(currentDay)) return;
+  var state = findAdHoc(currentDay);
+  if (!state) return;
+  var label = (state.title && state.title.trim()) || 'this session';
+  if (!confirm('Delete ' + label + ' and all logged sets? This cannot be undone.')) return;
+  try {
+    var r = await sb.from('workouts').delete().eq('id', state.workoutId);
+    if (r.error) throw r.error;
+  } catch(err) {
+    console.error('deleteAdHocSession error:', err);
+    showToast("Couldn't delete session: " + err.message, null);
+    return;
+  }
+  todayAdHocs = todayAdHocs.filter(function(ah) { return ah.workoutId !== state.workoutId; });
+  // Focus plan day 0 if a plan exists, else first remaining ad-hoc, else 0.
+  if (plan) {
+    focusTab(0);
+  } else if (todayAdHocs.length) {
+    focusTab('ah_' + todayAdHocs[0].workoutId);
+  } else {
+    currentDay = 0;
+    todayState = null;
+  }
+  invalidateHistoryCache();
+  buildTabs();
+  buildDay(currentDay);
 }
 
 async function updateAdHocTitle(workoutId, title) {
