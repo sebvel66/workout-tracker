@@ -443,18 +443,47 @@ body.unauthed #emptyState { display: none !important; }
 .auth-status.err { color: var(--danger); }
 .auth-status.ok { color: var(--accent); }
 
-.signout-btn {
-  background: transparent; border: 1px solid var(--border); color: var(--text3);
-  font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 600;
-  padding: 4px 8px; border-radius: 6px; cursor: pointer; margin-left: 6px;
-}
-
 .day-mode-tag {
   display: inline-block; font-size: 10px; font-weight: 600; color: var(--text3);
   background: var(--surface3); border-radius: 4px; padding: 2px 6px;
   font-family: 'JetBrains Mono', monospace; text-transform: uppercase; letter-spacing: 0.5px;
   margin-left: 8px; vertical-align: middle;
 }
+
+/* Hamburger menu (bottom-sheet, same pattern as history modal) */
+.menu-modal {
+  background: var(--surface);
+  border-radius: 20px 20px 0 0;
+  padding-bottom: calc(16px + var(--safe-bottom));
+  width: 100%; max-width: 500px;
+  display: flex; flex-direction: column;
+  animation: slideUp 0.3s ease;
+}
+.menu-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 14px 14px 12px; border-bottom: 1px solid var(--border);
+}
+.menu-title { font-size: 16px; font-weight: 700; flex: 1; text-align: center; }
+.menu-close {
+  background: transparent; border: none; color: var(--text2);
+  font-size: 22px; cursor: pointer; padding: 0 6px; line-height: 1;
+  width: 32px; text-align: center;
+  -webkit-tap-highlight-color: transparent;
+}
+.menu-body { display: flex; flex-direction: column; }
+.menu-row {
+  display: block; width: 100%;
+  padding: 14px 16px;
+  border: none; border-bottom: 1px solid var(--border);
+  background: transparent; color: var(--text);
+  font-family: 'Outfit', sans-serif;
+  font-size: 15px; font-weight: 500;
+  text-align: left; cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.menu-row:active { background: var(--surface2); }
+.menu-row:last-child { border-bottom: none; }
+.menu-row.danger { color: var(--danger); }
 
 /* History browser */
 .history-modal {
@@ -906,12 +935,9 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
     <div>
       <div class="header-title" id="planTitle">Workout Tracker</div>
       <div class="header-week" id="planWeek">No plan loaded</div>
-      <div class="version"><button class="signout-btn" id="btnSignOut" type="button">sign out</button></div>
     </div>
     <div class="header-actions">
-      <button class="header-btn" id="btnHistory" type="button">History</button>
-      <button class="header-btn" id="btnImport">Import</button>
-      <button class="header-btn primary" id="btnExport">Export</button>
+      <button class="header-btn" id="btnMenu" type="button" aria-label="Menu">☰</button>
     </div>
   </div>
   <div class="day-tabs-wrapper">
@@ -1089,6 +1115,22 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
   </div>
 </div>
 
+<div class="modal-overlay" id="menuOverlay">
+  <div class="menu-modal">
+    <div class="menu-header">
+      <div style="width:32px"></div>
+      <div class="menu-title">Menu</div>
+      <button class="menu-close" id="btnMenuClose" type="button">×</button>
+    </div>
+    <div class="menu-body">
+      <button class="menu-row" id="menuImport" type="button">Import Plan</button>
+      <button class="menu-row" id="menuExport" type="button">Export Data</button>
+      <button class="menu-row" id="menuHistory" type="button">History</button>
+      <button class="menu-row danger" id="menuSignOut" type="button">Sign Out</button>
+    </div>
+  </div>
+</div>
+
 <div class="version-footer" id="versionFooter"></div>
 
 <div class="toast-stack" id="toastStack"></div>
@@ -1119,7 +1161,7 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
 // -----------------------------------------------------------------------------
 // Bump this on every deploy. Displayed at the bottom of the app so stale-
 // cache issues can be diagnosed from the client ("which version am I on?").
-var APP_VERSION = 'v2.0.10';
+var APP_VERSION = 'v2.0.11';
 
 var SUPABASE_URL = 'https://kgrmlgrzaxbwpkmziwxp.supabase.co';
 var SUPABASE_ANON_KEY = 'sb_publishable_Yh8YMh9yq0gQ77OD-oiQ1A_9MHS_6rB';
@@ -1190,16 +1232,32 @@ var historyView = 'list';       // 'list' | 'detail'
 var historyPageSize = 20;
 
 // ALL EVENT LISTENERS
-document.getElementById('btnImport').addEventListener('click', function() {
+document.getElementById('btnMenu').addEventListener('click', openMenu);
+document.getElementById('btnMenuClose').addEventListener('click', closeMenu);
+document.getElementById('menuOverlay').addEventListener('click', function(e) {
+  if (e.target === this) closeMenu();
+});
+document.getElementById('menuImport').addEventListener('click', function() {
+  closeMenu();
   document.getElementById('importModal').classList.add('show');
 });
-document.getElementById('btnExport').addEventListener('click', openExportModal);
+document.getElementById('menuExport').addEventListener('click', function() {
+  closeMenu();
+  openExportModal();
+});
+document.getElementById('menuHistory').addEventListener('click', function() {
+  closeMenu();
+  openHistory();
+});
+document.getElementById('menuSignOut').addEventListener('click', function() {
+  closeMenu();
+  sb.auth.signOut();
+});
 document.getElementById('btnExportCancel').addEventListener('click', closeExportModal);
 document.getElementById('btnExportRun').addEventListener('click', runExport);
 document.getElementById('exportOverlay').addEventListener('click', function(e) {
   if (e.target === this) closeExportModal();
 });
-document.getElementById('btnHistory').addEventListener('click', openHistory);
 document.getElementById('btnHistoryClose').addEventListener('click', closeHistory);
 document.getElementById('btnExHistoryClose').addEventListener('click', closeExerciseHistory);
 document.getElementById('exHistoryOverlay').addEventListener('click', function(e) {
@@ -2815,6 +2873,14 @@ function closeExerciseHistory() {
 }
 
 // ---- History browser ----
+function openMenu() {
+  document.getElementById('menuOverlay').classList.add('show');
+}
+
+function closeMenu() {
+  document.getElementById('menuOverlay').classList.remove('show');
+}
+
 async function openHistory() {
   historyView = 'list';
   document.getElementById('historyOverlay').classList.add('show');
@@ -3531,7 +3597,6 @@ var authDesc = document.getElementById('authDesc');
 var authLinks = document.getElementById('authLinks');
 var authResend = document.getElementById('authResend');
 var authBack = document.getElementById('authBack');
-var btnSignOut = document.getElementById('btnSignOut');
 
 var authStep = 'email';       // 'email' | 'code'
 var authPendingEmail = '';    // the email we sent the code to
@@ -3618,10 +3683,6 @@ authBack.addEventListener('click', function() {
   authPendingEmail = '';
   setAuthStep('email');
   setAuthStatus('');
-});
-
-btnSignOut.addEventListener('click', function() {
-  sb.auth.signOut();
 });
 
 function applySession(session) {
