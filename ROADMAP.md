@@ -6,6 +6,8 @@ Consolidated from HANDOFF.md and DECISIONS.md as of 2026-04-16. Nothing new here
 
 - **AI-generated workouts from historical performance.** The core v2 goal. Referenced throughout HANDOFF.md (v1 goal section, "v2 AI planner reads the active plan," "v2 progression models depend on `completed_at` semantics"). *Idea only* — no design doc. The v1 schema was built to support it: per-set RPE, prescribed-vs-actual columns, and timestamps are already in place specifically so this migration isn't needed later.
 - **Progression / PR / volume-over-time analytics** as inputs to the AI planner. Listed as query shapes the v1 indexes target ("all sets for exercise X over time"). *Idea only* as a surfaced feature; the query substrate exists.
+- **Configurable AI context window.** User-editable setting controlling how many weeks of workout history are sent to the AI planner when generating a new plan. Default 4 weeks. Tiered compression still applies (recent weeks verbatim, older weeks summarized). Stored as a user preference in Supabase. **Use case:** if the user takes time off, they can expand the window so the AI sees pre-break performance rather than interpreting the gap as detraining. *Idea only.*
+- **Proactive program re-evaluation.** The AI coach should not just generate week-to-week progressions within a fixed program structure. It should periodically re-evaluate exercise selection, rep ranges, split design, volume distribution, and periodization phase. Roughly every 4–6 weeks, or when the data suggests a plateau or phase transition, the AI should proactively recommend structural changes and explain the reasoning in coaching notes. **This is a system-prompt directive, not a code feature.** *Idea only.*
 
 ## UX improvements
 
