@@ -1365,7 +1365,7 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
 // -----------------------------------------------------------------------------
 // Bump this on every deploy. Displayed at the bottom of the app so stale-
 // cache issues can be diagnosed from the client ("which version am I on?").
-var APP_VERSION = 'v2.0.13';
+var APP_VERSION = 'v2.0.14';
 
 var SUPABASE_URL = 'https://kgrmlgrzaxbwpkmziwxp.supabase.co';
 var SUPABASE_ANON_KEY = 'sb_publishable_Yh8YMh9yq0gQ77OD-oiQ1A_9MHS_6rB';
@@ -1376,8 +1376,15 @@ var userId = null;
 var activePlanId = null;
 var plan = null;              // active plan's data blob
 var currentDay = 0;
+// Rest timer uses a wall-clock deadline (restTargetMs) so it survives
+// backgrounding: iOS suspends setInterval when the PWA loses focus, but
+// Date.now() is still the real clock when we return. restCompleted makes
+// the completion path idempotent since the tick and the visibilitychange
+// catch-up can both observe the deadline in the same foreground pass.
 var restInterval = null;
-var restSeconds = 0;
+var restTargetMs = 0;
+var restCompleted = false;
+var restAudioCtx = null;
 var sessionTimerInterval = null;
 var hydratedForUser = null;
 
@@ -1564,12 +1571,23 @@ document.getElementById('btnRest').addEventListener('click', function() { startR
 document.getElementById('btnStopRest').addEventListener('click', stopRestTimer);
 document.getElementById('restOverlay').addEventListener('click', stopRestTimer);
 document.getElementById('btnRestPlus').addEventListener('click', function() {
-  if (restInterval) { restSeconds += 15; updateRestDisplay(); }
+  if (!restInterval) return;
+  restTargetMs += 15000;
+  updateRestDisplay();
 });
 document.getElementById('btnRestMinus').addEventListener('click', function() {
   if (!restInterval) return;
-  restSeconds = Math.max(5, restSeconds - 15);
+  // Clamp so the deadline stays at least 5 seconds out from now. Preserves
+  // the pre-existing 5s floor; additional -15s taps at the floor are no-ops.
+  restTargetMs = Math.max(Date.now() + 5000, restTargetMs - 15000);
   updateRestDisplay();
+});
+// Wall-clock catch-up after backgrounding. If we return to the app past the
+// deadline and the tick interval missed the completion, fire it now.
+document.addEventListener('visibilitychange', function() {
+  if (document.visibilityState === 'visible' && restInterval && restRemainingMs() <= 0) {
+    restComplete();
+  }
 });
 
 // Exercise picker listeners
@@ -3928,27 +3946,69 @@ function invalidateHistoryCache() {
   historyFullyLoaded = false;
 }
 
+function restRemainingMs() {
+  if (!restTargetMs) return 0;
+  return Math.max(0, restTargetMs - Date.now());
+}
+
 function startRestTimer(sec) {
   if (typeof sec !== 'number' || sec <= 0) sec = 90;
-  stopRestTimer(); restSeconds = sec;
+  stopRestTimer();
+  restTargetMs = Date.now() + sec * 1000;
+  restCompleted = false;
   document.getElementById('restTimer').classList.add('show');
   document.getElementById('restOverlay').classList.add('show');
   updateRestDisplay();
+  // 250ms tick so catch-up after backgrounding feels snappy; the callback
+  // itself is cheap (one DOM read, one Date.now(), one DOM write).
   restInterval = setInterval(function() {
-    restSeconds--;
-    if (restSeconds <= 0) { stopRestTimer(); if (navigator.vibrate) navigator.vibrate([200,100,200]); }
-    else updateRestDisplay();
-  }, 1000);
+    if (restRemainingMs() <= 0) { restComplete(); return; }
+    updateRestDisplay();
+  }, 250);
 }
 
 function stopRestTimer() {
-  clearInterval(restInterval); restInterval = null;
+  if (restInterval) { clearInterval(restInterval); restInterval = null; }
+  restTargetMs = 0;
+  restCompleted = false;
   document.getElementById('restTimer').classList.remove('show');
   document.getElementById('restOverlay').classList.remove('show');
 }
 
+function restComplete() {
+  if (restCompleted) return;
+  restCompleted = true;
+  if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+  restBeep();
+  stopRestTimer();
+}
+
+// Single 880Hz sine chime, ~¼ second, with a smooth attack/release envelope
+// so there's no click. AudioContext is lazy-created and reused across rest
+// periods (browsers cap pages at ~6 contexts). The starting gesture that
+// opened the timer has already unlocked autoplay on iOS/Chrome.
+function restBeep() {
+  try {
+    if (!restAudioCtx) restAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    var ctx = restAudioCtx;
+    if (ctx.state === 'suspended') ctx.resume();
+    var osc = ctx.createOscillator();
+    var gain = ctx.createGain();
+    osc.frequency.value = 880;
+    osc.type = 'sine';
+    gain.gain.setValueAtTime(0, ctx.currentTime);
+    gain.gain.linearRampToValueAtTime(0.15, ctx.currentTime + 0.01);
+    gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.22);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.25);
+  } catch(e) { /* audio is a nice-to-have; vibrate + UI still fire */ }
+}
+
 function updateRestDisplay() {
-  var m = Math.floor(restSeconds / 60), s = restSeconds % 60;
+  var total = Math.ceil(restRemainingMs() / 1000);
+  var m = Math.floor(total / 60), s = total % 60;
   document.getElementById('restTime').textContent = m + ':' + (s < 10 ? '0' : '') + s;
 }
 
