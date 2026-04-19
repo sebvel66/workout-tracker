@@ -343,6 +343,140 @@ html, body {
 .session-notes-input::placeholder { color: var(--text3); }
 .session-notes-input:disabled { opacity: 0.8; cursor: default; }
 
+/* Session-level location (gym profiles) */
+.session-location {
+  display: flex; align-items: center; gap: 10px;
+  margin: 10px 14px;
+}
+.session-location-label {
+  font-size: 11px; font-weight: 600;
+  color: var(--text2);
+  font-family: 'JetBrains Mono', monospace;
+  text-transform: uppercase; letter-spacing: 0.5px;
+  flex-shrink: 0;
+}
+.session-location-select {
+  flex: 1; min-width: 0;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: 'Outfit', sans-serif;
+  font-size: 13px; font-weight: 500;
+  padding: 8px 28px 8px 10px;
+  border-radius: 8px;
+  outline: none;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='%239898a4' d='M1 1l4 4 4-4'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
+.session-location-select:focus { border-color: var(--blue); }
+.session-location-select:disabled { opacity: 0.7; cursor: default; }
+.session-location-prompt {
+  flex: 1;
+  background: transparent;
+  border: 1px dashed var(--border);
+  color: var(--text2);
+  font-family: 'Outfit', sans-serif;
+  font-size: 13px; font-weight: 500;
+  padding: 9px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  -webkit-tap-highlight-color: transparent;
+}
+.session-location-prompt:active { background: var(--surface2); color: var(--text); }
+
+/* History row gym badge (inline in the meta line) */
+.history-row-gym {
+  color: var(--text3);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+}
+
+/* Gym Profiles management modal (CRUD) */
+.gym-profiles-modal {
+  background: var(--surface);
+  border-radius: 20px 20px 0 0;
+  padding-bottom: calc(16px + var(--safe-bottom));
+  width: 100%; max-width: 500px;
+  max-height: 92vh; display: flex; flex-direction: column;
+  animation: slideUp 0.3s ease;
+}
+.gym-profiles-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 14px 14px 12px; border-bottom: 1px solid var(--border);
+}
+.gym-profiles-title { font-size: 16px; font-weight: 700; flex: 1; text-align: center; }
+.gym-profiles-close {
+  background: transparent; border: none; color: var(--text2);
+  font-size: 22px; cursor: pointer; padding: 0 6px; line-height: 1;
+  width: 32px; text-align: center;
+  -webkit-tap-highlight-color: transparent;
+}
+.gym-profiles-body { flex: 1; overflow-y: auto; }
+.gym-profiles-add {
+  display: flex; gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.gym-profiles-add-input {
+  flex: 1;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: 'Outfit', sans-serif;
+  font-size: 14px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  outline: none;
+}
+.gym-profiles-add-input:focus { border-color: var(--blue); }
+.gym-profiles-add-btn {
+  background: var(--accent2); color: #000; border: none;
+  font-family: 'Outfit', sans-serif; font-size: 13px; font-weight: 600;
+  padding: 10px 16px; border-radius: 8px; cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.gym-profiles-add-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.gym-profiles-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.gym-profiles-row-name {
+  flex: 1; min-width: 0;
+  font-size: 14px; color: var(--text);
+  cursor: pointer;
+  padding: 6px 0;
+  -webkit-tap-highlight-color: transparent;
+}
+.gym-profiles-row-name:active { color: var(--text2); }
+.gym-profiles-row-input {
+  flex: 1; min-width: 0;
+  background: var(--surface2);
+  border: 1px solid var(--blue);
+  color: var(--text);
+  font-family: 'Outfit', sans-serif;
+  font-size: 14px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  outline: none;
+}
+.gym-profiles-row-delete {
+  background: transparent; border: none;
+  color: var(--text3); font-size: 18px;
+  cursor: pointer; padding: 4px 8px; line-height: 1;
+  -webkit-tap-highlight-color: transparent;
+}
+.gym-profiles-row-delete:active { color: var(--danger); }
+.gym-profiles-empty {
+  text-align: center; padding: 40px 20px;
+  color: var(--text3); font-size: 13px;
+}
+
 .exercise-note-input {
   width: 100%; background: var(--surface2); border: 1px solid var(--border); color: var(--text);
   font-family: 'Outfit', sans-serif; font-size: 13px; padding: 8px 10px; border-radius: 8px;
@@ -1178,7 +1312,25 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
       <button class="menu-row" id="menuImport" type="button">Import Plan</button>
       <button class="menu-row" id="menuExport" type="button">Export Data</button>
       <button class="menu-row" id="menuHistory" type="button">History</button>
+      <button class="menu-row" id="menuGymProfiles" type="button">Gym Profiles</button>
       <button class="menu-row danger" id="menuSignOut" type="button">Sign Out</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="gymProfilesOverlay">
+  <div class="gym-profiles-modal">
+    <div class="gym-profiles-header">
+      <div style="width:32px"></div>
+      <div class="gym-profiles-title">Gym Profiles</div>
+      <button class="gym-profiles-close" id="btnGymProfilesClose" type="button">×</button>
+    </div>
+    <div class="gym-profiles-body">
+      <div class="gym-profiles-add">
+        <input type="text" class="gym-profiles-add-input" id="gymProfilesAddInput" placeholder="New gym name" maxlength="60">
+        <button class="gym-profiles-add-btn" id="btnGymProfilesAdd" type="button">Add</button>
+      </div>
+      <div id="gymProfilesList"></div>
     </div>
   </div>
 </div>
@@ -1213,7 +1365,7 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
 // -----------------------------------------------------------------------------
 // Bump this on every deploy. Displayed at the bottom of the app so stale-
 // cache issues can be diagnosed from the client ("which version am I on?").
-var APP_VERSION = 'v2.0.12';
+var APP_VERSION = 'v2.0.13';
 
 var SUPABASE_URL = 'https://kgrmlgrzaxbwpkmziwxp.supabase.co';
 var SUPABASE_ANON_KEY = 'sb_publishable_Yh8YMh9yq0gQ77OD-oiQ1A_9MHS_6rB';
@@ -1273,6 +1425,13 @@ var exerciseLibraryByName = {};  // normName -> row
 var exerciseLibraryById = {};    // uuid -> row
 var recentExercises = [];        // most-recently-logged first, up to 10
 
+// Gym profiles (user-defined training locations). Loaded once per session.
+// recentLocationId is computed at hydrate time from the most recent workout
+// whose location_id is not null; used as the default for fresh sessions.
+var locations = [];              // array of location rows, created_at desc
+var locationById = {};           // uuid -> row
+var recentLocationId = null;     // uuid of the most recently used gym, or null
+
 var pickerState = { search: '', equipment: [], muscleGroup: [] };
 
 // History browser state
@@ -1301,9 +1460,72 @@ document.getElementById('menuHistory').addEventListener('click', function() {
   closeMenu();
   openHistory();
 });
+document.getElementById('menuGymProfiles').addEventListener('click', function() {
+  closeMenu();
+  openGymProfiles();
+});
 document.getElementById('menuSignOut').addEventListener('click', function() {
   closeMenu();
   sb.auth.signOut();
+});
+
+// Gym Profiles modal wiring.
+document.getElementById('btnGymProfilesClose').addEventListener('click', closeGymProfiles);
+document.getElementById('gymProfilesOverlay').addEventListener('click', function(e) {
+  if (e.target === this) closeGymProfiles();
+});
+document.getElementById('btnGymProfilesAdd').addEventListener('click', function() {
+  var input = document.getElementById('gymProfilesAddInput');
+  var name = input.value;
+  persistLocationAdd(name).then(function() {
+    // Reset the input on success; leave as-is on failure so the user can retry.
+    input.value = '';
+  });
+});
+document.getElementById('gymProfilesAddInput').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    document.getElementById('btnGymProfilesAdd').click();
+  }
+});
+document.getElementById('gymProfilesList').addEventListener('click', function(e) {
+  var target = e.target;
+  var action = target.getAttribute && target.getAttribute('data-action');
+  if (action === 'delete') {
+    var delId = target.getAttribute('data-id');
+    if (delId) persistLocationDelete(delId);
+    return;
+  }
+  if (action === 'rename') {
+    // Swap the name div for an input; blur/Enter saves, Escape cancels.
+    var id = target.getAttribute('data-id');
+    var row = locationById[id];
+    if (!row) return;
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'gym-profiles-row-input';
+    input.value = row.name;
+    input.maxLength = 60;
+    input.setAttribute('data-id', id);
+    var parent = target.parentNode;
+    parent.replaceChild(input, target);
+    input.focus();
+    input.select();
+    var committed = false;
+    function commit() {
+      if (committed) return; committed = true;
+      persistLocationRename(id, input.value);
+    }
+    function cancel() {
+      if (committed) return; committed = true;
+      renderGymProfiles(); // restore the name display
+    }
+    input.addEventListener('blur', commit);
+    input.addEventListener('keydown', function(ev) {
+      if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); cancel(); }
+    });
+  }
 });
 document.getElementById('btnExportCancel').addEventListener('click', closeExportModal);
 document.getElementById('btnExportRun').addEventListener('click', runExport);
@@ -1434,6 +1656,12 @@ document.getElementById('workoutContainer').addEventListener('click', function(e
     openExerciseHistory(histBtn.getAttribute('data-exercise-name'));
     return;
   }
+  // Session-location prompt (zero-gym case) — opens the Gym Profiles modal.
+  var locPrompt = target.closest ? target.closest('.session-location-prompt') : null;
+  if (locPrompt) {
+    openGymProfiles();
+    return;
+  }
   // Session-notes header — toggle collapse/expand.
   var notesHeader = target.closest ? target.closest('.session-notes-header') : null;
   if (notesHeader) {
@@ -1540,6 +1768,13 @@ document.getElementById('workoutContainer').addEventListener('change', function(
       persistNotes(sdiVal, t.value);
     }
   }
+  if (t.classList.contains('session-location-select')) {
+    var ldi = t.getAttribute('data-di');
+    if (ldi != null) {
+      var ldiVal = ldi.indexOf('ah_') === 0 ? ldi : parseInt(ldi, 10);
+      persistWorkoutLocation(ldiVal, t.value || null);
+    }
+  }
 });
 
 // ---- Hydration ----
@@ -1575,6 +1810,7 @@ async function hydrate() {
 
     await loadExerciseLibrary();
     await loadRecentExercises();
+    await loadLocations();
 
     var bounds = sessionBounds();
     var wRes = await sb.from('workouts').select('*, sets(*)')
@@ -1712,6 +1948,7 @@ function stateFromWorkout(row) {
     pausedMs: row.paused_ms || 0,
     notes: row.notes || '',
     notesExpanded: !!(row.notes && row.notes.trim()),
+    locationId: row.location_id || null,
     exercises: {}
   };
   var isAdHocWorkout = row.plan_id === null;
@@ -1860,6 +2097,7 @@ function buildDay(di) {
     h += '<div class="session-bar done"><div class="session-duration">Session: ' + fmtDuration(sessionElapsedMs(state)) + '</div></div>';
   }
 
+  h += renderSessionLocation(di, state, readOnly);
   h += renderSessionNotes(di, state, readOnly);
 
   for (var ei = 0; ei < dayPlan.exercises.length; ei++) {
@@ -1996,6 +2234,7 @@ function buildAdHocDay(di) {
          '<button class="session-btn session-resume" id="btnResumeSession" type="button">Resume</button></div>';
   }
 
+  h += renderSessionLocation(di, state, false);
   h += renderSessionNotes(di, state, false);
 
   var ts = 0, cs = 0;
@@ -2144,7 +2383,7 @@ function getOrInitToday(di) {
     return findAdHoc(di);
   }
   if (!todayPlanStates[di]) {
-    todayPlanStates[di] = { workoutId: null, planId: null, dayIndex: di, notes: '', notesExpanded: false, exercises: {} };
+    todayPlanStates[di] = { workoutId: null, planId: null, dayIndex: di, notes: '', notesExpanded: false, locationId: null, exercises: {} };
   }
   todayState = todayPlanStates[di];
   return todayPlanStates[di];
@@ -2291,6 +2530,234 @@ function bumpRecent(exerciseRow) {
   recentExercises = [exerciseRow].concat(filtered).slice(0, 10);
 }
 
+// ---- Gym profiles ----
+async function loadLocations() {
+  var res = await sb.from('locations').select('*').order('created_at', { ascending: false });
+  if (res.error) { showToast('Failed to load gym profiles', null); return; }
+  locations = res.data || [];
+  locationById = {};
+  for (var i = 0; i < locations.length; i++) {
+    locationById[locations[i].id] = locations[i];
+  }
+  // Compute the most-recently-used location so fresh sessions can default to it.
+  var recent = await sb.from('workouts')
+    .select('location_id')
+    .eq('user_id', userId)
+    .not('location_id', 'is', null)
+    .order('performed_at', { ascending: false })
+    .limit(1);
+  if (recent.error) { recentLocationId = null; return; }
+  recentLocationId = (recent.data && recent.data[0]) ? recent.data[0].location_id : null;
+}
+
+async function persistLocationAdd(name) {
+  var trimmed = (name || '').trim();
+  if (!trimmed) return;
+  // Case-insensitive dedup against the already-loaded list so we catch the
+  // common case without a round-trip; the DB-level unique index still
+  // defends against the race.
+  var lower = trimmed.toLowerCase();
+  for (var i = 0; i < locations.length; i++) {
+    if (locations[i].name.toLowerCase() === lower) {
+      showToast('A gym named "' + locations[i].name + '" already exists', null);
+      return;
+    }
+  }
+  try {
+    var res = await sb.from('locations')
+      .insert({ user_id: userId, name: trimmed })
+      .select().single();
+    if (res.error) throw res.error;
+    locations = [res.data].concat(locations);
+    locationById[res.data.id] = res.data;
+    if (!recentLocationId) recentLocationId = res.data.id;
+    renderGymProfiles();
+    // Re-render the session view so a zero-gym prompt becomes the real
+    // dropdown, or the new gym appears in the existing dropdown.
+    buildDay(currentDay);
+  } catch(err) {
+    console.error('persistLocationAdd error:', err);
+    showToast("Couldn't add gym: " + err.message, null);
+  }
+}
+
+async function persistLocationRename(id, name) {
+  var trimmed = (name || '').trim();
+  if (!trimmed) return;
+  var existing = locationById[id];
+  if (!existing || existing.name === trimmed) return;
+  // Client-side dedup against other rows.
+  var lower = trimmed.toLowerCase();
+  for (var i = 0; i < locations.length; i++) {
+    if (locations[i].id !== id && locations[i].name.toLowerCase() === lower) {
+      showToast('A gym named "' + locations[i].name + '" already exists', null);
+      renderGymProfiles();
+      return;
+    }
+  }
+  try {
+    var res = await sb.from('locations')
+      .update({ name: trimmed })
+      .eq('id', id)
+      .select().single();
+    if (res.error) throw res.error;
+    existing.name = res.data.name;
+    renderGymProfiles();
+    buildDay(currentDay);
+  } catch(err) {
+    console.error('persistLocationRename error:', err);
+    showToast("Couldn't rename gym: " + err.message, null);
+    renderGymProfiles();
+  }
+}
+
+async function persistLocationDelete(id) {
+  var existing = locationById[id];
+  if (!existing) return;
+  // Count workouts that currently reference this gym across the hydrated
+  // caches; fall back to a server-side count for anything not cached.
+  var cachedCount = 0;
+  function scan(state) {
+    if (state && state.locationId === id) cachedCount++;
+  }
+  Object.keys(todayPlanStates).forEach(function(k) { scan(todayPlanStates[k]); });
+  for (var i = 0; i < todayAdHocs.length; i++) scan(todayAdHocs[i]);
+  Object.keys(historicalCache).forEach(function(k) { scan(historicalCache[k]); });
+  var countRes = await sb.from('workouts')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', userId)
+    .eq('location_id', id);
+  var serverCount = (!countRes.error && typeof countRes.count === 'number') ? countRes.count : cachedCount;
+  var hint = serverCount > 0
+    ? ' ' + serverCount + ' workout' + (serverCount === 1 ? '' : 's') + ' will lose the gym tag.'
+    : '';
+  if (!confirm('Delete "' + existing.name + '"?' + hint)) return;
+  try {
+    var res = await sb.from('locations').delete().eq('id', id);
+    if (res.error) throw res.error;
+    locations = locations.filter(function(r) { return r.id !== id; });
+    delete locationById[id];
+    // Clear the cached location_id on any in-memory state that referenced
+    // the deleted row. ON DELETE SET NULL handles the server side.
+    function clearLoc(state) { if (state && state.locationId === id) state.locationId = null; }
+    Object.keys(todayPlanStates).forEach(function(k) { clearLoc(todayPlanStates[k]); });
+    for (var j = 0; j < todayAdHocs.length; j++) clearLoc(todayAdHocs[j]);
+    Object.keys(historicalCache).forEach(function(k) { clearLoc(historicalCache[k]); });
+    if (recentLocationId === id) recentLocationId = locations.length ? locations[0].id : null;
+    renderGymProfiles();
+    buildDay(currentDay);
+  } catch(err) {
+    console.error('persistLocationDelete error:', err);
+    showToast("Couldn't delete gym: " + err.message, null);
+  }
+}
+
+async function persistWorkoutLocation(di, locationId) {
+  if (viewModeFor(di) !== 'editable') return;
+  var state;
+  if (isAdHocKey(di)) {
+    state = findAdHoc(di);
+    if (!state) return;
+  } else {
+    state = getOrInitToday(di);
+  }
+  // Dirty-check against the currently-saved value.
+  if ((state.locationId || null) === (locationId || null)) return;
+  if (state.workoutId) {
+    try {
+      var res = await sb.from('workouts').update({ location_id: locationId || null }).eq('id', state.workoutId);
+      if (res.error) throw res.error;
+      state.locationId = locationId || null;
+    } catch(err) {
+      console.error('persistWorkoutLocation error:', err);
+      showToast("Couldn't save gym selection", function() { persistWorkoutLocation(di, locationId); });
+    }
+  } else {
+    // No workout row yet — stash for the lazy-create path. Explicit null is
+    // meaningful (user picked "— No gym"); distinguish via the pending field
+    // living on the state object as-is (undefined = untouched).
+    state.pendingLocationId = locationId || null;
+  }
+}
+
+function renderSessionLocation(di, state, readOnly) {
+  // Zero-gym case: show a prompt that opens the management modal.
+  if (!locations.length) {
+    return '<div class="session-location">'
+         + '<div class="session-location-label">Location</div>'
+         + '<button type="button" class="session-location-prompt" data-action="open-gym-profiles">+ Add a gym to tag workouts</button>'
+         + '</div>';
+  }
+  // Resolve the default selection per the spec:
+  //   1. state.locationId if set (hydrated from a real workout row).
+  //   2. state.pendingLocationId if user touched the dropdown pre-save.
+  //   3. recentLocationId as the zero-state default.
+  var selected;
+  if (state && state.locationId != null) {
+    selected = state.locationId;
+  } else if (state && state.pendingLocationId !== undefined) {
+    selected = state.pendingLocationId;
+  } else {
+    selected = recentLocationId;
+  }
+  // Sort options: selected first (if any), then the rest in created_at desc.
+  var ordered = [];
+  if (selected) {
+    for (var s = 0; s < locations.length; s++) {
+      if (locations[s].id === selected) { ordered.push(locations[s]); break; }
+    }
+  }
+  for (var i = 0; i < locations.length; i++) {
+    if (locations[i].id !== selected) ordered.push(locations[i]);
+  }
+  var diAttr = 'data-di="' + escapeAttr(String(di)) + '"';
+  var disabledAttr = readOnly ? ' disabled' : '';
+  var h = '<div class="session-location">';
+  h += '<div class="session-location-label">Location</div>';
+  h += '<select class="session-location-select" ' + diAttr + disabledAttr + '>';
+  h += '<option value=""' + ((selected == null || selected === '') ? ' selected' : '') + '>— No gym</option>';
+  for (var j = 0; j < ordered.length; j++) {
+    var row = ordered[j];
+    var sel = row.id === selected ? ' selected' : '';
+    h += '<option value="' + escapeAttr(row.id) + '"' + sel + '>' + escapeHtml(row.name) + '</option>';
+  }
+  h += '</select>';
+  h += '</div>';
+  return h;
+}
+
+function openGymProfiles() {
+  renderGymProfiles();
+  document.getElementById('gymProfilesOverlay').classList.add('show');
+  var input = document.getElementById('gymProfilesAddInput');
+  if (input) input.value = '';
+}
+
+function closeGymProfiles() {
+  document.getElementById('gymProfilesOverlay').classList.remove('show');
+  // Re-render the session view so any rename/delete effects are visible
+  // in the dropdown / badges.
+  buildDay(currentDay);
+}
+
+function renderGymProfiles() {
+  var list = document.getElementById('gymProfilesList');
+  if (!list) return;
+  if (!locations.length) {
+    list.innerHTML = '<div class="gym-profiles-empty">No gyms yet. Add one above to start tagging workouts.</div>';
+    return;
+  }
+  var h = '';
+  for (var i = 0; i < locations.length; i++) {
+    var row = locations[i];
+    h += '<div class="gym-profiles-row" data-id="' + escapeAttr(row.id) + '">';
+    h += '<div class="gym-profiles-row-name" data-action="rename" data-id="' + escapeAttr(row.id) + '">' + escapeHtml(row.name) + '</div>';
+    h += '<button type="button" class="gym-profiles-row-delete" data-action="delete" data-id="' + escapeAttr(row.id) + '" aria-label="Delete">×</button>';
+    h += '</div>';
+  }
+  list.innerHTML = h;
+}
+
 // Weight mode lookup for a prescribed exercise by name (falls back to 'total').
 function weightModeForName(name) {
   var row = exerciseLibraryByName[normName(name)];
@@ -2302,10 +2769,14 @@ async function ensureWorkout(di) {
   if (st.workoutId) return st.workoutId;
   var now = new Date().toISOString();
   var performedOn = sessionTodayDateString();
+  // Location precedence: explicit pending pick (including null = "no gym")
+  // wins over the recent default. undefined = user hasn't touched it.
+  var effectiveLocationId = st.pendingLocationId !== undefined ? st.pendingLocationId : (recentLocationId || null);
   var res = await sb.from('workouts').insert({
     user_id: userId, plan_id: activePlanId, day_index: di,
     performed_at: now, started_at: now,
     performed_on: performedOn,
+    location_id: effectiveLocationId,
   }).select().single();
   // 23505 = unique_violation. Means another tab or a retried insert already
   // created the row for (user_id, plan_id, day_index, performed_on) — the
@@ -2323,6 +2794,8 @@ async function ensureWorkout(di) {
     st.planId = activePlanId;
     st.dayIndex = di;
     st.startedAt = lookup.data.started_at || now;
+    st.locationId = lookup.data.location_id || null;
+    delete st.pendingLocationId;
     return st.workoutId;
   }
   if (res.error) throw res.error;
@@ -2330,6 +2803,8 @@ async function ensureWorkout(di) {
   st.planId = activePlanId;
   st.dayIndex = di;
   st.startedAt = now;
+  st.locationId = res.data.location_id || null;
+  delete st.pendingLocationId;
   return st.workoutId;
 }
 
@@ -2677,6 +3152,7 @@ async function createAdHocSession() {
       user_id: userId, plan_id: null, day_index: null,
       performed_at: now, started_at: now,
       performed_on: sessionTodayDateString(),
+      location_id: recentLocationId || null,
     }).select().single();
     if (res.error) throw res.error;
     var adState = {
@@ -2684,6 +3160,7 @@ async function createAdHocSession() {
       startedAt: now, endedAt: null,
       title: null, isAdHoc: true,
       notes: '', notesExpanded: false,
+      locationId: res.data.location_id || null,
       exercises: {},
     };
     todayAdHocs.push(adState);
@@ -2913,7 +3390,7 @@ async function openExerciseHistory(exerciseName) {
 
   try {
     var res = await sb.from('sets')
-      .select('id, weight, reps, rpe, set_order, done, workout_id, workouts(performed_at, plan_id, day_index, title)')
+      .select('id, weight, reps, rpe, set_order, done, workout_id, workouts(performed_at, plan_id, day_index, title, location_id)')
       .eq('user_id', userId)
       .eq('exercise_id', row.id)
       .eq('done', true)
@@ -2942,6 +3419,7 @@ async function openExerciseHistory(exerciseName) {
           planId: sets[i].workouts.plan_id,
           dayIndex: sets[i].workouts.day_index,
           title: sets[i].workouts.title,
+          locationId: sets[i].workouts.location_id,
           sets: [],
         };
         order.push(wId);
@@ -2981,6 +3459,9 @@ async function openExerciseHistory(exerciseName) {
         contextText = ' · ' + planBlob.days[sess.dayIndex].name;
       } else if (!sess.planId) {
         contextText = ' · ' + (sess.title || 'Ad-hoc');
+      }
+      if (sess.locationId && locationById[sess.locationId]) {
+        contextText += ' · ' + locationById[sess.locationId].name;
       }
       sess.sets.sort(function(a, b) { return a.set_order - b.set_order; });
       var setStrs = sess.sets.map(function(s) {
@@ -3049,7 +3530,7 @@ async function loadHistoryPage() {
     // This surfaces today's completed sessions for end-of-day review while
     // keeping actively-logging sessions out (they live on the regular tabs).
     var res = await sb.from('workouts')
-      .select('id, plan_id, day_index, performed_at, started_at, ended_at, title, paused_ms, sets(done)')
+      .select('id, plan_id, day_index, performed_at, started_at, ended_at, title, paused_ms, location_id, sets(done)')
       .eq('user_id', userId)
       .or('performed_at.lt.' + bounds.start.toISOString() + ',ended_at.not.is.null')
       .order('performed_at', { ascending: false })
@@ -3127,6 +3608,9 @@ function renderHistoryList() {
         metaParts.push(fmtDuration(ms));
       }
       metaParts.push((w.doneSetsCount || 0) + (w.doneSetsCount === 1 ? ' set' : ' sets'));
+      if (w.location_id && locationById[w.location_id]) {
+        metaParts.push(locationById[w.location_id].name);
+      }
       h += '<button type="button" class="' + cls + '" data-workout-id="' + w.id + '">';
       h += '<div class="history-row-date">' + escapeHtml(historyRowDate(w)) + '</div>';
       h += '<div class="history-row-title">' + escapeHtml(historyRowLabel(w)) + '</div>';
@@ -3192,9 +3676,13 @@ function renderHistoryDetail(detail) {
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
   });
 
+  var gymText = '';
+  if (workout.location_id && locationById[workout.location_id]) {
+    gymText = ' · ' + locationById[workout.location_id].name;
+  }
   var h = '<div class="history-detail">';
   h += '<div class="history-detail-header">';
-  h += '<div class="history-detail-meta">' + escapeHtml(dateText) + (isAdHoc ? ' · ad-hoc' : '') + '</div>';
+  h += '<div class="history-detail-meta">' + escapeHtml(dateText) + (isAdHoc ? ' · ad-hoc' : '') + escapeHtml(gymText) + '</div>';
   if (state.startedAt && state.endedAt) {
     var ms = sessionElapsedMs(state);
     h += '<div class="session-bar done" style="margin-top:12px"><div class="session-duration">Session: ' + fmtDuration(ms) + '</div></div>';
