@@ -33,6 +33,7 @@ Consolidated from HANDOFF.md and DECISIONS.md as of 2026-04-16. Nothing new here
 - **Plan editing in-app.** Listed as a v1 non-goal. *Idea only* — no design.
 - **Historical analytics UI.** Listed as a v1 non-goal. *Idea only* — no design.
 - **Custom domain SMTP sender.** Currently using shared `onboarding@resend.dev`. Upgrading to a custom domain is optional polish for post-v1. *Idea only*, noted in HANDOFF.md → "Done."
+- **View Recent — duplicate sets showing.** Some exercises in the View Recent modal display duplicate set entries. Likely causes to investigate: (a) the Fitbod import created duplicate workout rows before the orphan cleanup, and some sets may still reference both the original and duplicate workout; (b) the `openExerciseHistory` query at `index.html:~2645` has no `DISTINCT` or dedup logic and may return the same set via multiple join paths; (c) the resolver matching multiple candidate names to the same exercise could cause the query to run twice. Needs investigation next session alongside the remaining View Recent mismatches (orphan user-custom rows — see HANDOFF.md → "Known v1 limitations → Open").
 
 ## Data model upgrades
 
