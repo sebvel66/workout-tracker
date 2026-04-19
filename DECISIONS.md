@@ -2,6 +2,29 @@
 
 Running log of architecture/behavior decisions for the workout tracker. Newest first.
 
+## 2026-04-19 — Exercise name resolution via candidate-list matcher + alias map
+
+Plan JSON stores exercise names as **display labels** with coaching context ("Pull-ups (BW, full ROM)", "DB Incline Bench Press (30°)", "Cable Chest Fly (mid)"), not canonical identifiers. Before this, `ensureExerciseId(planName)` and `openExerciseHistory(planName)` both keyed `exerciseLibraryByName[normName(name)]` directly — so the vast majority of plan exercises silently missed the seed library, created divergent user-custom rows on set-save, and returned "No history" on View Recent even when canonical history existed.
+
+**Approach considered and rejected:** mutate `normName` to do heavier canonicalization (strip parens, hyphens, pluralization). Rejected because `normName` is the hash used at ~20 sites including `sets.name` inserts; changing the contract risks silent data-divergence elsewhere.
+
+**Chosen:** a separate `resolveLibraryRow(name)` that generates candidates via **deterministic transformations** applied cumulatively, checks each against the existing `exerciseLibraryByName` map, and returns the first match or null. Never fabricates a match — only resolves to rows that already exist.
+
+**Transformations, in order:**
+1. `normName(name)` — baseline.
+2. Strip trailing parenthetical: `"foo (bar)"` → `"foo"`.
+3. Hyphen → space: `"pull-up"` → `"pull up"` (bidirectional coverage via library-side secondary index below).
+4. Depluralize: trim `-es` / `-s` from each candidate.
+5. `EXERCISE_ALIASES[candidate]` override (inline constant; additive as new plan exercises surface).
+
+Library-side secondary hyphen index in `loadExerciseLibrary` keys seed rows both hyphenated (`"pull-up"`) and dehyphenated (`"pull up"`) so lookups either direction resolve without a `normName` contract change.
+
+**Applied in both paths:** `ensureExerciseId` (write) calls the resolver first and reuses the canonical `exercise_id`; `openExerciseHistory` (read) calls it to locate the row to query. Fallback on resolver miss is the prior behavior — upsert a custom row under the normalized plan name — so set-save never blocks on an unknown name. Fallback rows are caught by periodic data audits, not at write time.
+
+**How to apply:**
+- Add entries to `EXERCISE_ALIASES` as new plan exercise names surface that don't resolve via the built-in transformations. Keys are raw-normalized forms; values are existing library names.
+- Migrating legacy orphans (rows written under the raw-normalized name before this landed) is a separate data-cleanup task, not handled by the resolver. See `HANDOFF.md` → "Known v1 limitations → Open".
+
 ## 2026-04-17 — Session pause/resume via `paused_ms` offset column
 
 When a user pauses a session (Complete Session tap, often accidental) and later resumes, the displayed timer must pick up at the same elapsed value it showed at pause — not the wall-clock since `started_at`, which would include the pause gap. Two approaches considered:

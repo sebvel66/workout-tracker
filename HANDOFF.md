@@ -4,7 +4,7 @@ Context for a fresh Claude Code instance picking up v1 (cross-device persistence
 
 ## Next session pickup
 
-Current live version: **`v2.0.7`** (visible in bottom-right footer). `origin/main` is the source of truth; working tree is clean.
+Current live version: **`v2.0.10`** (visible in bottom-right footer). `origin/main` is the source of truth; working tree is clean.
 
 **Session A (v1 + v1.1) fully shipped.** Everything from the original Session A plan is live: auto-populate on done-tap, session start/complete timer with Resume (`paused_ms`), exercise library + picker, ad-hoc off-plan sessions, multi-day-per-calendar, weight-mode display, delete affordances, historical session browser. All v1.1 known-limitations are closed.
 
@@ -15,6 +15,11 @@ Current live version: **`v2.0.7`** (visible in bottom-right footer). `origin/mai
 - OTP-code auth flow (keeps sign-in inside the PWA on iOS home-screen installs); magic link still works as fallback. Requires `{{ .Token }}` in the Supabase Magic Link email template.
 - `fmtP` now prefers `reps_range` over `reps_target` and never double-renders when both are populated.
 - Per-exercise "view recent" modal on every card — last 5 prior sessions with sets/reps/weight/RPE.
+
+**Post-Session A follow-ups (2026-04-19, v2.0.8 – v2.0.10):**
+- `v2.0.8` — delete-session button for ad-hoc workouts.
+- `v2.0.9` — `loadExerciseLibrary` now keys `exerciseLibraryByName` / `exerciseIdCache` by `normName(row.name)`, matching the contract the state declarations already documented. Seed rows are already lowercase so this is a no-op for them; guards against legacy mixed-case user-custom rows from pre-normalization-on-insert v1 code.
+- `v2.0.10` — exercise name resolver. Plan exercise names are display labels ("Pull-ups (BW, full ROM)", "DB Incline Bench Press (30°)") and rarely match seed names exactly. `resolveLibraryRow(name)` generates an ordered list of candidate keys via deterministic transformations (paren-strip, hyphen↔space, depluralize) plus an `EXERCISE_ALIASES` constant, and returns the first candidate that's in `exerciseLibraryByName` — or null. Both the write path (`ensureExerciseId`) and the read path (`openExerciseHistory`) route through it, so plan-logged sets and ad-hoc/imported sets land on the same `exercise_id`. Library-side secondary hyphen index covers "plan has no hyphen / seed has hyphen" without changing the `normName` contract.
 
 **Forward-looking work** is in [`ROADMAP.md`](ROADMAP.md). The big remaining scope is **Session B: AI-generated workouts and progression analytics**. The v1 schema was built explicitly for this (per-set RPE, prescribed-vs-actual columns, `completed_at` semantics, `paused_ms`) — no schema migration required to start.
 
@@ -180,12 +185,21 @@ Indexes target three expected query shapes: "all sets for exercise X over time,"
 
 ## Known v1 limitations
 
-*(All previously documented limitations are closed.)*
+**Open:**
+- **Orphan user-custom exercise rows from pre-`v2.0.10` write path.** Before the resolver landed, every `ensureExerciseId(planName)` call created a user-custom row under the raw-normalized plan name (e.g. `"pull-ups (bw, full rom)"`, `"db romanian deadlift"`) and logged sets against it. `loadExerciseLibrary` pulls everything RLS exposes — seed + user-custom — so these orphan rows are still in `exerciseLibraryByName` and can intercept `resolveLibraryRow` before it reaches the canonical seed candidate, because raw-normalized candidates are tried first. Visible symptom: `openExerciseHistory` for an affected plan exercise shows only recent plan-logged sets (on the orphan row) while Fitbod/historical imports on the seed row stay hidden. Fix requires data cleanup: `UPDATE sets SET exercise_id = <canonical id> WHERE exercise_id = <orphan id>` then `DELETE FROM exercises WHERE id = <orphan id>`. A Supabase SQL audit to find orphans for the active user:
+  ```sql
+  SELECT id, name, user_id, is_custom
+  FROM exercises
+  WHERE user_id = '<uid>' AND is_custom = true
+  ORDER BY name;
+  ```
+  Compare each entry against the seed library and the alias map; rows matching a plan exercise name should be merged into their canonical counterpart. Decline Crunch / VO2 Max Intervals / Zone 2 Walk / Cable Woodchop (if no seed "woodchop") genuinely have no canonical target — leave them.
 
 **Resolved in Session A:**
 - Multi-tab / first-insert retry dup → partial unique index on `(user_id, plan_id, day_index, performed_on)` + client 23505 re-query. See `DECISIONS.md`.
 - Midnight boundary drift → `sessionTodayStart` snapshotted at hydrate, used by everything via `sessionBounds()` / `sessionTodayDateString()`.
 - One editable tab per calendar day → `todayPlanStates` is now a map keyed by dayIndex, so every plan day tab independently tracks its own today-workout.
+- Plan-name vs seed-library name divergence creating split history → resolved in `v2.0.10` by `resolveLibraryRow` + `EXERCISE_ALIASES`. Orphan rows from pre-`v2.0.10` persists remain a data cleanup task (see "Open" above), but new plan-logged sets land on the canonical row.
 
 ## Pre-deploy tasks
 
