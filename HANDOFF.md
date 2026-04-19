@@ -4,22 +4,28 @@ Context for a fresh Claude Code instance picking up v1 (cross-device persistence
 
 ## Next session pickup
 
-**All of Session A (v1 + v1.1 polish) shipped and pushed.** App is `v2.0.0` per the bottom-right footer. Feature checklist from Session A is complete:
+Current live version: **`v2.0.7`** (visible in bottom-right footer). `origin/main` is the source of truth; working tree is clean.
 
-- Auto-populate prescribed values on done-tap.
-- Session start / complete with visible timer; Resume button un-completes (via `paused_ms` offset so `started_at` stays literal).
-- Exercise library (taxonomy, ~200 seed exercises, picker modal with search + chips + recents + custom-exercise creation).
-- Ad-hoc off-plan sessions with their own tabs, titles, timers.
-- Multi-day-per-calendar (every plan day independently editable today).
-- Weight-mode display (per-side, added-wt, no-weight).
-- Delete × for user-added sets and exercise cards.
-- Historical session browser (modal, paginated, plan + ad-hoc combined, today's completed sessions surface immediately).
+**Session A (v1 + v1.1) fully shipped.** Everything from the original Session A plan is live: auto-populate on done-tap, session start/complete timer with Resume (`paused_ms`), exercise library + picker, ad-hoc off-plan sessions, multi-day-per-calendar, weight-mode display, delete affordances, historical session browser. All v1.1 known-limitations are closed.
 
-**All v1.1 known-limitations are closed.** Multi-tab / retry dup (partial unique index), midnight drift (`sessionTodayStart` snapshot), one-editable-tab-per-calendar (`todayPlanStates` map), and ad-hoc resume semantics (`paused_ms`) all landed.
+**Session A tail polish (2026-04-17) landed after the original pickup was written:**
+- Day-tab strip → native `<select>` dropdown with optgroups (plan days + ad-hoc) + standalone `+ New Session` button.
+- Rest timer ±15s adjust buttons.
+- Export reworked: date range + CSV or JSON, queries every workout in window (plan + ad-hoc).
+- OTP-code auth flow (keeps sign-in inside the PWA on iOS home-screen installs); magic link still works as fallback. Requires `{{ .Token }}` in the Supabase Magic Link email template.
+- `fmtP` now prefers `reps_range` over `reps_target` and never double-renders when both are populated.
+- Per-exercise "view recent" modal on every card — last 5 prior sessions with sets/reps/weight/RPE.
 
-**Forward-looking work** is in [`ROADMAP.md`](ROADMAP.md). Nothing critical is blocking; remaining items are post-v1 polish (rest timer controls, rename/delete ad-hoc sessions, undoable delete, old-plan banner on import day) plus the big Session B scope: **AI-generated workouts and progression analytics**. The v1 schema was explicitly built to support that without further migrations — per-set RPE, prescribed-vs-actual columns, `completed_at` semantics, and now `paused_ms` for accurate session duration are all already in place.
+**Forward-looking work** is in [`ROADMAP.md`](ROADMAP.md). The big remaining scope is **Session B: AI-generated workouts and progression analytics**. The v1 schema was built explicitly for this (per-set RPE, prescribed-vs-actual columns, `completed_at` semantics, `paused_ms`) — no schema migration required to start.
 
-Latest architectural decisions worth reviewing before Session B kicks off: [`DECISIONS.md`](DECISIONS.md) entries for `paused_ms` and the `(user_id, plan_id, day_index, performed_on)` unique index — both non-obvious choices that future analytics queries should respect.
+**Non-obvious design choices worth reviewing before Session B:** the `paused_ms` entry and the `(user_id, plan_id, day_index, performed_on)` unique-index entry in [`DECISIONS.md`](DECISIONS.md). Both affect how analytics queries should interpret session duration and dedup semantics.
+
+**Working conventions established during Session A** (preserve these in the next session):
+- Every visible change bumps `APP_VERSION` (`v2.0.x` per iteration). Keeps stale-cache diagnosis trivial.
+- User tests before every commit unless explicitly told otherwise. Commits are small and focused — avoid bundling unrelated work.
+- All migrations go in `supabase/migrations/` with the Supabase timestamp convention; never edit an applied migration — write a forward-only one.
+- Error toasts with retry callbacks are sticky until tapped; informational toasts auto-dismiss at 20s.
+- Destructive operations get explicit user confirmation; pushes require explicit user approval.
 
 ## Where we left off (2026-04-12 session)
 
