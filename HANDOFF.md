@@ -6,6 +6,8 @@ Context for a fresh Claude Code instance picking up v1 (cross-device persistence
 
 Current live version: **`v2.0.14`** (visible in bottom-right footer). `origin/main` is the source of truth; working tree is clean.
 
+**Before editing code, read [`ARCHITECTURE.md`](ARCHITECTURE.md)** — it maps the repo layout, the 5-module JS split (`js/resolver.js`, `js/data.js`, `js/ui.js`, `js/auth.js`, `js/app.js`), state ownership, cross-module call boundaries, and UI patterns. `index.html` is HTML+CSS+`<script src>` tags only; inline JS is gone since the 2026-04-19 refactor.
+
 **Session A (v1 + v1.1) fully shipped.** Everything from the original Session A plan is live: auto-populate on done-tap, session start/complete timer with Resume (`paused_ms`), exercise library + picker, ad-hoc off-plan sessions, multi-day-per-calendar, weight-mode display, delete affordances, historical session browser. All v1.1 known-limitations are closed.
 
 **Session A tail polish (2026-04-17) landed after the original pickup was written:**
