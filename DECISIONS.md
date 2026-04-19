@@ -2,6 +2,22 @@
 
 Running log of architecture/behavior decisions for the workout tracker. Newest first.
 
+## 2026-04-19 — Timers use wall-clock deadlines, not counters. Notification API rejected for rest timer.
+
+All time-sensitive UI in this app must be **wall-clock anchored** rather than counter-based. The session timer already does this (`sessionElapsedMs = Date.now() - startedAt - pausedMs`); the rest timer was the outlier until `v2.0.14` — it counted down a `restSeconds` variable via `setInterval(..., 1000)`, and iOS suspended the interval when the PWA lost focus, freezing the timer mid-rest.
+
+**The rule:** any countdown or elapsed display stores `targetMs` (deadline) or `startedAt` (start time) as an absolute `Date.now()` value. The re-render interval just reads `Date.now()` each tick and computes remaining/elapsed. `visibilitychange → visible` handlers catch up on any state that a backgrounded tick missed (e.g. the deadline passed, fire the completion path now).
+
+**Notification API was considered and rejected** for the rest timer. On iOS PWAs:
+- `new Notification(...)` only fires when the calling JS is actually running.
+- iOS suspends backgrounded PWA JavaScript, so `setTimeout(notify, remainingMs)` won't fire at the deadline.
+- Reliable background notifications require a service worker + Web Push (server-scheduled). That's a feature-of-its-own-scale and not warranted by a rest-timer fix.
+- On `visibilitychange → visible` after a backgrounded expiration, we could call `new Notification(...)` — but by then the user is already looking at the app, and the vibrate + beep + UI dismissal are already firing. The notification adds nothing beyond a stale unread marker in Notification Center.
+
+**How to apply:**
+- If a new feature wants "tell the user something happened while they were away," it's out of scope until we take on a service-worker project. Design around the user returning to the app, not around pushing into their notification center.
+- Wake Lock (`navigator.wakeLock.request('screen')`) is a valid orthogonal improvement for foreground flows (keeps the screen on during rest). Not shipped yet; revisit if screen-sleep during rest becomes annoying.
+
 ## 2026-04-19 — Gym profiles: `pendingLocationId` sentinel for pre-workout selection
 
 The gym-profiles feature lets a user pick a gym **before** any set is logged — specifically on a plan-day tab where the `workouts` row doesn't exist yet (lazy-created on first set-done or notes-blur via `ensureWorkout`). Three states needed to be distinguishable at render and write time:
