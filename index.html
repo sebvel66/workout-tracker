@@ -1119,7 +1119,7 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
 // -----------------------------------------------------------------------------
 // Bump this on every deploy. Displayed at the bottom of the app so stale-
 // cache issues can be diagnosed from the client ("which version am I on?").
-var APP_VERSION = 'v2.0.9';
+var APP_VERSION = 'v2.0.10';
 
 var SUPABASE_URL = 'https://kgrmlgrzaxbwpkmziwxp.supabase.co';
 var SUPABASE_ANON_KEY = 'sb_publishable_Yh8YMh9yq0gQ77OD-oiQ1A_9MHS_6rB';
@@ -2009,7 +2009,76 @@ function getOrInitSet(exState, si) {
 // plan text; the normalized form is purely a canonical key.
 function normName(s) { return String(s == null ? '' : s).trim().toLowerCase(); }
 
+// Plan exercise names are display labels ("Pull-ups (BW, full ROM)",
+// "DB Incline Bench Press (30°)") and rarely match seed library names
+// exactly. Map raw-normalized plan names to canonical library names so
+// plan-logged sets and ad-hoc/imported sets end up on the same
+// exercise_id. Add entries here as new plan exercises surface.
+var EXERCISE_ALIASES = {
+  'barbell hip thrust':                      'hip thrust',
+  'cable chest fly':                         'cable fly',
+  'cable face pull':                         'face pull',
+  'cable rope overhead triceps extension':   'overhead tricep extension (cable)',
+  'cable tricep pushdown':                   'tricep pushdown',
+  'cable woodchop':                          'woodchop',
+  'db flat bench press':                     'dumbbell bench press',
+  'db incline bench press':                  'incline dumbbell bench press',
+  'db lateral raise':                        'lateral raise',
+  'db romanian deadlift':                    'dumbbell romanian deadlift',
+  'db shoulder press':                       'dumbbell overhead press',
+  'dumbbell bulgarian split squat':          'bulgarian split squat',
+  'dumbbell rear delt raise':                'rear delt fly',
+  'incline db curl':                         'incline dumbbell curl',
+  'lying hamstrings curl':                   'lying leg curl',
+  'seated hamstrings curl':                  'seated leg curl',
+  'single leg db calf raise':                'single leg calf raise',
+  'weighted ab rollout':                     'ab wheel rollout',
+};
+
+// Resolve a plan/display exercise name to an existing library row (seed
+// or user-custom), or null if no match. Generates an ordered list of
+// candidate keys via deterministic transformations and returns the first
+// one that's in exerciseLibraryByName. Never fabricates a match.
+function resolveLibraryRow(name) {
+  var seen = {}, candidates = [];
+  function add(s) {
+    if (!s) return;
+    s = s.trim();
+    if (s && !seen[s]) { seen[s] = true; candidates.push(s); }
+  }
+  function snapshot() { return candidates.slice(); }
+
+  add(normName(name));
+  // Strip trailing parenthetical: "foo (bar)" -> "foo".
+  snapshot().forEach(function(c) { add(c.replace(/\s*\([^)]*\)\s*$/, '')); });
+  // Hyphen -> space. (Library secondary-indexes the reverse, so both ways work.)
+  snapshot().forEach(function(c) { if (c.indexOf('-') >= 0) add(c.replace(/-/g, ' ')); });
+  // Depluralize: trim -es or -s.
+  snapshot().forEach(function(c) {
+    if (/es$/.test(c)) add(c.slice(0, -2));
+    if (/s$/.test(c))  add(c.slice(0, -1));
+  });
+  // Alias map: applied to every candidate generated above.
+  snapshot().forEach(function(c) { if (EXERCISE_ALIASES[c]) add(EXERCISE_ALIASES[c]); });
+
+  for (var i = 0; i < candidates.length; i++) {
+    if (exerciseLibraryByName[candidates[i]]) return exerciseLibraryByName[candidates[i]];
+  }
+  return null;
+}
+
 async function ensureExerciseId(name) {
+  // Try to resolve to an existing library row first (seed or user-custom).
+  // If a match exists, reuse its id instead of creating a divergent custom
+  // row — keeps plan-logged sets on the same exercise_id as ad-hoc/imported
+  // history for the same movement.
+  var resolved = resolveLibraryRow(name);
+  if (resolved) {
+    exerciseIdCache[normName(name)] = resolved.id;
+    return resolved.id;
+  }
+  // Fallback: no library match — upsert a custom row under the normalized
+  // plan name. These are inspected during periodic data audits.
   var key = normName(name);
   if (exerciseIdCache[key]) return exerciseIdCache[key];
   var res = await sb.from('exercises')
@@ -2028,9 +2097,14 @@ async function loadExerciseLibrary() {
   exerciseLibraryById = {};
   for (var i = 0; i < exerciseLibrary.length; i++) {
     var row = exerciseLibrary[i];
-    exerciseLibraryByName[normName(row.name)] = row;
+    var key = normName(row.name);
+    exerciseLibraryByName[key] = row;
     exerciseLibraryById[row.id] = row;
-    exerciseIdCache[normName(row.name)] = row.id;
+    exerciseIdCache[key] = row.id;
+    // Secondary index: also key by the dehyphenated form so lookups like
+    // "Pull Up" (no hyphen) resolve the seed "pull-up" (hyphenated).
+    var dh = key.replace(/-/g, ' ');
+    if (dh !== key && !exerciseLibraryByName[dh]) exerciseLibraryByName[dh] = row;
   }
 }
 
@@ -2634,8 +2708,7 @@ async function openExerciseHistory(exerciseName) {
   body.innerHTML = '<div class="history-empty">Loading…</div>';
   document.getElementById('exHistoryOverlay').classList.add('show');
 
-  var key = normName(exerciseName);
-  var row = exerciseLibraryByName[key];
+  var row = resolveLibraryRow(exerciseName);
   if (!row) {
     body.innerHTML = '<div class="history-empty">No history for this exercise yet.</div>';
     return;
