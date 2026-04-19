@@ -8,6 +8,18 @@ Consolidated from HANDOFF.md and DECISIONS.md as of 2026-04-16. Nothing new here
 - **Progression / PR / volume-over-time analytics** as inputs to the AI planner. Listed as query shapes the v1 indexes target ("all sets for exercise X over time"). *Idea only* as a surfaced feature; the query substrate exists.
 - **Configurable AI context window.** User-editable setting controlling how many weeks of workout history are sent to the AI planner when generating a new plan. Default 4 weeks. Tiered compression still applies (recent weeks verbatim, older weeks summarized). Stored as a user preference in Supabase. **Use case:** if the user takes time off, they can expand the window so the AI sees pre-break performance rather than interpreting the gap as detraining. *Idea only.*
 - **Proactive program re-evaluation.** The AI coach should not just generate week-to-week progressions within a fixed program structure. It should periodically re-evaluate exercise selection, rep ranges, split design, volume distribution, and periodization phase. Roughly every 4–6 weeks, or when the data suggests a plateau or phase transition, the AI should proactively recommend structural changes and explain the reasoning in coaching notes. **This is a system-prompt directive, not a code feature.** *Idea only.*
+- **Physique photo integration.** Two photo types feed into AI plan generation:
+  - **Goal physique photo:** uploaded once, rarely changed. AI identifies visual priorities (which muscle groups are emphasized) and biases exercise selection and volume toward matching the goal.
+  - **Progress photos:** uploaded every 2–4 weeks, same pose. AI compares current to goal, identifies lagging muscle groups, and adjusts programming accordingly.
+
+  **Architecture:** Supabase Storage for the image files, a `physique_photos` table for metadata, photos sent as image content blocks in the Claude API call during plan generation.
+
+  **Layered rollout:**
+  - **Layer 1** — upload / storage / gallery UI. Ships independently before the AI planner exists.
+  - **Layer 2** — include the photos in the plan-generation prompt. Extends the Edge Function.
+  - **Layer 3** — visual progress tracking with AI commentary over time. v2.1+ enhancement.
+
+  **Why it matters:** genuine differentiator — no commercial fitness app uses multimodal AI to visually assess physique and adjust programming. Fitbod, Hevy, and others are purely data-driven with no visual component. *Idea only.*
 
 ## UX improvements
 
