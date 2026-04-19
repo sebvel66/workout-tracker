@@ -291,6 +291,58 @@ html, body {
 .sub-input:focus { border-color: var(--purple); }
 .sub-input::placeholder { color: var(--text3); }
 
+/* Session-level notes (workout-wide, not per-exercise) */
+.session-notes {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin: 10px 14px;
+  overflow: hidden;
+}
+.session-notes-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.session-notes-header:active { background: var(--surface2); }
+.session-notes-label {
+  font-size: 12px; font-weight: 600;
+  color: var(--text2);
+  font-family: 'JetBrains Mono', monospace;
+  text-transform: uppercase; letter-spacing: 0.5px;
+  flex-shrink: 0;
+}
+.session-notes-preview {
+  flex: 1; min-width: 0;
+  font-size: 12px; color: var(--text3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.session-notes-chevron {
+  font-size: 12px; color: var(--text3);
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+}
+.session-notes.expanded .session-notes-chevron { transform: rotate(180deg); }
+.session-notes-body { display: none; padding: 0 12px 12px; }
+.session-notes.expanded .session-notes-body { display: block; }
+.session-notes-input {
+  width: 100%;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: 'Outfit', sans-serif;
+  font-size: 13px; line-height: 1.4;
+  padding: 10px;
+  min-height: 80px;
+  resize: vertical;
+  outline: none;
+}
+.session-notes-input:focus { border-color: var(--blue); }
+.session-notes-input::placeholder { color: var(--text3); }
+.session-notes-input:disabled { opacity: 0.8; cursor: default; }
+
 .exercise-note-input {
   width: 100%; background: var(--surface2); border: 1px solid var(--border); color: var(--text);
   font-family: 'Outfit', sans-serif; font-size: 13px; padding: 8px 10px; border-radius: 8px;
@@ -1161,7 +1213,7 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
 // -----------------------------------------------------------------------------
 // Bump this on every deploy. Displayed at the bottom of the app so stale-
 // cache issues can be diagnosed from the client ("which version am I on?").
-var APP_VERSION = 'v2.0.11';
+var APP_VERSION = 'v2.0.12';
 
 var SUPABASE_URL = 'https://kgrmlgrzaxbwpkmziwxp.supabase.co';
 var SUPABASE_ANON_KEY = 'sb_publishable_Yh8YMh9yq0gQ77OD-oiQ1A_9MHS_6rB';
@@ -1382,6 +1434,17 @@ document.getElementById('workoutContainer').addEventListener('click', function(e
     openExerciseHistory(histBtn.getAttribute('data-exercise-name'));
     return;
   }
+  // Session-notes header — toggle collapse/expand.
+  var notesHeader = target.closest ? target.closest('.session-notes-header') : null;
+  if (notesHeader) {
+    var notesContainer = notesHeader.closest('.session-notes');
+    var di = notesContainer ? notesContainer.getAttribute('data-di') : null;
+    if (di != null) {
+      var diVal = di.indexOf('ah_') === 0 ? di : parseInt(di, 10);
+      toggleNotes(diVal);
+    }
+    return;
+  }
   // Expand card
   var header = target.closest ? target.closest('.exercise-header') : null;
   if (header) {
@@ -1469,6 +1532,13 @@ document.getElementById('workoutContainer').addEventListener('change', function(
   }
   if (t.classList.contains('adhoc-title-input')) {
     updateAdHocTitle(t.getAttribute('data-workout-id'), t.value);
+  }
+  if (t.classList.contains('session-notes-input')) {
+    var sdi = t.getAttribute('data-di');
+    if (sdi != null) {
+      var sdiVal = sdi.indexOf('ah_') === 0 ? sdi : parseInt(sdi, 10);
+      persistNotes(sdiVal, t.value);
+    }
   }
 });
 
@@ -1640,6 +1710,8 @@ function stateFromWorkout(row) {
     workoutId: row.id, planId: row.plan_id, dayIndex: row.day_index,
     startedAt: row.started_at, endedAt: row.ended_at,
     pausedMs: row.paused_ms || 0,
+    notes: row.notes || '',
+    notesExpanded: !!(row.notes && row.notes.trim()),
     exercises: {}
   };
   var isAdHocWorkout = row.plan_id === null;
@@ -1788,6 +1860,8 @@ function buildDay(di) {
     h += '<div class="session-bar done"><div class="session-duration">Session: ' + fmtDuration(sessionElapsedMs(state)) + '</div></div>';
   }
 
+  h += renderSessionNotes(di, state, readOnly);
+
   for (var ei = 0; ei < dayPlan.exercises.length; ei++) {
     var ex = dayPlan.exercises[ei];
     var ek = 'ex_' + ei;
@@ -1922,6 +1996,8 @@ function buildAdHocDay(di) {
          '<button class="session-btn session-resume" id="btnResumeSession" type="button">Resume</button></div>';
   }
 
+  h += renderSessionNotes(di, state, false);
+
   var ts = 0, cs = 0;
   var keys = Object.keys(state.exercises || {}).sort(function(a, b) {
     return parseInt(a.slice(3), 10) - parseInt(b.slice(3), 10);
@@ -1987,6 +2063,28 @@ function escapeAttr(s) { return escapeHtml(s).replace(/"/g, '&quot;'); }
 // Render one set-row. `prescribedSet` may be null (extras / ad-hoc), `prText`
 // is the pre-formatted prescription cell. `deletable` adds an inline × button
 // after the done checkbox (used on extras + ad-hoc sets only).
+function renderSessionNotes(di, state, readOnly) {
+  var notes = (state && state.notes) || '';
+  var expanded = !!(state && state.notesExpanded);
+  var preview = notes ? notes.replace(/\s+/g, ' ').trim().slice(0, 40) : '';
+  var previewHtml = preview
+    ? '<div class="session-notes-preview">' + escapeHtml(preview) + (notes.length > 40 ? '…' : '') + '</div>'
+    : '<div class="session-notes-preview"></div>';
+  var diAttr = 'data-di="' + escapeAttr(String(di)) + '"';
+  var disabled = readOnly ? ' disabled readonly' : '';
+  var h = '<div class="session-notes' + (expanded ? ' expanded' : '') + '" ' + diAttr + '>';
+  h += '<div class="session-notes-header" ' + diAttr + '>';
+  h += '<div class="session-notes-label">Session notes</div>';
+  h += previewHtml;
+  h += '<div class="session-notes-chevron">▾</div>';
+  h += '</div>';
+  h += '<div class="session-notes-body">';
+  h += '<textarea class="session-notes-input" ' + diAttr + ' placeholder="How are you feeling today? Energy, soreness, sleep, stress..."' + disabled + '>' + escapeHtml(notes) + '</textarea>';
+  h += '</div>';
+  h += '</div>';
+  return h;
+}
+
 function renderSetRow(di, ei, si, sl, prescribedSet, weightMode, disabledAttr, prText, deletable) {
   var weightCls = prescribedSet ? inputCls(sl.weight, prescribedSet.weight) : '';
   var repsCls = prescribedSet ? inputCls(sl.reps, prescribedSet.reps_target) : '';
@@ -2046,7 +2144,7 @@ function getOrInitToday(di) {
     return findAdHoc(di);
   }
   if (!todayPlanStates[di]) {
-    todayPlanStates[di] = { workoutId: null, planId: null, dayIndex: di, exercises: {} };
+    todayPlanStates[di] = { workoutId: null, planId: null, dayIndex: di, notes: '', notesExpanded: false, exercises: {} };
   }
   todayState = todayPlanStates[di];
   return todayPlanStates[di];
@@ -2387,6 +2485,46 @@ async function logRPE(di, ei, rpe) {
   buildDay(di);
 }
 
+function toggleNotes(di) {
+  var state;
+  if (isAdHocKey(di)) {
+    state = findAdHoc(di);
+  } else {
+    state = todayPlanStates[di] || historicalCache[di];
+    if (!state) {
+      // No state yet on a plan-day tab (no sets logged, no history). Seed
+      // a minimal today-state so notesExpanded has a place to live; the
+      // workout row itself is still lazy-created on focus via persistNotes.
+      state = getOrInitToday(di);
+    }
+  }
+  if (!state) return;
+  state.notesExpanded = !state.notesExpanded;
+  buildDay(di);
+}
+
+async function persistNotes(di, value) {
+  if (viewModeFor(di) !== 'editable') return;
+  var state;
+  if (isAdHocKey(di)) {
+    state = findAdHoc(di);
+    if (!state) return;
+  } else {
+    state = getOrInitToday(di);
+    await ensureWorkout(di);
+  }
+  var next = value == null ? '' : String(value);
+  if ((state.notes || '') === next) return; // dirty-check
+  state.notes = next;
+  try {
+    var res = await sb.from('workouts').update({ notes: next }).eq('id', state.workoutId);
+    if (res.error) throw res.error;
+  } catch(err) {
+    console.error('persistNotes error:', err);
+    showToast("Couldn't save session notes", function() { persistNotes(di, next); });
+  }
+}
+
 async function logNote(di, ei, n) {
   if (viewModeFor(di) !== 'editable') return;
   var st = getOrInitToday(di);
@@ -2545,6 +2683,7 @@ async function createAdHocSession() {
       workoutId: res.data.id, planId: null, dayIndex: null,
       startedAt: now, endedAt: null,
       title: null, isAdHoc: true,
+      notes: '', notesExpanded: false,
       exercises: {},
     };
     todayAdHocs.push(adState);
