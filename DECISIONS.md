@@ -2,6 +2,23 @@
 
 Running log of architecture/behavior decisions for the workout tracker. Newest first.
 
+## 2026-04-19 — Gym profiles: `pendingLocationId` sentinel for pre-workout selection
+
+The gym-profiles feature lets a user pick a gym **before** any set is logged — specifically on a plan-day tab where the `workouts` row doesn't exist yet (lazy-created on first set-done or notes-blur via `ensureWorkout`). Three states needed to be distinguishable at render and write time:
+
+1. **User hasn't touched the dropdown** — the UI should default to `recentLocationId` (the last workout with a location tagged), and `ensureWorkout` should persist that default on INSERT.
+2. **User explicitly picked "— No gym"** — the UI should show "— No gym" sticky, and `ensureWorkout` should persist `null`, not fall back to `recentLocationId`.
+3. **User picked a specific gym** — UI shows it, `ensureWorkout` persists that UUID.
+
+**Chosen encoding:** `state.pendingLocationId`, sitting alongside `state.locationId` on the workout state object. `undefined` = case 1, `null` = case 2, a UUID = case 3. `getOrInitToday` does **not** initialize this field (keeps it `undefined` by default); `persistWorkoutLocation` sets it to the user's choice; `ensureWorkout` reads `state.pendingLocationId !== undefined ? state.pendingLocationId : recentLocationId` to compute the INSERT value, then deletes the field after the row is written.
+
+**Why this shape rather than a single field with a string sentinel:** JS `undefined` vs `null` is the exact distinction we need, and reading `x !== undefined` is clearer than introducing a magic constant like `"UNSET"`.
+
+**How to apply:**
+- Any new state factory that creates a workout-state object must leave `pendingLocationId` absent, not `null`.
+- Any write path that creates a workout row (currently `ensureWorkout` and `createAdHocSession`) must compute the effective location id from `pendingLocationId` with the `recentLocationId` fallback.
+- Hydrated states (`stateFromWorkout`) don't touch `pendingLocationId` — only `locationId` is populated from the DB.
+
 ## 2026-04-19 — Exercise name resolution via candidate-list matcher + alias map
 
 Plan JSON stores exercise names as **display labels** with coaching context ("Pull-ups (BW, full ROM)", "DB Incline Bench Press (30°)", "Cable Chest Fly (mid)"), not canonical identifiers. Before this, `ensureExerciseId(planName)` and `openExerciseHistory(planName)` both keyed `exerciseLibraryByName[normName(name)]` directly — so the vast majority of plan exercises silently missed the seed library, created divergent user-custom rows on set-save, and returned "No history" on View Recent even when canonical history existed.
