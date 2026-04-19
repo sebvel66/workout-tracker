@@ -520,6 +520,52 @@ body.unauthed #emptyState { display: none !important; }
   font-family: 'JetBrains Mono', monospace;
 }
 
+/* Per-exercise recent history */
+.exercise-name-block { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.ex-history-btn {
+  align-self: flex-start;
+  background: none; border: none;
+  color: var(--text3);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 0 0 0;
+  margin-top: 2px;
+  cursor: pointer;
+  text-decoration: underline;
+  -webkit-tap-highlight-color: transparent;
+}
+.ex-history-btn:active { color: var(--text); }
+
+.ex-history-session {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.ex-history-session:last-child { border-bottom: none; }
+.ex-history-session-date {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+.ex-history-sets {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px;
+  color: var(--text);
+  line-height: 1.45;
+}
+.ex-history-rpe {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text2);
+  margin-top: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
 .version-footer {
   position: fixed;
   bottom: calc(78px + var(--safe-bottom));  /* sit just above the fixed summary-bar */
@@ -1004,6 +1050,17 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
   </div>
 </div>
 
+<div class="modal-overlay" id="exHistoryOverlay">
+  <div class="history-modal">
+    <div class="history-header">
+      <div style="width:32px"></div>
+      <div class="history-title" id="exHistoryTitle">Recent</div>
+      <button class="history-close" id="btnExHistoryClose" type="button">×</button>
+    </div>
+    <div class="history-body" id="exHistoryBody"></div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="historyOverlay">
   <div class="history-modal">
     <div class="history-header">
@@ -1046,7 +1103,7 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
 // -----------------------------------------------------------------------------
 // Bump this on every deploy. Displayed at the bottom of the app so stale-
 // cache issues can be diagnosed from the client ("which version am I on?").
-var APP_VERSION = 'v2.0.6';
+var APP_VERSION = 'v2.0.7';
 
 var SUPABASE_URL = 'https://kgrmlgrzaxbwpkmziwxp.supabase.co';
 var SUPABASE_ANON_KEY = 'sb_publishable_Yh8YMh9yq0gQ77OD-oiQ1A_9MHS_6rB';
@@ -1128,6 +1185,10 @@ document.getElementById('exportOverlay').addEventListener('click', function(e) {
 });
 document.getElementById('btnHistory').addEventListener('click', openHistory);
 document.getElementById('btnHistoryClose').addEventListener('click', closeHistory);
+document.getElementById('btnExHistoryClose').addEventListener('click', closeExerciseHistory);
+document.getElementById('exHistoryOverlay').addEventListener('click', function(e) {
+  if (e.target === this) closeExerciseHistory();
+});
 document.getElementById('btnHistoryBack').addEventListener('click', backToHistoryList);
 document.getElementById('historyOverlay').addEventListener('click', function(e) {
   if (e.target === this) closeHistory();
@@ -1238,6 +1299,13 @@ document.getElementById('workoutContainer').addEventListener('click', function(e
       currentDay,
       parseInt(delCardBtnEarly.getAttribute('data-ei'), 10)
     );
+    return;
+  }
+  // Per-exercise recent history — handled before header-expand because this
+  // button lives inside .exercise-header.
+  var histBtn = target.closest ? target.closest('.ex-history-btn') : null;
+  if (histBtn) {
+    openExerciseHistory(histBtn.getAttribute('data-exercise-name'));
     return;
   }
   // Expand card
@@ -1655,7 +1723,7 @@ function buildDay(di) {
     var weightMode = weightModeForName(ex.name);
 
     h += '<div class="exercise-card' + cc + '">';
-    h += '<div class="exercise-header"><div class="exercise-name">' + escapeHtml(ex.name) + '</div><div class="exercise-status ' + sc + '">' + stat + '</div></div>';
+    h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + escapeHtml(ex.name) + '</div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(ex.name) + '">view recent</button></div><div class="exercise-status ' + sc + '">' + stat + '</div></div>';
     if (ex.note) h += '<div class="exercise-note">' + escapeHtml(ex.note) + '</div>';
     h += '<div class="sets-container">';
 
@@ -1707,7 +1775,7 @@ function buildDay(di) {
     var xcc = xad ? ' complete' : xsd ? ' partial' : '';
 
     h += '<div class="exercise-card' + xcc + '">';
-    h += '<div class="exercise-header"><div class="exercise-name">' + escapeHtml(xMeta.name) + '<span class="extras-badge">added</span></div><div class="exercise-status ' + xsc + '">' + xstat + '</div>' + (readOnly ? '' : '<button class="card-delete" data-di="' + di + '" data-ei="' + xei + '" aria-label="Delete exercise" type="button">×</button>') + '</div>';
+    h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + escapeHtml(xMeta.name) + '<span class="extras-badge">added</span></div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(xMeta.name) + '">view recent</button></div><div class="exercise-status ' + xsc + '">' + xstat + '</div>' + (readOnly ? '' : '<button class="card-delete" data-di="' + di + '" data-ei="' + xei + '" aria-label="Delete exercise" type="button">×</button>') + '</div>';
     h += '<div class="sets-container">';
     for (var xsi2 = 0; xsi2 < xSetCount; xsi2++) {
       var xsl = xState.sets[xsi2] || {};
@@ -1797,7 +1865,7 @@ function buildAdHocDay(di) {
     var cc = ad ? ' complete' : sd ? ' partial' : '';
 
     h += '<div class="exercise-card' + cc + '">';
-    h += '<div class="exercise-header"><div class="exercise-name">' + escapeHtml(meta.name) + '</div><div class="exercise-status ' + sc + '">' + stat + '</div><button class="card-delete" data-di="' + di + '" data-ei="' + ei + '" aria-label="Delete exercise" type="button">×</button></div>';
+    h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + escapeHtml(meta.name) + '</div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(meta.name) + '">view recent</button></div><div class="exercise-status ' + sc + '">' + stat + '</div><button class="card-delete" data-di="' + di + '" data-ei="' + ei + '" aria-label="Delete exercise" type="button">×</button></div>';
     h += '<div class="sets-container">';
     for (var si = 0; si < setCount; si++) {
       var sl = exState.sets[si] || {};
@@ -2499,6 +2567,121 @@ async function submitCustomForm() {
     console.error('submitCustomForm error:', err);
     showToast("Couldn't create exercise: " + err.message, null);
   }
+}
+
+// ---- Per-exercise recent history ----
+async function openExerciseHistory(exerciseName) {
+  var title = exerciseName || 'Recent';
+  document.getElementById('exHistoryTitle').textContent = title;
+  var body = document.getElementById('exHistoryBody');
+  body.innerHTML = '<div class="history-empty">Loading…</div>';
+  document.getElementById('exHistoryOverlay').classList.add('show');
+
+  var key = normName(exerciseName);
+  var row = exerciseLibraryByName[key];
+  if (!row) {
+    body.innerHTML = '<div class="history-empty">No history for this exercise yet.</div>';
+    return;
+  }
+
+  try {
+    var res = await sb.from('sets')
+      .select('id, weight, reps, rpe, set_order, done, workout_id, workouts(performed_at, plan_id, day_index, title)')
+      .eq('user_id', userId)
+      .eq('exercise_id', row.id)
+      .eq('done', true)
+      .limit(200);
+    if (res.error) throw res.error;
+    var sets = (res.data || []).filter(function(s) { return s.workouts; });
+
+    // Exclude the currently-focused workout so "recent" means prior sessions.
+    var excludeId = todayState && todayState.workoutId;
+    if (excludeId) sets = sets.filter(function(s) { return s.workout_id !== excludeId; });
+
+    // Sort by workout performed_at desc client-side.
+    sets.sort(function(a, b) {
+      return new Date(b.workouts.performed_at).getTime() - new Date(a.workouts.performed_at).getTime();
+    });
+
+    // Group by workout, preserving the order we just sorted by.
+    var byWorkout = {};
+    var order = [];
+    for (var i = 0; i < sets.length; i++) {
+      var wId = sets[i].workout_id;
+      if (!byWorkout[wId]) {
+        byWorkout[wId] = {
+          workoutId: wId,
+          performedAt: sets[i].workouts.performed_at,
+          planId: sets[i].workouts.plan_id,
+          dayIndex: sets[i].workouts.day_index,
+          title: sets[i].workouts.title,
+          sets: [],
+        };
+        order.push(wId);
+      }
+      byWorkout[wId].sets.push(sets[i]);
+    }
+    var sessions = order.slice(0, 5).map(function(id) { return byWorkout[id]; });
+
+    if (!sessions.length) {
+      body.innerHTML = '<div class="history-empty">No prior sessions logged for this exercise.</div>';
+      return;
+    }
+
+    // Prefetch uncached plan blobs so session labels resolve.
+    var missingPlans = {};
+    for (var s = 0; s < sessions.length; s++) {
+      var pid = sessions[s].planId;
+      if (pid && !planCache[pid]) missingPlans[pid] = true;
+    }
+    var mpIds = Object.keys(missingPlans);
+    if (mpIds.length) {
+      var pr = await sb.from('plans').select('id, data').in('id', mpIds);
+      if (pr.data) {
+        for (var p = 0; p < pr.data.length; p++) {
+          planCache[pr.data[p].id] = pr.data[p].data;
+        }
+      }
+    }
+
+    var h = '';
+    for (var j = 0; j < sessions.length; j++) {
+      var sess = sessions[j];
+      var dateText = new Date(sess.performedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+      var contextText = '';
+      var planBlob = sess.planId ? planCache[sess.planId] : null;
+      if (planBlob && planBlob.days && planBlob.days[sess.dayIndex]) {
+        contextText = ' · ' + planBlob.days[sess.dayIndex].name;
+      } else if (!sess.planId) {
+        contextText = ' · ' + (sess.title || 'Ad-hoc');
+      }
+      sess.sets.sort(function(a, b) { return a.set_order - b.set_order; });
+      var setStrs = sess.sets.map(function(s) {
+        var w = s.weight != null ? s.weight : '—';
+        var r = s.reps != null ? s.reps : '—';
+        return w + ' × ' + r;
+      });
+      var rpes = sess.sets.map(function(s) { return s.rpe; }).filter(function(r) { return r != null; });
+      var rpeText = '';
+      if (rpes.length) {
+        var uniq = rpes.filter(function(v, idx, arr) { return arr.indexOf(v) === idx; });
+        rpeText = 'RPE ' + (uniq.length === 1 ? uniq[0] : rpes.join(', '));
+      }
+      h += '<div class="ex-history-session">';
+      h += '<div class="ex-history-session-date">' + escapeHtml(dateText + contextText) + '</div>';
+      h += '<div class="ex-history-sets">' + escapeHtml(setStrs.join('  ·  ')) + '</div>';
+      if (rpeText) h += '<div class="ex-history-rpe">' + escapeHtml(rpeText) + '</div>';
+      h += '</div>';
+    }
+    body.innerHTML = h;
+  } catch(err) {
+    console.error('openExerciseHistory error:', err);
+    body.innerHTML = '<div class="history-empty">Couldn\'t load history for this exercise.</div>';
+  }
+}
+
+function closeExerciseHistory() {
+  document.getElementById('exHistoryOverlay').classList.remove('show');
 }
 
 // ---- History browser ----
