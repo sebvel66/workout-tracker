@@ -98,7 +98,11 @@ function renderSetRow(di, ei, si, sl, prescribedSet, weightMode, disabledAttr, p
 
 function fmtP(s) {
   var p = [];
-  if (s.weight) p.push(s.weight + (s.unit || 'lbs'));
+  var lbsP = normalizePrescribedLbs(s);
+  if (lbsP != null) {
+    var u = getWeightUnit();
+    p.push(displayWeight(lbsP, u) + u);
+  }
   // Prefer reps_range (e.g. "8-12") since it carries more information, and
   // fall back to reps_target (the specific number) when no range is present.
   if (s.reps_range) p.push('x' + s.reps_range);
