@@ -45,6 +45,7 @@ var generatedInputs = null;         // { start_date, target_duration, notes } fr
 var generateStartedAt = 0;          // ms timestamp when the API call started
 var generateInFlight = false;       // prevents double-fire of the generate button
 var generateAbortController = null; // wired to the in-flight fetch so Cancel can abort
+var generateAttempt = 0;            // 1 on first try, 2 on the silent retry (for loading-message swap)
 
 // Plans management state — list view with activate/delete actions.
 var plansList = [];                 // [{id, title, week, is_active, created_at, start_date, workout_count}]
@@ -1483,10 +1484,17 @@ async function submitGenerateInputs() {
   };
 
   // Now fire the fetch. State transition: inputs → loading → review/error.
+  // Retry semantics: the serverless function can be cold on the first call
+  // of the hour (Anthropic prompt cache miss: ~35-45s vs ~22-30s warm).
+  // Slow-response days can tip past the server's 55s abort. A single silent
+  // retry hits the warm cache and almost always succeeds. Retry only on
+  // network errors / 5xx / 504 timeout — 4xx (no plan, auth, validation)
+  // won't fix themselves on retry.
   if (generateInFlight) return;
   generateInFlight = true;
   generateView = 'loading';
   generateStartedAt = Date.now();
+  generateAttempt = 1;
   generateAbortController = new AbortController();
   renderGenerate();
 
@@ -1495,24 +1503,22 @@ async function submitGenerateInputs() {
     var token = sessionRes.data && sessionRes.data.session && sessionRes.data.session.access_token;
     if (!token) throw new Error('Not signed in');
 
-    var res = await fetch('/api/generate-plan', {
-      method: 'POST',
-      headers: {
-        Authorization: 'Bearer ' + token,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(generatedInputs),
-      signal: generateAbortController.signal,
-    });
-    var body = await res.json().catch(function() { return null; });
+    var result = await attemptGeneratePlan(token, generateAbortController.signal);
+    if (result.retry) {
+      console.log('[generate] attempt 1 failed (' + result.error + ') — retrying with warm instance');
+      generateAttempt = 2;
+      renderGenerate();
+      result = await attemptGeneratePlan(token, generateAbortController.signal);
+    }
 
-    if (res.status !== 200 || !body || !body.plan) {
-      var msg = (body && body.error) || ('HTTP ' + res.status);
+    if (!result.success) {
+      var msg = result.error || 'unknown error';
       closeGenerate();
       showToast('Plan generation failed: ' + msg, null);
       return;
     }
 
+    var body = result.body;
     generatedPlan = body.plan;
     generatedMeta = {
       model: body.model || 'unknown',
@@ -1533,6 +1539,38 @@ async function submitGenerateInputs() {
   } finally {
     generateInFlight = false;
     generateAbortController = null;
+  }
+}
+
+// Single POST to /api/generate-plan. Returns one of:
+//   { success: true, body }            on 200 with a plan
+//   { retry: true, error }             on 5xx / 504 / network error (caller may retry once)
+//   { success: false, error }          on 4xx, or 200 without a plan body
+// Re-throws AbortError so the caller's outer catch preserves user-cancel semantics.
+async function attemptGeneratePlan(token, signal) {
+  try {
+    var res = await fetch('/api/generate-plan', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + token,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(generatedInputs),
+      signal: signal,
+    });
+    var body = await res.json().catch(function() { return null; });
+
+    if (res.status === 200 && body && body.plan) {
+      return { success: true, body: body };
+    }
+    var msg = (body && body.error) || ('HTTP ' + res.status);
+    if (res.status >= 500) {
+      return { retry: true, error: msg };
+    }
+    return { success: false, error: msg };
+  } catch(err) {
+    if (err && err.name === 'AbortError') throw err;
+    return { retry: true, error: err.message || 'network error' };
   }
 }
 
@@ -1609,11 +1647,16 @@ function renderGenerateInputs(body) {
 }
 
 function renderGenerateLoading(body) {
+  var isRetry = generateAttempt === 2;
+  var status = isRetry ? 'Still generating — warming up the AI…' : 'Reviewing your training…';
+  var sub = isRetry
+    ? 'First call after idle can be slow; retry lands on a warm cache'
+    : 'Analyzing 4 weeks of data · usually 30-60 seconds';
   body.innerHTML =
     '<div class="generate-loading">' +
       '<div class="generate-spinner"></div>' +
-      '<div class="generate-status">Reviewing your training…</div>' +
-      '<div class="generate-status-sub">Analyzing 4 weeks of data · usually 30-60 seconds</div>' +
+      '<div class="generate-status">' + escapeHtml(status) + '</div>' +
+      '<div class="generate-status-sub">' + escapeHtml(sub) + '</div>' +
       '<button type="button" class="generate-btn-cancel" id="btnGenerateAbort" style="margin-top:20px;min-width:120px;padding:10px 16px;border-radius:10px;font-family:Outfit,sans-serif;font-size:14px;font-weight:600;cursor:pointer;">Cancel</button>' +
     '</div>';
 }

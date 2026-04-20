@@ -308,20 +308,22 @@ async function buildUserMessage({ activePlan, history, exercises, photos, userIn
   dynText += '\nGENERATE a full training plan for the upcoming week. Match the current plan\'s day structure (5-day Upper/Lower split, Sunday through Thursday). Return ONLY the JSON object as specified in your instructions. No preamble, no markdown fences, no trailing text.\n';
   content.push({ type: 'text', text: dynText });
 
-  if (photos.goal) {
-    const img = await downloadPhotoAsBase64(photos.goal.storage_path);
-    if (img) {
-      content.push({ type: 'text', text: `GOAL PHYSIQUE photo (uploaded ${String(photos.goal.taken_at).slice(0, 10)}):` });
-      content.push({ type: 'image', source: { type: 'base64', media_type: img.mime, data: img.base64 } });
-    }
+  // Download the two photos in parallel — they're independent Supabase Storage
+  // round-trips; serializing them adds ~200-500ms for no reason. Order of
+  // pushed content blocks is preserved (goal first, then progress) so prompt
+  // structure — and therefore the Anthropic cache prefix — is unchanged.
+  const latestProgress = photos.progress.length ? photos.progress[0] : null;
+  const [goalImg, progressImg] = await Promise.all([
+    photos.goal ? downloadPhotoAsBase64(photos.goal.storage_path) : Promise.resolve(null),
+    latestProgress ? downloadPhotoAsBase64(latestProgress.storage_path) : Promise.resolve(null),
+  ]);
+  if (photos.goal && goalImg) {
+    content.push({ type: 'text', text: `GOAL PHYSIQUE photo (uploaded ${String(photos.goal.taken_at).slice(0, 10)}):` });
+    content.push({ type: 'image', source: { type: 'base64', media_type: goalImg.mime, data: goalImg.base64 } });
   }
-  if (photos.progress.length) {
-    const latest = photos.progress[0];
-    const img = await downloadPhotoAsBase64(latest.storage_path);
-    if (img) {
-      content.push({ type: 'text', text: `CURRENT PROGRESS photo (${String(latest.taken_at).slice(0, 10)}):` });
-      content.push({ type: 'image', source: { type: 'base64', media_type: img.mime, data: img.base64 } });
-    }
+  if (latestProgress && progressImg) {
+    content.push({ type: 'text', text: `CURRENT PROGRESS photo (${String(latestProgress.taken_at).slice(0, 10)}):` });
+    content.push({ type: 'image', source: { type: 'base64', media_type: progressImg.mime, data: progressImg.base64 } });
   }
 
   return content;
