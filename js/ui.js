@@ -259,13 +259,14 @@ function buildDay(di) {
     var ex = dayPlan.exercises[ei];
     var ek = 'ex_' + ei;
     var exState = (state && state.exercises[ek]) || { sets: [], rpe: null, note: '', sub: '' };
-    ts += ex.sets.length;
+    var exTotal = Math.max(ex.sets.length, exState.sets.length);
+    ts += exTotal;
     var dn = 0;
     for (var s = 0; s < exState.sets.length; s++) { if (exState.sets[s] && exState.sets[s].done) dn++; }
     cs += dn;
-    var ad = dn === ex.sets.length, sd = dn > 0 && !ad;
+    var ad = dn === exTotal, sd = dn > 0 && !ad;
     var sc = ad ? 'complete' : sd ? 'partial' : 'pending';
-    var stat = ad ? dn + '/' + ex.sets.length + ' ✓' : dn + '/' + ex.sets.length;
+    var stat = ad ? dn + '/' + exTotal + ' ✓' : dn + '/' + exTotal;
     var cc = ad ? ' complete' : sd ? ' partial' : '';
     var dis = readOnly ? ' disabled' : '';
     var weightMode = weightModeForName(ex.name);
@@ -280,6 +281,18 @@ function buildDay(di) {
       var sl = exState.sets[si] || {};
       var pr = fmtP(set);
       h += renderSetRow(di, ei, si, sl, set, weightMode, dis, pr);
+    }
+
+    // Extras on this prescribed exercise: sets past the plan-defined count.
+    // sl.isExtra is set on these by addExtraSet / stateFromWorkout. Delete
+    // button is rendered via the deletable flag; prescribed rows above stay
+    // immutable.
+    for (var siExtra = ex.sets.length; siExtra < exState.sets.length; siExtra++) {
+      var slExtra = exState.sets[siExtra] || {};
+      h += renderSetRow(di, ei, siExtra, slExtra, null, weightMode, dis, '—', !readOnly);
+    }
+    if (mode === 'editable') {
+      h += '<button class="add-set-btn" data-add-set-ei="' + ei + '">+ Add Set</button>';
     }
 
     h += '<div class="rpe-row"><div class="rpe-label">RPE</div><div class="rpe-buttons">';
