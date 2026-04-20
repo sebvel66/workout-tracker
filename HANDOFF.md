@@ -4,7 +4,7 @@ Context for a fresh Claude Code instance picking up v1 (cross-device persistence
 
 ## Next session pickup
 
-Current live version: **`v2.0.18`** (visible in bottom-right footer). `origin/main` is the source of truth; working tree is clean.
+Current live version: **`v2.0.25`** (visible in bottom-right footer). `origin/main` is the source of truth; working tree is clean. **Session B (v2) is fully shipped** — AI plan generation end-to-end on Vercel + Claude Sonnet 4.6 is live at `www.sebvel.app`.
 
 **Before editing code, read [`ARCHITECTURE.md`](ARCHITECTURE.md)** — it maps the repo layout, the 5-module JS split (`js/resolver.js`, `js/data.js`, `js/ui.js`, `js/auth.js`, `js/app.js`), state ownership, cross-module call boundaries, and UI patterns. `index.html` is HTML+CSS+`<script src>` tags only; inline JS is gone since the 2026-04-19 refactor.
 
@@ -31,9 +31,25 @@ Current live version: **`v2.0.18`** (visible in bottom-right footer). `origin/ma
 - `v2.0.17` — extra sets on prescribed exercises. Editable plan-day exercise cards now render a "+ Add Set" button beneath the prescribed rows. Added sets carry a per-set `isExtra` flag stamped at `addExtraSet` / `addExerciseToSession` / `stateFromWorkout`, render with a 3px accent left border plus a ✕ delete button, and write to `sets` with null `prescribed_weight` / `prescribed_reps` while reusing the prescribed exercise's `exercise_id`. Prescribed sets stay immutable from the UI (no delete, no shift). Progress totals and per-exercise status badges include extras. No schema change. Design + smoke-test checklist in `docs/superpowers/specs/2026-04-19-extra-sets-on-prescribed-exercises-design.md`; implementation plan in `docs/superpowers/plans/2026-04-19-extra-sets-on-prescribed-exercises.md`.
 - `v2.0.16` — flexible session start. Replaced the silent auto-focus-on-hydrate default with an explicit bottom-sheet start modal. Three paths: rotation-based suggested day (`(lastCompletedDayIndex + 1) mod plan.days.length`, one SELECT per hydrate), pick from plan days (in-place expanding list with in-progress / completed-today badges), blank (ad-hoc) session. Modal auto-opens on hydrate when no in-progress session exists; always-available "Start another workout" hamburger item reopens it. In-progress sessions take priority over lowest-day-index in the focus hierarchy (a user who completed Day 2 and started Day 3 lands on Day 3 on reload). Tab dropdown appends `(in progress)` to any option that's started-but-not-ended. No-active-plan users see only the blank-session path + "import a plan" link; close button hidden in that state. Removed the now-redundant "+ New Session" standalone button. No schema changes. Design + smoke-test checklist in `docs/superpowers/specs/2026-04-19-flexible-session-start-design.md`; implementation plan in `docs/superpowers/plans/2026-04-19-flexible-session-start.md`.
 
-**Forward-looking work** is in [`ROADMAP.md`](ROADMAP.md). The big remaining scope is **Session B: AI-generated workouts and progression analytics**. The v1 schema was built explicitly for this (per-set RPE, prescribed-vs-actual columns, `completed_at` semantics, `paused_ms`) — no schema migration required to start.
+**Session B shipped (2026-04-20, v2.0.19 – v2.0.25):**
+- `v2.0.19` — weekly History browser. Replaced the flat per-workout list with a Sunday-Saturday week view: navigator (←/→ with earliest-workout gate), summary bar (sessions, days trained/planned, volume unit-aware, avg RPE, plan completion%), skipped-across-week callout, workout cards (purple accent for ad-hoc). Workout detail drill-down reuses existing `renderHistoryDetail`. New reusable `fetchWeekSummary(userId, weekStart, weekEnd)` query in [js/data.js](js/data.js) returns structured week data with per-workout aggregates (volume by weight_mode: per_side × 2, bodyweight = added load only, none = 0), prescribed-vs-completed ratios, and skipped-exercise detection. Same shape consumed by the AI Edge Function's `formatVerbatimHistory` server-side.
+- `v2.0.20` — physique photos. New `physique_photos` table (see migration `20260420000000_physique_photos.sql`) + private Supabase Storage bucket `physique-photos` with path-prefix RLS (`{user_id}/{uuid}.{ext}`). Gallery in a three-view modal (gallery / upload / viewer). Rendering via time-limited signed URLs (1h TTL, cached in memory by path). Upload → storage + metadata row; on metadata insert failure, storage row is rolled back so orphans don't accrue. Delete removes storage first, then the metadata row. Photos feed into AI plan generation as multimodal image blocks.
+- `v2.0.21` — Generate + Review UI for AI plans (Part 2c). New hamburger entry "Generate next week's plan" fires `/api/generate-plan`. Loading state with spinner + message for the ~30s call. Review overlay with coaching notes card, per-day breakdown (weight_mode-aware set summaries: `per_side` shows `/ea`, `bodyweight` shows `BW`/`BW+N`), Cancel + Accept buttons. Accept calls a new `savePlanAsActive` helper (extracted from `handleImport`) that writes to Supabase, flips `is_active`, and re-renders. Coaching notes ride along in the plan JSON blob — no schema change.
+- `v2.0.22` — Plans management modal (Part 2c.5). New hamburger entry "Plans" lists every plan newest first with Active badge, workout count, created date, start date (if present). Per-row Activate (disabled on currently-active) and Delete (disabled if workout count > 0) buttons. Activate uses a new `activateExistingPlan` that flips `is_active` without creating a new row. Delete is gated by workout count to prevent orphaning sets. Also: `savePlanAsActive` now stamps `plan.start_date` with today's local date at save time; Edge Function's `fetchActivePlan` selects `created_at` as a fallback; `formatCurrentPlan` emits `Started: YYYY-MM-DD (N weeks ago)` plus per-day target durations; `formatWorkoutVerbatim` emits `Target X min · Actual Y min` for workouts on the currently-active plan. Generate modal gains a Cancel button during loading + guards against double-fire (re-surfaces existing loading modal instead of firing a duplicate fetch).
+- `v2.0.24` — bug fixes: (1) tracker header week label was showing Claude's free-form emission ("Apr 20-24, 2026" Mon-Fri) while the History browser uses Sun-Sat. New `planWeekLabel(plan)` helper derives Sun-Sat from `start_date`; `savePlanAsActive` normalizes on save; render sites fall back to the derived label for plans saved before stamping via `ensureStartDate` injecting `plans.created_at`. Single source of truth: `start_date`. (2) On fresh page load, focusing Day 1 with no today-state showed an empty editable template even when the user had trained that day earlier in the week against an older `plan_id`. `loadHistorical` was already wired to the day-picker change handler but never fired on initial hydrate. Fixed: `hydrate` now auto-calls `loadHistorical(currentDay)` for plan-day tabs that lack a today-state — mirrors the day-picker handler.
+- `v2.0.25` — pre-generate inputs form (Part 2c.6). Generate flow now opens to an inputs form before firing the API call. Three optional fields: `start_date` (defaults to next Sunday), `target_duration` (defaults to 60 min), `notes` (free-form). Edge Function parses the JSON body and folds non-null inputs into the user message as a `USER INPUTS FOR THIS WEEK` section. On Accept, the user's `start_date` overrides `savePlanAsActive`'s auto-stamp so plans generated Thursday for Sunday start get dated correctly. **System prompt gains a cached USER INPUTS section** that sets defaults, priority rules (user inputs override generic guidance), and explicit handling rules — moves the input-reconciliation reasoning into the cached prefix so Claude sees it once at cache write. Also added: 55s `AbortController` timeout on the Anthropic fetch so stuck upstream surfaces as a clean 504 toast instead of an infinite spinner, and server-side timing logs at each phase boundary for future diagnosis. See [MAJOR-BUGS.md](MAJOR-BUGS.md) (2026-04-20 entry) for the full debugging narrative — the "Respect any user inputs above" instruction sentence we initially added to dynText was causing ~1000 extra output tokens and tipping calls over the timeout.
 
-**Non-obvious design choices worth reviewing before Session B:** the `paused_ms` entry and the `(user_id, plan_id, day_index, performed_on)` unique-index entry in [`DECISIONS.md`](DECISIONS.md). Both affect how analytics queries should interpret session duration and dedup semantics.
+**AI plan generation architecture (live):**
+- Serverless function at [api/generate-plan.js](api/generate-plan.js) deployed on Vercel, called from the frontend via `POST /api/generate-plan` with an `Authorization: Bearer <supabase-jwt>` header.
+- JWT verified against Supabase `/auth/v1/user`; service-role key used for all downstream DB queries (bypasses RLS, but we still filter by `user_id` defensively).
+- Data gathered: active plan, last 4 weeks of workouts (with sets + exercise taxonomy), full exercise library, latest goal + progress photo.
+- System prompt lives in [system-prompt.md](system-prompt.md) at repo root, bundled into the function via [vercel.json](vercel.json) `includeFiles`. `fs.readFileSync` at cold start.
+- Prompt caching: **2 breakpoints, both 1h ephemeral TTL** — one on system prompt, one on exercise library. Cache key = system + library (~8500 tokens). Every subsequent call within the hour hits the cache, cutting input cost ~90%.
+- `repeat: N` shorthand on set objects: Claude emits one set object with `repeat: 3` when all sets of an exercise are identical; `expandSetRepeats` unrolls server-side so the frontend contract is unchanged. Cuts output tokens ~60%.
+- Client-side 55s `AbortController` timeout (under Vercel Hobby's 60s cap). Cancel button during loading view, Cancel + Accept during review view. Closing the modal via × or overlay-click during an in-flight fetch aborts it — prevents orphaned requests.
+- Verified live at 22-30s per generation (cache hit), ~$0.035 per run on Sonnet 4.6.
+
+**Non-obvious design choices worth reviewing:** `paused_ms` semantics, the `(user_id, plan_id, day_index, performed_on)` unique-index, the Sonnet-timeout root cause (instruction-text in prompts causes longer reasoning), and the cached-USER-INPUTS pattern — all in [DECISIONS.md](DECISIONS.md). The Sonnet latency debugging narrative is in [MAJOR-BUGS.md](MAJOR-BUGS.md).
 
 **Working conventions established during Session A** (preserve these in the next session):
 - Every visible change bumps `APP_VERSION` (`v2.0.x` per iteration). Keeps stale-cache diagnosis trivial.
@@ -42,53 +58,7 @@ Current live version: **`v2.0.18`** (visible in bottom-right footer). `origin/ma
 - Error toasts with retry callbacks are sticky until tapped; informational toasts auto-dismiss at 20s.
 - Destructive operations get explicit user confirmation; pushes require explicit user approval.
 
-## Where we left off (2026-04-12 session)
-
-- Initial schema migration applied live (`20260412000000_init.sql`), followed by the active-plan unique index (`20260413000000_add_active_plan_unique_index.sql`) — both verified in the Supabase dashboard.
-- Supabase magic-link auth gate working end-to-end, tested locally (send link → receive → click → tracker appears → sign out works). Committed as `b901074` and pushed.
-- Tracker data flow still runs entirely on `localStorage` — nothing in the app reads or writes the Supabase tables yet.
-- **Next session:** data-layer rewrite, starting with an audit of every `localStorage` call site in `index.html` so we know the full surface area before swapping in Supabase reads/writes.
-
-## Repo state
-
-- Single file: `index.html` (labeled v3 in header at line 344 — stale string, current code).
-- Last commit: `b9a85b7` on 2026-02-28, "Update index.html".
-- Only branch: `main`.
-- Mobile-first workout tracker. Plan imported as JSON, results entered inline, saved to `localStorage`.
-
-## Current localStorage shape
-
-Two keys written in `index.html`:
-
-**`workoutPlan`** (read-only after import, set at lines 688):
-```
-{ title, week, days: [
-    { name, short, sets_total, duration,
-      exercises: [
-        { name, note, rest,
-          sets: [ { weight, unit, reps_target, reps_range } ] }
-      ] } ] }
-```
-
-**`workoutLog`** (written on every keystroke via `saveLog()` at line 676):
-```
-{ "day_<di>": {
-    date: ISO string,
-    exercises: {
-      "ex_<ei>": {
-        sets: [ { weight, reps, done } ],
-        rpe: 6-10 | null,     // per-exercise in current code
-        note: string,
-        sub: string } } } }
-```
-
-Fragility to fix in migration: identity is positional array index, and re-importing a plan wipes the log (line 687).
-
-## v1 goal
-
-Cross-device persistence via Supabase. No new features, no AI yet. But schema must be queryable at the set level so v2 (progression, PRs, volume over time, AI-generated plans) doesn't require another migration.
-
-## Decisions locked in
+## Decisions locked in (original v1 — for context)
 
 1. **Plans stay as `jsonb`** — the plan structure rarely needs set-level queries.
 2. **Workouts + sets are normalized.** One row per session, one row per set.
@@ -171,27 +141,13 @@ Indexes target three expected query shapes: "all sets for exercise X over time,"
 
 **Timestamps on sets and workouts.** `sets.started_at` is set when weight or reps is first entered; `completed_at` is set (and enforced via CHECK) when `done` flips true; the app defaults it to `now()` at that moment. `workouts.started_at` is set on the first touch of any set in the session; `workouts.ended_at` is set when the user explicitly ends the workout, otherwise defaults to the last set's `completed_at`. Order fields (`exercise_order`, `set_order`) remain the canonical sequence — timestamps are the source of truth for *when*, order fields for *sequence*.
 
-## Open behavior questions (need answers before coding)
-
-1. **Un-checking a done set.** Toggle at `index.html:621` flips both ways. Options:
-   - Delete the row (cleaner: "all done sets = real history").
-   - Update `done=false` (preserves weight/reps if re-checked).
-2. **Edits after completion.** If a done set's weight is corrected, does that trigger another upsert, or is `done` frozen? Auto-upserting on edit-after-done is probably right, but it softens the "done is the only write trigger" rule — name the behavior explicitly.
-
-## Suggested implementation order
-
-1. Supabase project setup + auth (email magic link is simplest for a one-user app).
-2. Run schema migration above.
-3. Add Supabase client to `index.html`, wire auth gate.
-4. Plan import → insert into `plans`, set `is_active=true`, mirror to client state.
-5. On set-done tap: upsert into `sets` (create `workouts` row lazily on first set of a session; create `exercises` row lazily on first encounter of a name).
-6. On load: hydrate local state from active plan + most-recent incomplete workout.
-7. Keep localStorage as offline cache/fallback; Supabase is source of truth when online.
-
 ## Gotchas / lessons learned
 
 - **Local dev browser caching.** Restarting the Python server doesn't invalidate the browser cache, so the frontend can be running stale JavaScript against a fresh server. Always hard-reload (Cmd+Shift+R) after restarting the local server — normal reload (Cmd+R) can serve cached files and silently mask a fix.
-- **Commit milestones as they pass their test gates.** When a multi-step change has clear internal milestones, commit each milestone as it's verified rather than holding the whole stack uncommitted. Today's git history mistake came from leaving the data-layer rewrite uncommitted while layering further changes on top — a `git checkout` reverted further than expected and required a rebuild of the commit sequence. Future multi-day work: commit the foundation as soon as it passes its own test gate.
+- **`vercel dev` doesn't hot-reload system-prompt.md.** The prompt is loaded via `fs.readFileSync` at module cold start. Editing the file requires killing and restarting `vercel dev` to pick up changes; otherwise the old prompt stays in memory and Anthropic keeps hitting the old cache entry.
+- **`vercel dev` serializes local function invocations.** Concurrent calls (UI + console test at the same time) stack; second call hangs until first completes. In production (real Vercel) each invocation spawns its own instance, so this is dev-only.
+- **Commit milestones as they pass their test gates.** When a multi-step change has clear internal milestones, commit each milestone as it's verified rather than holding the whole stack uncommitted.
+- **Instruction text in prompts has real latency cost.** See [MAJOR-BUGS.md](MAJOR-BUGS.md) (2026-04-20). A single "think carefully about X" sentence in the user message can add ~1000 output tokens and 6-10s of generation time. Put rules in the cached system prompt; put data in dynText.
 
 ## Known v1 limitations
 
@@ -219,18 +175,12 @@ Indexes target three expected query shapes: "all sets for exercise X over time,"
 
 - **Custom SMTP provider (2026-04-15).** Resend configured in Supabase → Authentication → Emails using the shared `onboarding@resend.dev` sender. Unblocks magic-link testing. Free tier limits are 3,000 emails/month and 100/day — well beyond expected usage, but worth knowing if this ever scales up. Upgrading to a custom domain sender is optional polish for post-v1.
 
-## Deferred features
+## Deferred features (post-v2)
 
-- **Add ad-hoc exercises** (exercises performed but not in the imported plan). Planned for after the Supabase migration — see `DECISIONS.md` → "Ad-hoc exercises (extras)" for the data-model approach (separate `extras` client-side; `sets` rows with `exercise_order > plan_length` and null prescribed fields server-side).
-- **"Done = did as prescribed" shortcut.** Currently tapping the done checkbox while weight/reps inputs are empty marks the set done with `weight=null, reps=null` in the DB. Proposal: on check with empty inputs, auto-populate from the prescribed placeholder values (the greyed-out target numbers already shown as `placeholder`). Saves a tap per set when the user hit the plan exactly. Edge case: partial fills (weight entered, reps empty) — probably only auto-fill the empty field, not overwrite.
-- **Browse historical weeks.** Current UI only surfaces the most recent workout per `day_index`. Need a week-picker or date-based navigation so past weeks are reviewable. Schema already supports it (`workouts.performed_at` is indexed); purely a UI addition.
-- **Adjustable rest timer in the UI.** Timer currently uses `exercise.rest` from the plan or a 90s fallback with no in-app way to change mid-workout. Add +/- controls or a tap-to-edit on the timer card.
-- **Longer toast persistence.** Current auto-dismiss is 9 seconds; feels too short in practice for reading and reacting to error context. Bump to ~20s, or make sticky-until-dismissed for error toasts (keep auto-dismiss for successes if/when we add those).
+Most v1 deferred items have shipped. Remaining scope lives in [ROADMAP.md](ROADMAP.md) — notably: chat-based mid-week coaching, automatic deload detection, PR detection/progression charts, replan-remainder mode, side-by-side photo comparison with AI commentary, configurable AI context window, Vercel Pro upgrade for longer-generation headroom.
 
-## Non-goals for v1
+## Non-goals still
 
-- Multi-user features.
-- Historical analytics UI.
-- AI anything.
-- Plan editing in-app.
+- Multi-user features (RLS is single-user-scoped; no sharing/access layer).
 - Conflict resolution beyond last-write-wins (single user, single device at a time in practice).
+- Full plan editing in-app (accept / import / activate are the edit surface; finer-grained editing lives in regenerate-or-re-import).

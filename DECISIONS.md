@@ -2,6 +2,176 @@
 
 Running log of architecture/behavior decisions for the workout tracker. Newest first.
 
+## 2026-04-20 — AI plan generation: Vercel Node function + raw fetch + file-based system prompt
+
+Session B shipped an AI plan generator that reads 4 weeks of training history + physique photos and emits a full week's plan via Claude Sonnet 4.6. The architecture hit several forks worth recording:
+
+**Vercel Node runtime, not Edge runtime.** The Claude Sonnet call takes 22-45s and may return 4-16K tokens; Edge runtime's shorter timeouts and streaming-first model don't fit. Node runtime gives us full `fs` (for loading the system prompt), longer `maxDuration` (60s on Hobby, 300s on Pro), and standard Anthropic SDK compatibility. Declared via `export const maxDuration = 60` in the function.
+
+**Raw `fetch` for both Supabase PostgREST and Anthropic.** No npm dependencies. Keeps the repo structure flat (the frontend has no build step; adding one just for the serverless function would have been disproportionate). If we ever need SDK niceties (retries, typed responses), that's a future refactor — easy to swap `fetch` for `@anthropic-ai/sdk` or `@supabase/supabase-js` without changing the surface.
+
+**System prompt lives in a versioned file at repo root** ([system-prompt.md](system-prompt.md)). Bundled into the function via `vercel.json` `includeFiles: "system-prompt.md"`, loaded once via `fs.readFileSync` at module cold start. Why this shape rather than an env var, DB row, or inline string:
+- **Git diffs are the primary iteration surface.** The prompt gets tuned often; diff-able history is high-value for attributing behavior regressions to specific revisions.
+- **No build step needed.** Reading a file at cold start is simpler than packaging the prompt into the JS bundle.
+- **Editable in VS Code.** No need to log into a dashboard or write a migration for prompt tweaks.
+- **Future path: an admin UI + DB row** if the prompt ever needs runtime edits by non-developers. Easy migration when justified; not justified now.
+
+**`vercel dev` gotcha:** the prompt is read at cold start, so editing the file requires killing and restarting `vercel dev`. Old content stays in memory otherwise, and Anthropic keeps hitting the stale cache entry.
+
+**Service-role key for all DB queries from the function.** Bypasses RLS (safe, because the user-id filter is applied in code alongside JWT verification). The JWT is verified against `/auth/v1/user` at the start of each request; the returned `user.id` is used as the filter in every downstream query as defense in depth. Never expose the service-role key in any file served to the browser.
+
+**How to apply:**
+- Any new server-side function should follow the same pattern: Node runtime, raw `fetch`, env vars for secrets, JWT verification first, then service-role-scoped queries with explicit `user_id` filters.
+- Prompt tuning workflow: edit `system-prompt.md` → `vercel dev` restart → test via console fetch script (see `MAJOR-BUGS.md` for the template) → commit → `git push` triggers auto-deploy.
+
+## 2026-04-20 — Prompt caching with two 1h breakpoints: system + exercise library
+
+Anthropic's prompt caching with `cache_control: { type: "ephemeral", ttl: "1h" }` cuts per-call input cost ~90% on cache hits and shaves time-to-first-token. Our two breakpoints:
+
+1. **System prompt** (`system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral", ttl: "1h" } }]`) — ~1500 tokens, rarely changes (only on `system-prompt.md` edits).
+2. **Exercise library** — first content block of the user message, ~3500-4000 tokens. Rarely changes (only when user adds custom exercises).
+
+Cache prefix = system + library = ~8500 tokens, read as `cache_read_input_tokens` on hits. Render order is `tools → system → messages`, so the breakpoint on the library block captures both system and library together.
+
+**Dynamic content (current plan, workout history, photos, user inputs) lives AFTER the library breakpoint** and is re-processed fresh each call. Cheap — only ~5000 tokens of dynText per call.
+
+**1h TTL verified honored.** Usage responses show `cache_creation.ephemeral_1h_input_tokens` populated on miss, zero on hit. Earlier concern that we needed a beta header turned out to be unfounded — the `ttl: "1h"` parameter works without it for now.
+
+**What invalidates the cache:**
+- Editing `system-prompt.md` (even whitespace changes).
+- User adding a custom exercise to the library.
+- Switching models (caches are model-scoped).
+
+**Why 1h (not 5m default):** weekly use case. User generates plans every ~7 days; 5m would mean nearly every call is a cache miss. 1h still misses most of the time but hits during active development and when the user regenerates within a session (e.g., after tweaking inputs).
+
+**How to apply:**
+- Any future prompt that has a stable prefix should use the same 2-breakpoint pattern: `cache_control` on the last static system-level content, another on the first user-message block.
+- When editing `system-prompt.md`, expect the first call after deploy/restart to be a cache miss (~35-45s write). Subsequent calls within 1h hit cache (~22-30s).
+- Never invalidate cache mid-conversation intentionally. If adding a rule, add it to the cached prefix; if signaling per-call state, put it in dynText.
+
+## 2026-04-20 — `repeat: N` shorthand for identical sets; server expansion
+
+Claude Sonnet at ~70-90 tok/s generates 30s of output for a typical 5-day plan (~105 sets). A naïve plan JSON has identical set objects repeated 3-4× per exercise:
+
+```json
+"sets": [
+  {"weight": 70, "reps_target": 10, "reps_range": "8-10"},
+  {"weight": 70, "reps_target": 10, "reps_range": "8-10"},
+  {"weight": 70, "reps_target": 10, "reps_range": "8-10"}
+]
+```
+
+Those duplicates cost ~50 tokens each. With ~30 exercises having identical sets, that's ~1500 wasted output tokens = ~20s of unnecessary generation time.
+
+**Chosen shape — wire-format shorthand, server-expanded:**
+
+Claude emits a single set object with `"repeat": 3` when all sets of an exercise share identical `weight`, `reps_target`, and `reps_range`:
+
+```json
+"sets": [{"weight": 70, "reps_target": 10, "reps_range": "8-10", "repeat": 3}]
+```
+
+The Edge Function's `expandSetRepeats(plan)` unrolls `repeat: N` into N identical objects (stripping the `repeat` field) before returning to the frontend. Frontend contract is unchanged — it always sees the full-length sets array. Clamps N to `[1, 10]` as a defense against model hallucinations (e.g., `repeat: 9999`).
+
+**Why server expansion rather than frontend expansion:**
+- Keeps the client contract identical to plan imports from files — no special-case code.
+- Keeps the plan blob in `plans.data` in the canonical fully-expanded shape, so every consumer (export, History browser, re-generation) sees the same structure.
+- Fails closed: if Claude emits malformed `repeat` (string, negative, non-numeric), the server normalizes to safe defaults rather than the frontend having to guard.
+
+**Output token impact:** measured ~60% fewer tokens in the sets arrays. Combined with other tightening (word caps on notes, omit unit field, omit decorative `duration`/`sets_total`), total output dropped from 7000-8000 tokens pre-optimization to 1500-2500 tokens post.
+
+**How to apply:**
+- Any future structured-output feature where the model emits repetitive content should consider the same shorthand-then-expand pattern. Trade: Claude emits less, server code expands — small server cost, big output savings.
+- `expandSetRepeats` lives in the Edge Function because the shorthand is purely a wire-format optimization. If we ever move to client-direct Anthropic calls (we won't — no service-role key in browser), the expansion would need to move too.
+
+## 2026-04-20 — USER INPUTS handling: rules cached in system prompt, data flows in dynText
+
+The Generate Plan flow's inputs form (start date / target duration / notes) creates a design tension: the per-call user inputs need to flow to Claude, but *how to interpret them* shouldn't change per-call (and shouldn't break the prompt cache).
+
+**Chosen split:**
+
+- **Cached system prompt** contains the USER INPUTS handling rules: defaults (Sunday-after-today, 60 min, no special considerations), priority ("user inputs override generic guidance"), and the anti-over-reasoning directive ("Do NOT spend reasoning effort reconciling inputs with other prompt sections").
+- **Per-request dynText** contains the actual values as a `USER INPUTS FOR THIS WEEK` section — just the literal data, no interpretation guidance.
+
+**Why:** Claude sees the rules once at cache write, then reads them cached on every call. Zero per-request reasoning overhead for the common case. If inputs are absent, the section is simply omitted from dynText and Claude applies the cached defaults.
+
+**The anti-pattern that burned us (see [MAJOR-BUGS.md](MAJOR-BUGS.md) 2026-04-20):** a single instructional sentence in dynText — "Respect any user inputs above when programming — adjust volume, intensity, or exercise selection as needed" — caused Claude to spend ~1000 extra output tokens on input-reconciliation reasoning, pushing latency past the 55s timeout on Anthropic slow-response days. Removing it dropped output 40% and latency 6-10s. The lesson: *runtime rules belong in the cached prefix, never in per-request dynText*.
+
+**How to apply:**
+- Any future user-input channel (chat questions, mid-week adjustments, etc.) should follow the same split. Handling rules → system prompt. Data → user message.
+- If a rule needs to be conditional on input presence, express it in the cached prompt with explicit "if present, do X; if absent, default to Y" — not in the per-request message.
+- Resist the urge to add "think carefully about X" directives, even for edge cases. They compound latency without meaningfully improving output quality.
+
+## 2026-04-20 — Physique photos: private bucket + path-prefix RLS + signed URLs
+
+Photos feed the AI planner as multimodal image blocks. Storage needs:
+1. Access scoped to the owner (no cross-user exposure).
+2. No stable public URLs (photos are personal; we don't want indexable links).
+3. Deletable when the user deletes a photo.
+
+**Chosen shape:**
+- **Private Supabase Storage bucket** (`physique-photos`, `public = false`). No direct URL access — every render requires a signed URL.
+- **Path prefix = `{user_id}/{uuid}.{ext}`.** Storage RLS policies (`physique_photos_select_own`, `_insert_own`, `_delete_own`) key on `storage.foldername(name)[1] = auth.uid()::text`. A user can only touch files under their own prefix, even with the anon key.
+- **`physique_photos` metadata table** tracks `storage_path`, `photo_type` (`goal` | `progress`), `taken_at`, `notes`. Indexed on `(user_id, photo_type, taken_at desc)` for efficient "latest goal" and "most recent progress" queries.
+- **Client renders via time-limited signed URLs** (`sb.storage.from('physique-photos').createSignedUrl(path, 3600)`), cached in memory by path. Signed URL TTL 1h matches typical session length; re-sign on demand when cache expires.
+
+**Why `storage_path` and not `photo_url`:** private buckets have no stable URL. Storing a signed URL in the DB would embed the expiry into data and require constant re-generation. Storing the path lets the client re-sign as needed.
+
+**Upload flow rollback-on-failure:** if the storage upload succeeds but the metadata row insert fails, the orphaned storage file is removed best-effort. If the storage remove fails, we accept a temporary orphan rather than blocking the user on retries.
+
+**Delete flow ordering:** storage first, then metadata row. If storage succeeds but row delete fails, the render path treats the dangling row as a broken thumbnail (user can delete again). If storage fails, the row stays and user retries.
+
+**Feeds the AI planner:** Edge Function downloads the latest goal + latest progress photo, base64-encodes, and includes as `image` content blocks in the Claude call. No compression — photos are ~1-4 MB each, adds a few seconds to the prompt-build phase. Cost impact ~1-2K tokens per image; negligible at our volume.
+
+## 2026-04-20 — Plan start_date client-side stamping + render-time self-heal
+
+Plans need a calendar anchor so the AI planner can reason about phase awareness ("weeks until the July cut"), and so the tracker header's week label matches the History browser's Sun-Sat labels.
+
+**Chosen:**
+- **`savePlanAsActive` stamps `plan.start_date = sessionTodayDateString()`** at save time (client-side, no migration). Preserves an explicit start_date if one was set upstream (e.g., user's form input overrides auto-stamp on Accept).
+- **`plan.week` is computed from `start_date` at save time** via `planWeekLabel(plan)` (Sun-Sat formatted via `formatWeekLabel`). Overrides whatever string Claude emitted for `week`. Single source of truth: `start_date`.
+- **Render-time self-heal via `ensureStartDate(planBlob, dbRow)`:** plans saved before the stamping feature shipped have no `start_date` in their JSON blob. At hydrate and on plan activation, we inject `dbRow.created_at.slice(0, 10)` as a client-side `start_date` fallback. The blob carries the injected value only in memory — persisted on next save.
+
+**Why client-side stamping and not a schema column:** `plans.data` is already a `jsonb` blob with no per-field schema enforcement. Adding a top-level `plans.start_date` column would require a migration and dual-source-of-truth (blob + column), with risk of divergence. Stamping into the blob at save time is forward-compatible with any future schema evolution.
+
+**Why `savePlanAsActive` recomputes `plan.week` from `start_date` rather than trusting Claude:** Claude's emitted `week` string varies in shape ("Week 5", "Week of Apr 26", "Apr 20-24, 2026" — none matching the History browser's Sun-Sat format). Normalizing server-side guarantees the tracker header and History browser always agree.
+
+**`activateExistingPlan` ≠ `savePlanAsActive`:** activating an existing plan via the Plans modal flips `is_active` without writing a new row. Does NOT re-stamp `start_date` (the plan's original date is preserved). Does NOT re-normalize `plan.week` (no re-save).
+
+## 2026-04-20 — Weekly History uses Sunday-Saturday; fetchWeekSummary is the shared primitive
+
+The Weekly History browser and the AI planner Edge Function both need "one week of training data" with per-workout aggregates (volume respecting weight_mode, prescribed-vs-actual counts, skipped-exercise detection). Built once, reused.
+
+**Chosen:**
+- **Sunday-to-Saturday week boundaries**, computed client-side via `weekStartForLocalDate` (from `data.js`). Matches the athlete's Sun-Thu training rotation with weekend rest days.
+- **`fetchWeekSummary(userId, weekStart, weekEnd)`** in `js/data.js` — takes inclusive YYYY-MM-DD calendar dates, returns a structured object with per-workout detail + week-level aggregates.
+- **Calendar-bounded via `workouts.performed_on`** (date column, NOT NULL). No client-side timezone math — the DB's `performed_on` is already the user's local date at the time of insert.
+- **Volume respects `weight_mode`:** `per_side` × 2, `bodyweight` uses added load only (never estimates body weight), `none` = 0.
+- **Plan workouts track prescribed-vs-completed ratios;** ad-hoc workouts track logged-vs-done. `totalSets` / `completedSets` semantics differ between the two.
+
+**Why not a single shared implementation across client and server:** the client version lives in `data.js` and uses the Supabase JS client; the server version in `api/generate-plan.js` uses raw PostgREST fetch. Same shape of output, different plumbing. Keeping them parallel rather than unifying avoids cross-runtime dependencies (browser vs Node) and lets each side optimize for its environment. If drift becomes a problem, one option is to extract a shared utility module — deferred.
+
+**How to apply:**
+- Any future analytics surface (progression charts, PR detection) should build on `fetchWeekSummary` rather than re-implementing set aggregation. The weight_mode handling is subtle and easy to get wrong.
+- If the user ever wants Mon-Sun weeks or ISO weeks, it's a one-line change in `weekStartForLocalDate`. Don't sprinkle week-boundary logic elsewhere.
+
+## 2026-04-20 — 55s AbortController timeout + cancel UI for long LLM calls
+
+Vercel Hobby caps serverless functions at 60s. Sonnet generation can take 25-45s on cache hits, occasionally longer on Anthropic slow-response days. Without a client-side timeout, a stuck upstream surfaces as an infinite spinner.
+
+**Chosen:**
+- **Server-side** (`api/generate-plan.js`): `AbortController` with `setTimeout(() => abort(), 55000)` scoped per request, signal passed to the Anthropic fetch. On abort, we return a clean `504: AI service timed out (55s). Try again — cache should be warm on the next call.`
+- **Client-side** (`ui.js`): separate `AbortController` scoped to each UI request, signal passed to our `fetch('/api/generate-plan')`. Cancel button in the loading view aborts it. Closing the modal via × or overlay-click during an in-flight fetch also aborts.
+- **55s chosen deliberately:** sits just under the 60s Vercel Hobby cap, giving us time to return a clean error envelope before Vercel hard-kills the function.
+
+**Why not streaming:** streaming would cut time-to-first-byte but doesn't help when the total generation still exceeds 60s (Vercel still kills the function at the cap). Streaming JSON is also fragile — a truncated JSON from a forced cut is unparseable. Cleaner to fail fast with a specific error and let the user retry (cache should be warm on the next call).
+
+**Cancel semantics:** clicking Cancel during loading *aborts the in-flight fetch* (not just hide the modal). The previous buggy version set `generateInFlight = false` on close without aborting, which caused orphaned requests + double-fetch on re-open.
+
+**How to apply:**
+- Any future LLM or long-running API call from this app needs the same two-layer timeout: server-side with a buffer under the platform cap, client-side with a Cancel UI.
+- If we ever move to Vercel Pro (300s cap), bump the server timeout to ~270s — still leaves room for a clean error envelope.
+
 ## 2026-04-19 — Explicit session-start modal replaces silent day-of-focus default
 
 Before `v2.0.16`, hydrate silently chose which tab to focus: lowest-index plan day with a today-state, else Day 0, else the first ad-hoc. No choice point, no concept of "which day am I actually training today." This mapped poorly to the real-world case where the user's calendar doesn't match the plan's rotation (skipped rest day, travel week, rearranged split). It also meant a user with no active plan had nowhere to begin — the tab strip only rendered when a plan existed.

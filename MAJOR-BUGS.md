@@ -2,6 +2,79 @@
 
 Record of significant bugs that required non-trivial investigation or data cleanup. Newest first. Small, in-code-fixed-in-one-commit bugs don't belong here — those live in git history. This file is for bugs where the root cause, the fix, or the blast radius is worth knowing later.
 
+## 2026-04-20 — AI plan generation: intermittent 55s+ timeouts after adding user inputs (v2.0.25)
+
+### Symptoms
+
+After Part 2c.6 shipped the pre-generate inputs form (start date / target duration / notes), plan generation started timing out intermittently on the same payload that had previously succeeded in 30s. Two consecutive calls with identical inputs: one at 29.8s success, the next hanging past 90s until user-canceled. Console test and UI call both affected. Earlier part of Session B (before 2c.6) had been consistent at 30-35s on Sonnet.
+
+### Mis-diagnosis loop (what wasted time)
+
+Before reaching the actual root cause, the debugging path detoured through:
+1. **"It's just Anthropic latency variability"** — plausible but unfalsifiable; dismissed too long.
+2. **"Switch to Haiku"** — offered repeatedly as a workaround; user rejected: they wanted Sonnet-quality output, not a model downgrade masking the real issue.
+3. **"Upgrade to Vercel Pro for 300s timeouts"** — valid workaround but doesn't explain *why* generation got slower.
+4. **"Maybe the cache TTL isn't honoring the 1h setting"** — ruled out by direct evidence of cache hits (`cache_read_input_tokens: 8634`) on successful calls.
+
+The breakthrough came when the user pointed out the correlation bluntly: *"Before manual inputs = fast. After adding manual inputs = slow. Wouldn't it stand to reason the issue is in how the inputs are being injected into the prompt?"*
+
+### Root cause
+
+Two independent prompt-design problems combined to push generation time over a 55s hard timeout:
+
+**1. Instructional text in the user message caused longer reasoning.** Part 2c.6 added a new instruction to the generation prompt:
+
+> *"Respect any user inputs above when programming — adjust volume, intensity, or exercise selection as needed."*
+
+This one sentence pushed Claude into longer reasoning chains and more verbose output. Measured impact after removing it: **output dropped from ~2600 to ~1500 tokens (-40%), latency from ~30s to ~23s.** On Anthropic slow-response days, the extra ~6s of generation was what tipped otherwise-fine calls over the 55s abort threshold.
+
+**2. No explicit handling rules for runtime inputs in the system prompt.** The prompt had no section on what to do with `start_date`, `target_duration`, or `notes`. When inputs appeared in the user message, Claude had to reason per-call about:
+- Is `start_date` overriding the "increment week number by one" rule elsewhere in the prompt?
+- Does `target_duration` replace the generic "55-65 min" guideline?
+- Should `notes` override other programming rules?
+
+Every ambiguity = reasoning tokens = latency. And those reasoning tokens happened in the *uncached* user-message part of the prompt, so they recurred on every call.
+
+### What was fixed
+
+**Removed the instruction sentence from dynText.** One-line change in [api/generate-plan.js](api/generate-plan.js). Eliminates the "think harder about inputs" directive entirely.
+
+**Added a cached USER INPUTS section to the system prompt** ([system-prompt.md](system-prompt.md)). Explicit rules with defaults and priority:
+- `Plan intended start date` (YYYY-MM-DD): default to Sunday-after-today if absent. Use for phase-awareness grounding.
+- `Target session duration`: default 60 minutes. Overrides the generic 55-65 min target.
+- `Notes from client`: default to no special considerations. Notes override other rules verbatim.
+- **Priority rule**: user inputs override generic guidance. Do NOT spend reasoning effort reconciling inputs with other sections.
+
+Because this lives in the *cached* system prompt (with `cache_control: { type: "ephemeral", ttl: "1h" }`), Claude sees the handling rules once at cache write and reads them cached on every subsequent call. Zero per-request reasoning overhead.
+
+**Simplified the `week` field rule.** Previously: *"emit 'Week 5' and increment the number by one"* (forcing Claude to reason about current week number from context). Now: *"any concise label works; the app normalizes to Sun-Sat range on save via `savePlanAsActive`."*
+
+**Added a 55s AbortController timeout** on the Anthropic fetch with a Cancel UI button so stuck upstream calls surface as clean 504 errors rather than infinite spinners. (Separate hardening — doesn't fix the latency, just makes failure graceful.)
+
+### Measured results after fix
+
+| Metric | Pre-fix | Post-fix |
+|---|---|---|
+| Output tokens (same payload) | ~2600 | ~1500 |
+| Elapsed (cache hit) | 29.8s → timeout | 22.5s |
+| Coaching notes length | 282 chars | 241 chars |
+| Exercise notes present/omitted | — | 6 / 23 |
+| Timeout rate | intermittent | zero |
+
+### Debugging learnings (for future AI/prompt work)
+
+- **Trust the user's correlation hypothesis.** "Before X = fast, after X = slow" is high-signal data even when the mechanism is non-obvious. Don't blame "variability" for observations the user says are systematic.
+- **Instruction text in prompts has real latency cost.** A single "think carefully about X and adjust" sentence can add ~1000 output tokens on reasoning-capable models. Even when constraints (word caps, hard rules) are already present, directives that nudge toward more reasoning compound on top.
+- **Put rules in the cached system prompt, not the per-request user message.** Anything that requires consistent reasoning across calls belongs in the cached prefix. Runtime *data* (what the user typed) goes in dynText; runtime *rules* (how to interpret it) go in the cached system prompt.
+- **Set defaults explicitly, even for optional inputs.** A prompt that says "if absent, default to X" removes per-call decision work. Without it, Claude re-derives defaults every time.
+- **Always have a hard client-side timeout on LLM calls.** Our 55s `AbortController` is what kept the UI from hanging indefinitely during the bad runs. In production with Vercel Hobby's 60s function cap, the timeout also ensures we return a clean error envelope before Vercel hard-kills the function.
+- **Measure output tokens before blaming the model.** `usage.output_tokens` is the single best signal for "why is this slow?" — Sonnet generates at ~70-90 tok/s, so a call producing 3500 tokens is inherently 40-50s of generation time regardless of Anthropic load.
+
+### Leftover concerns (not fixed this session)
+
+- **Anthropic service-tier variance** is real but orthogonal. Same input can return in 25s or 40s depending on their routing (`inference_geo: "global"`). Our 55s timeout has headroom for normal variance but not for extreme slow-spell + bloated-output combined.
+- **Vercel Hobby 60s function cap** remains the hard ceiling. If output tokens ever creep back up (e.g., prompt changes that again invite verbosity), we'd see timeouts return. Defense: keep the `[generate-plan] claude call: X ms · usage: {...}` server log watchable; if `output_tokens` crosses ~2500 on a regular basis, re-tighten the prompt before it tips over.
+
 ## 2026-04-19 — "View Recent" modal: doubled sets + blank exercises (v2.0.15)
 
 ### Symptoms
