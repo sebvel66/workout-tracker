@@ -65,7 +65,8 @@ function renderSetRow(di, ei, si, sl, prescribedSet, weightMode, disabledAttr, p
   var repsPlaceholder = prescribedSet && prescribedSet.reps_target ? prescribedSet.reps_target : '—';
 
   var out = '';
-  out += '<div class="set-row' + (deletable ? ' deletable' : '') + '">';
+  var extraCls = sl && sl.isExtra ? ' set-extra' : '';
+  out += '<div class="set-row' + (deletable ? ' deletable' : '') + extraCls + '">';
   out += '<div class="set-label">S' + (si+1) + '</div>';
   out += '<div class="set-prescribed">' + (prText || '—') + '</div>';
   out += '<div class="set-actual">';
