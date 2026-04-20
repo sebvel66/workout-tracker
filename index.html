@@ -1025,6 +1025,47 @@ body.unauthed #emptyState { display: none !important; }
 }
 .generate-btn-accept:active, .generate-btn-cancel:active { opacity: 0.85; }
 .generate-btn-accept:disabled { opacity: 0.5; cursor: default; }
+
+/* Plans management */
+.plans-list { padding: 6px 0; }
+.plans-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.plans-row.active { background: var(--surface2); }
+.plans-row-main { flex: 1; min-width: 0; }
+.plans-row-title {
+  font-size: 14px; font-weight: 600; color: var(--text);
+  margin-bottom: 3px; letter-spacing: -0.2px;
+}
+.plans-active-badge {
+  display: inline-block;
+  font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 600;
+  background: var(--accent2); color: #000;
+  padding: 2px 6px; border-radius: 4px;
+  margin-left: 6px; vertical-align: middle; letter-spacing: 0.5px;
+}
+.plans-row-meta {
+  font-family: 'JetBrains Mono', monospace; font-size: 11px;
+  color: var(--text2);
+}
+.plans-row-actions {
+  display: flex; flex-direction: column; gap: 4px;
+  flex-shrink: 0;
+}
+.plans-btn {
+  background: transparent; color: var(--text2);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 6px 12px;
+  font-family: 'Outfit', sans-serif; font-size: 12px; font-weight: 500;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+  min-width: 80px;
+}
+.plans-btn:active:not(:disabled) { background: var(--surface2); }
+.plans-btn:disabled { opacity: 0.3; cursor: default; }
+.plans-btn.activate:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+.plans-btn.delete:not(:disabled) { color: var(--danger); border-color: var(--danger); }
 .history-empty {
   text-align: center; padding: 40px 20px;
   color: var(--text3); font-size: 13px;
@@ -1601,6 +1642,17 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
   </div>
 </div>
 
+<div class="modal-overlay" id="plansOverlay">
+  <div class="history-modal">
+    <div class="history-header">
+      <div style="width:32px"></div>
+      <div class="history-title">Plans</div>
+      <button class="history-close" id="btnPlansClose" type="button">×</button>
+    </div>
+    <div class="history-body" id="plansBody"></div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="generateOverlay">
   <div class="history-modal">
     <div class="history-header">
@@ -1635,6 +1687,7 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
     <div class="menu-body">
       <button class="menu-row" id="menuStartAnother" type="button">Start another workout</button>
       <button class="menu-row" id="menuGenerate" type="button">Generate next week's plan</button>
+      <button class="menu-row" id="menuPlans" type="button">Plans</button>
       <button class="menu-row" id="menuImport" type="button">Import Plan</button>
       <button class="menu-row" id="menuExport" type="button">Export Data</button>
       <button class="menu-row" id="menuHistory" type="button">History</button>

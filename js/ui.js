@@ -41,6 +41,11 @@ var generatedPlan = null;           // the full plan JSON returned by /api/gener
 var generatedMeta = null;           // { model, usage, generated_at }
 var generateStartedAt = 0;          // ms timestamp when the API call started
 var generateInFlight = false;       // prevents double-fire of the generate button
+var generateAbortController = null; // wired to the in-flight fetch so Cancel can abort
+
+// Plans management state — list view with activate/delete actions.
+var plansList = [];                 // [{id, title, week, is_active, created_at, start_date, workout_count}]
+var plansLoading = false;
 
 // Picker option lists
 var EQUIPMENT_OPTIONS = ['barbell', 'dumbbell', 'cable', 'machine', 'smith machine', 'bodyweight', 'band'];
@@ -1438,12 +1443,21 @@ async function onPhotoDelete(id) {
 
 // ---- AI plan generation (Generate + Review) ----
 async function openGenerate() {
-  if (generateInFlight) return;  // protect against double-click
+  // If a previous fetch is still running, re-surface the loading modal
+  // rather than silently ignoring the click or firing a duplicate
+  // request. vercel dev serializes local function invocations, so
+  // without this guard the user could queue up multiple 30-60s calls.
+  if (generateInFlight) {
+    document.getElementById('generateOverlay').classList.add('show');
+    renderGenerate();
+    return;
+  }
   generateInFlight = true;
   generateView = 'loading';
   generatedPlan = null;
   generatedMeta = null;
   generateStartedAt = Date.now();
+  generateAbortController = new AbortController();
   document.getElementById('generateOverlay').classList.add('show');
   renderGenerate();
 
@@ -1455,6 +1469,7 @@ async function openGenerate() {
     var res = await fetch('/api/generate-plan', {
       method: 'POST',
       headers: { Authorization: 'Bearer ' + token },
+      signal: generateAbortController.signal,
     });
     var body = await res.json().catch(function() { return null; });
 
@@ -1475,19 +1490,39 @@ async function openGenerate() {
     generateView = 'review';
     renderGenerate();
   } catch(err) {
+    if (err && err.name === 'AbortError') {
+      // User canceled — the close/cleanup already ran from cancelGenerate.
+      return;
+    }
     console.error('openGenerate error:', err);
     closeGenerate();
     showToast('Plan generation failed: ' + (err.message || 'network error'), null);
   } finally {
     generateInFlight = false;
+    generateAbortController = null;
   }
 }
 
+function cancelGenerate() {
+  if (generateAbortController) {
+    try { generateAbortController.abort(); } catch(e) { /* already aborted */ }
+  }
+  closeGenerate();
+  showToast('Generation canceled', null);
+}
+
 function closeGenerate() {
+  // Closing aborts any in-flight request so the user doesn't dismiss
+  // the modal and leave a 30-60s fetch running in the background.
+  // generateInFlight is cleared by the finally block in openGenerate
+  // when the fetch actually settles (including on AbortError) — don't
+  // fake it to false here, or a real in-flight request gets orphaned.
+  if (generateInFlight && generateAbortController) {
+    try { generateAbortController.abort(); } catch(e) { /* already aborted */ }
+  }
   document.getElementById('generateOverlay').classList.remove('show');
   generatedPlan = null;
   generatedMeta = null;
-  generateInFlight = false;
 }
 
 function renderGenerate() {
@@ -1508,6 +1543,7 @@ function renderGenerateLoading(body) {
       '<div class="generate-spinner"></div>' +
       '<div class="generate-status">Reviewing your training…</div>' +
       '<div class="generate-status-sub">Analyzing 4 weeks of data · usually 30-60 seconds</div>' +
+      '<button type="button" class="generate-btn-cancel" id="btnGenerateAbort" style="margin-top:20px;min-width:120px;padding:10px 16px;border-radius:10px;font-family:Outfit,sans-serif;font-size:14px;font-weight:600;cursor:pointer;">Cancel</button>' +
     '</div>';
 }
 
@@ -1633,6 +1669,134 @@ async function onAcceptGeneratedPlan() {
     console.error('onAcceptGeneratedPlan error:', err);
     showToast('Failed to save plan: ' + (err.message || 'unknown error'), null);
     if (btn) { btn.disabled = false; btn.textContent = 'Accept plan'; }
+  }
+}
+
+// ---- Plans management ----
+async function openPlans() {
+  document.getElementById('plansOverlay').classList.add('show');
+  await loadPlans();
+  renderPlans();
+}
+
+function closePlans() {
+  document.getElementById('plansOverlay').classList.remove('show');
+}
+
+async function loadPlans() {
+  plansLoading = true;
+  renderPlans();
+  try {
+    var pr = await sb.from('plans')
+      .select('id, title, week, is_active, created_at, data')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
+    if (pr.error) throw pr.error;
+
+    // Count workouts per plan in a single pass.
+    var cr = await sb.from('workouts')
+      .select('plan_id')
+      .eq('user_id', userId)
+      .not('plan_id', 'is', null);
+    var counts = {};
+    if (!cr.error && cr.data) {
+      for (var i = 0; i < cr.data.length; i++) {
+        var pid = cr.data[i].plan_id;
+        counts[pid] = (counts[pid] || 0) + 1;
+      }
+    }
+
+    plansList = (pr.data || []).map(function(p) {
+      return {
+        id: p.id,
+        title: p.title,
+        week: p.week,
+        is_active: p.is_active,
+        created_at: p.created_at,
+        start_date: (p.data && p.data.start_date) || null,
+        workout_count: counts[p.id] || 0,
+      };
+    });
+  } catch(err) {
+    console.error('loadPlans error:', err);
+    showToast("Couldn't load plans", null);
+    plansList = [];
+  } finally {
+    plansLoading = false;
+  }
+}
+
+function renderPlans() {
+  var body = document.getElementById('plansBody');
+  if (plansLoading) {
+    body.innerHTML = '<div class="history-empty">Loading…</div>';
+    return;
+  }
+  if (!plansList.length) {
+    body.innerHTML = '<div class="history-empty">No plans yet.</div>';
+    return;
+  }
+  var h = '<div class="plans-list">';
+  for (var i = 0; i < plansList.length; i++) {
+    var p = plansList[i];
+    var dateLabel = p.start_date
+      ? 'Started ' + p.start_date
+      : 'Created ' + new Date(p.created_at).toLocaleDateString();
+    h += '<div class="plans-row' + (p.is_active ? ' active' : '') + '">';
+    h += '<div class="plans-row-main">';
+    h += '<div class="plans-row-title">' + escapeHtml(p.title || 'Untitled');
+    if (p.is_active) h += '<span class="plans-active-badge">Active</span>';
+    h += '</div>';
+    h += '<div class="plans-row-meta">';
+    if (p.week) h += escapeHtml(p.week) + ' · ';
+    h += escapeHtml(dateLabel) + ' · ' + p.workout_count + ' workout' + (p.workout_count === 1 ? '' : 's');
+    h += '</div>';
+    h += '</div>';
+    h += '<div class="plans-row-actions">';
+    h += '<button type="button" class="plans-btn activate" data-plan-id="' + escapeAttr(p.id) + '"' +
+         (p.is_active ? ' disabled' : '') + '>Activate</button>';
+    h += '<button type="button" class="plans-btn delete" data-plan-id="' + escapeAttr(p.id) + '"' +
+         (p.workout_count > 0 ? ' disabled title="Has logged workouts"' : '') + '>Delete</button>';
+    h += '</div>';
+    h += '</div>';
+  }
+  h += '</div>';
+  body.innerHTML = h;
+}
+
+async function onActivatePlan(planId) {
+  var p = null;
+  for (var i = 0; i < plansList.length; i++) {
+    if (plansList[i].id === planId) { p = plansList[i]; break; }
+  }
+  if (!p || p.is_active) return;
+  if (!confirm('Switch to "' + (p.title || 'Untitled') + '" as the active plan?')) return;
+  try {
+    await activateExistingPlan(planId);
+    closePlans();
+    showToast('Activated: ' + (p.title || 'plan'), null);
+  } catch(err) {
+    console.error('onActivatePlan error:', err);
+    showToast("Couldn't activate plan: " + (err.message || 'unknown error'), null);
+  }
+}
+
+async function onDeletePlan(planId) {
+  var p = null;
+  for (var i = 0; i < plansList.length; i++) {
+    if (plansList[i].id === planId) { p = plansList[i]; break; }
+  }
+  if (!p || p.workout_count > 0) return;
+  if (!confirm('Delete "' + (p.title || 'Untitled') + '"? This cannot be undone.')) return;
+  try {
+    var dr = await sb.from('plans').delete().eq('id', planId);
+    if (dr.error) throw dr.error;
+    await loadPlans();
+    renderPlans();
+    showToast('Plan deleted', null);
+  } catch(err) {
+    console.error('onDeletePlan error:', err);
+    showToast("Couldn't delete plan: " + (err.message || 'unknown error'), null);
   }
 }
 
@@ -2000,6 +2164,23 @@ document.getElementById('menuGenerate').addEventListener('click', function() {
   closeMenu();
   openGenerate();
 });
+document.getElementById('menuPlans').addEventListener('click', function() {
+  closeMenu();
+  openPlans();
+});
+document.getElementById('btnPlansClose').addEventListener('click', closePlans);
+document.getElementById('plansOverlay').addEventListener('click', function(e) {
+  if (e.target === this) closePlans();
+});
+document.getElementById('plansBody').addEventListener('click', function(e) {
+  if (!e.target || !e.target.closest) return;
+  var btn = e.target.closest('.plans-btn');
+  if (!btn || btn.disabled) return;
+  var planId = btn.getAttribute('data-plan-id');
+  if (!planId) return;
+  if (btn.classList.contains('activate')) onActivatePlan(planId);
+  else if (btn.classList.contains('delete')) onDeletePlan(planId);
+});
 document.getElementById('btnGenerateClose').addEventListener('click', closeGenerate);
 document.getElementById('generateOverlay').addEventListener('click', function(e) {
   // Don't dismiss mid-generation — only allow overlay click to close on the review screen.
@@ -2009,6 +2190,7 @@ document.getElementById('generateBody').addEventListener('click', function(e) {
   if (!e.target || !e.target.closest) return;
   if (e.target.closest('#btnGenerateAccept')) { onAcceptGeneratedPlan(); return; }
   if (e.target.closest('#btnGenerateCancel')) { closeGenerate(); return; }
+  if (e.target.closest('#btnGenerateAbort')) { cancelGenerate(); return; }
 });
 document.getElementById('menuWeightUnit').addEventListener('click', function() {
   setWeightUnit(getWeightUnit() === 'lbs' ? 'kg' : 'lbs');

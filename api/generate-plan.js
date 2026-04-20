@@ -183,7 +183,7 @@ function sbFetch(route) {
 }
 
 async function fetchActivePlan(userId) {
-  const res = await sbFetch(`/plans?user_id=eq.${userId}&is_active=eq.true&select=id,title,week,data&limit=1`);
+  const res = await sbFetch(`/plans?user_id=eq.${userId}&is_active=eq.true&select=id,title,week,data,created_at&limit=1`);
   if (!res.ok) throw new Error('Failed to fetch active plan');
   const rows = await res.json();
   return rows[0] || null;
@@ -268,7 +268,7 @@ async function buildUserMessage({ activePlan, history, exercises, photos }) {
 
   let dynText = '';
   dynText += formatCurrentPlan(activePlan);
-  dynText += formatVerbatimHistory(verbatim);
+  dynText += formatVerbatimHistory(verbatim, activePlan);
   dynText += formatSummarizedHistory(summarized);
   dynText += '\nGENERATE a full training plan for the upcoming week. Match the current plan\'s day structure (5-day Upper/Lower split, Sunday through Thursday). Return ONLY the JSON object as specified in your instructions. No preamble, no markdown fences, no trailing text.\n';
   content.push({ type: 'text', text: dynText });
@@ -310,34 +310,66 @@ function formatCurrentPlan(activePlan) {
   let out = 'CURRENT PLAN\n';
   out += `Title: ${d.title || activePlan.title || 'Untitled'}\n`;
   out += `Week: ${d.week || activePlan.week || 'N/A'}\n`;
+
+  // Ground the AI in calendar time. start_date is stamped at save time;
+  // fall back to plans.created_at for plans that predate that stamping.
+  const startDate = d.start_date || (activePlan.created_at ? String(activePlan.created_at).slice(0, 10) : null);
+  if (startDate) {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const weeksSince = weeksBetweenDates(startDate, todayStr);
+    out += `Started: ${startDate} (${weeksSince} week${weeksSince === 1 ? '' : 's'} ago)\n`;
+  }
+
   const days = Array.isArray(d.days) ? d.days : [];
   out += `Days: ${days.length}\n`;
   for (let i = 0; i < days.length; i++) {
     const day = days[i];
+    const dur = day.duration ? ` (target ${day.duration})` : '';
     const exs = Array.isArray(day.exercises) ? day.exercises.map(e => e.name).join(', ') : '';
-    out += `  Day ${i + 1}: ${day.name || ''} — ${exs}\n`;
+    out += `  Day ${i + 1}: ${day.name || ''}${dur} — ${exs}\n`;
   }
   return out + '\n';
 }
 
-function formatVerbatimHistory(workouts) {
+function weeksBetweenDates(startYmd, endYmd) {
+  const s = new Date(startYmd + 'T00:00:00Z');
+  const e = new Date(endYmd + 'T00:00:00Z');
+  if (isNaN(s) || isNaN(e)) return 0;
+  const days = Math.round((e - s) / 86400000);
+  return Math.max(0, Math.floor(days / 7));
+}
+
+function formatVerbatimHistory(workouts, activePlan) {
   if (!workouts.length) return '';
   let out = `RECENT PERFORMANCE (verbatim, last ${VERBATIM_WEEKS} weeks)\n`;
   const sorted = [...workouts].sort((a, b) => a.performed_on.localeCompare(b.performed_on));
-  for (const w of sorted) out += formatWorkoutVerbatim(w);
+  for (const w of sorted) out += formatWorkoutVerbatim(w, activePlan);
   return out + '\n';
 }
 
-function formatWorkoutVerbatim(w) {
+function formatWorkoutVerbatim(w, activePlan) {
   const isAdHoc = w.plan_id === null;
   const dayLabel = isAdHoc
     ? (w.title || 'Ad-hoc session')
     : ('Day ' + ((w.day_index || 0) + 1));
   let out = `\n${dayLabel} | ${w.performed_on}`;
+
+  // Target duration for sessions on the currently-active plan. We don't
+  // try to resolve plan data for older-plan workouts — the signal most
+  // useful to the AI is current-plan pace drift.
+  const activePlanData = activePlan && activePlan.data;
+  const activePlanId = activePlan && activePlan.id;
+  const targetDuration = (!isAdHoc && activePlanId && w.plan_id === activePlanId
+    && activePlanData && activePlanData.days
+    && activePlanData.days[w.day_index]
+    && activePlanData.days[w.day_index].duration) || null;
+
   if (w.started_at && w.ended_at) {
     const ms = new Date(w.ended_at).getTime() - new Date(w.started_at).getTime() - (w.paused_ms || 0);
     const mins = Math.round(ms / 60000);
-    if (mins > 0) out += ` | ${mins} min`;
+    if (mins > 0) {
+      out += targetDuration ? ` | Target ${targetDuration} · Actual ${mins} min` : ` | ${mins} min`;
+    }
   }
   if (isAdHoc) out += ' | ad-hoc';
   out += '\n';

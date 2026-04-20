@@ -1528,7 +1528,15 @@ async function resumeSession() {
 // between file-based import (handleImport) and AI-generated plans
 // (onAcceptGeneratedPlan). Throws on error so callers can decide how to
 // surface the failure.
+//
+// Stamps `start_date` on the plan JSON with today's local date so the
+// AI planner can ground phase-awareness reasoning in actual calendar
+// dates. Preserves an explicit start_date if one was set upstream.
 async function savePlanAsActive(newPlan) {
+  if (!newPlan.start_date) {
+    newPlan.start_date = sessionTodayDateString();
+  }
+
   var r1 = await sb.from('plans').update({ is_active: false })
     .eq('user_id', userId).eq('is_active', true);
   if (r1.error) throw new Error(r1.error.message);
@@ -1547,6 +1555,37 @@ async function savePlanAsActive(newPlan) {
   planCache[activePlanId] = plan;
   // Reset plan-related in-memory view only; past workouts/sets remain
   // untouched in the DB. Ad-hoc sessions are plan-agnostic and stay.
+  todayState = null;
+  todayPlanStates = {};
+  historicalCache = {};
+  exerciseIdCache = {};
+  currentDay = 0;
+
+  document.getElementById('emptyState').style.display = 'none';
+  document.getElementById('summaryBar').style.display = 'flex';
+  document.getElementById('planTitle').textContent = plan.title || 'Workout Tracker';
+  document.getElementById('planWeek').textContent = plan.week || '';
+  buildTabs(); buildDay(0);
+  return r2.data;
+}
+
+// Re-activate an existing plan (used by the Plans management modal).
+// Unlike savePlanAsActive, this does NOT create a new plan row — it
+// just flips is_active on the target plan and on the previously
+// active one. start_date on the activated plan is preserved as-is.
+async function activateExistingPlan(planId) {
+  var r1 = await sb.from('plans').update({ is_active: false })
+    .eq('user_id', userId).eq('is_active', true);
+  if (r1.error) throw new Error(r1.error.message);
+
+  var r2 = await sb.from('plans').update({ is_active: true })
+    .eq('id', planId).eq('user_id', userId)
+    .select().single();
+  if (r2.error) throw new Error(r2.error.message);
+
+  activePlanId = r2.data.id;
+  plan = r2.data.data || {};
+  planCache[activePlanId] = plan;
   todayState = null;
   todayPlanStates = {};
   historicalCache = {};
