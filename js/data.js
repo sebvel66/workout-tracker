@@ -54,6 +54,12 @@ var todayAdHocs = [];
 // identically for plan-based and ad-hoc sessions.
 var todayState = null;
 
+// suggestedDayIndex: rotation-based "next day to train" hint for the active
+// plan, computed once per hydrate from the most recent completed workout.
+// null means "no plan active OR no completed workouts yet" — the start modal
+// treats both as "suggest Day 0" for a fresh plan.
+var suggestedDayIndex = null;
+
 var historicalCache = {};     // dayIndex -> state (read-only past workouts)
 var planCache = {};           // planId -> plan blob
 var exerciseIdCache = {};     // normName -> uuid
@@ -254,6 +260,35 @@ async function loadRecentExercises() {
     if (out.length >= 10) break;
   }
   recentExercises = out;
+}
+
+// Find the most recent completed workout for the active plan and compute the
+// next-in-rotation day_index. Run once per hydrate. No-op when there is no
+// active plan; leaves suggestedDayIndex at null (start modal treats that as
+// "suggest Day 0" for a fresh plan).
+async function loadSuggestedDayIndex() {
+  if (!activePlanId || !plan || !plan.days || !plan.days.length) {
+    suggestedDayIndex = null;
+    return;
+  }
+  var res = await sb.from('workouts')
+    .select('day_index')
+    .eq('user_id', userId)
+    .eq('plan_id', activePlanId)
+    .not('ended_at', 'is', null)
+    .order('ended_at', { ascending: false })
+    .limit(1);
+  if (res.error) {
+    // Non-fatal — the modal will just default to Day 0 as the suggestion.
+    console.error('loadSuggestedDayIndex error:', res.error);
+    suggestedDayIndex = 0;
+    return;
+  }
+  if (!res.data || !res.data.length || res.data[0].day_index == null) {
+    suggestedDayIndex = 0;
+    return;
+  }
+  suggestedDayIndex = (res.data[0].day_index + 1) % plan.days.length;
 }
 
 function bumpRecent(exerciseRow) {

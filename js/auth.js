@@ -123,6 +123,7 @@ function applySession(session) {
     hydratedForUser = session.user.id;
     activePlanId = null; plan = null;
     todayState = null; todayPlanStates = {}; todayAdHocs = [];
+    suggestedDayIndex = null;
     historicalCache = {}; planCache = {}; exerciseIdCache = {};
     exerciseLibrary = []; exerciseLibraryByName = {}; exerciseLibraryById = {};
     recentExercises = [];
