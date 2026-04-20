@@ -169,11 +169,21 @@ function stateFromWorkout(row) {
       }
       if (isExtraOnPlan) state.exercises[ek].isExtra = true;
     }
+    var isExtraOnPlanExercise = false;
+    if (!isAdHocWorkout && planLen && s.exercise_order < planLen) {
+      var presc = pinnedPlan.days[row.day_index].exercises[s.exercise_order];
+      var prescSetCount = (presc && presc.sets) ? presc.sets.length : 0;
+      if (prescSetCount > 0 && s.set_order >= prescSetCount) {
+        isExtraOnPlanExercise = true;
+      }
+    }
+    var setIsExtra = isAdHocWorkout || isExtraOnPlan || isExtraOnPlanExercise;
     state.exercises[ek].sets[s.set_order] = {
       setId: s.id, weight: s.weight, reps: s.reps, done: !!s.done,
       exerciseId: s.exercise_id,
       startedAt: s.started_at, completedAt: s.completed_at,
     };
+    if (setIsExtra) state.exercises[ek].sets[s.set_order].isExtra = true;
     if (s.rpe != null) state.exercises[ek].rpe = s.rpe;
     if (s.note) state.exercises[ek].note = s.note;
     if (s.substitution) state.exercises[ek].sub = s.substitution;
@@ -576,12 +586,18 @@ async function ensureWorkout(di) {
 function buildSetPayload(di, ei, si) {
   var exState = todayState.exercises['ex_' + ei] || { rpe: null, note: '', sub: '', sets: [] };
   var sl = exState.sets[si] || {};
+  var isExtraSet = todayState.isAdHoc || exState.isExtra || sl.isExtra;
   var exerciseId, prescribedWeight, prescribedReps;
-  // Ad-hoc sessions and "extras" on plan days both carry exerciseId in state
-  // and have no prescription. Plan-day prescribed exercises look up by name
-  // against the library-seeded cache.
-  if (todayState.isAdHoc || exState.isExtra) {
-    exerciseId = exState.exerciseId;
+  // Ad-hoc sessions, "extras" exercises on plan days, and extra sets on
+  // prescribed exercises all skip prescription. Prescribed sets look up
+  // the prescription from the plan JSON.
+  if (isExtraSet) {
+    if (todayState.isAdHoc || exState.isExtra) {
+      exerciseId = exState.exerciseId;
+    } else {
+      // Extra set on a prescribed exercise — reuse the prescribed exercise's id.
+      exerciseId = exerciseIdCache[normName(plan.days[di].exercises[ei].name)];
+    }
     prescribedWeight = null;
     prescribedReps = null;
   } else {
@@ -813,7 +829,7 @@ function addExerciseToSession(exerciseRow) {
   var ei = nextExerciseIndex();
   var ek = 'ex_' + ei;
   st.exercises[ek] = {
-    rpe: null, note: '', sub: '', sets: [{}],
+    rpe: null, note: '', sub: '', sets: [{ isExtra: true }],
     // Mark isExtra only on plan days (drives the "added" badge + divider).
     // Ad-hoc sessions render every exercise uniformly with no badge.
     isExtra: !st.isAdHoc,
@@ -827,7 +843,7 @@ function addExerciseToSession(exerciseRow) {
 function addExtraSet(ei) {
   if (viewModeFor(currentDay) !== 'editable') return;
   if (!todayState || !todayState.exercises['ex_' + ei]) return;
-  todayState.exercises['ex_' + ei].sets.push({});
+  todayState.exercises['ex_' + ei].sets.push({ isExtra: true });
   buildDay(currentDay);
 }
 
@@ -840,9 +856,9 @@ async function deleteSet(di, ei, si) {
   if (!todayState) return;
   var exState = todayState.exercises['ex_' + ei];
   if (!exState) return;
-  if (!exState.isExtra && !todayState.isAdHoc) return;  // safety: only user-added
   var sl = exState.sets[si];
   if (!sl) return;
+  if (!sl.isExtra && !exState.isExtra && !todayState.isAdHoc) return;  // safety: only user-added
   var persisted = !!sl.setId;
   if (persisted && !confirm('Delete this set?')) return;
   try {
