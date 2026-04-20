@@ -477,6 +477,10 @@ function buildAdHocDay(di) {
 
 // ---- Hamburger menu ----
 function openMenu() {
+  var row = document.getElementById('menuWeightUnit');
+  if (row) {
+    row.textContent = 'Weight unit (' + getWeightUnit() + ')';
+  }
   document.getElementById('menuOverlay').classList.add('show');
 }
 
@@ -1492,6 +1496,11 @@ document.getElementById('menuHistory').addEventListener('click', function() {
 document.getElementById('menuGymProfiles').addEventListener('click', function() {
   closeMenu();
   openGymProfiles();
+});
+document.getElementById('menuWeightUnit').addEventListener('click', function() {
+  setWeightUnit(getWeightUnit() === 'lbs' ? 'kg' : 'lbs');
+  closeMenu();
+  buildDay(currentDay);
 });
 document.getElementById('menuSignOut').addEventListener('click', function() {
   closeMenu();
