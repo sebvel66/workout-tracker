@@ -784,15 +784,49 @@ body.unauthed #emptyState { display: none !important; }
   font-family: 'JetBrains Mono', monospace;
 }
 .history-row-meta .sep { margin: 0 6px; color: var(--text3); }
-.history-load-more {
-  display: block; margin: 14px auto;
-  background: transparent; color: var(--text2);
-  border: 1px dashed var(--border); border-radius: 8px;
-  font-family: 'Outfit', sans-serif; font-size: 13px; font-weight: 500;
-  padding: 10px 24px; cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
+.history-week-nav {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 14px; border-bottom: 1px solid var(--border);
 }
-.history-load-more:active { background: var(--surface2); color: var(--text); }
+.history-week-arrow {
+  background: transparent; color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+  width: 44px; height: 36px;
+  font-family: 'Outfit', sans-serif; font-size: 16px;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.history-week-arrow:active:not(:disabled) { background: var(--surface2); }
+.history-week-arrow:disabled { opacity: 0.3; cursor: default; }
+.history-week-label {
+  flex: 1; text-align: center;
+  font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 600;
+  color: var(--text);
+}
+.history-week-summary {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 8px; padding: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.history-week-stat {
+  background: var(--surface2); border-radius: 8px;
+  padding: 10px 12px;
+}
+.history-week-stat-label {
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
+  color: var(--text3); text-transform: uppercase; letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+.history-week-stat-value {
+  font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 600;
+  color: var(--text); letter-spacing: -0.2px;
+}
+.history-skipped {
+  padding: 10px 14px;
+  font-family: 'JetBrains Mono', monospace; font-size: 11px;
+  color: var(--text2);
+  background: var(--surface2);
+  border-bottom: 1px solid var(--border);
+}
 .history-empty {
   text-align: center; padding: 40px 20px;
   color: var(--text3); font-size: 13px;

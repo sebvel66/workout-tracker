@@ -77,6 +77,12 @@ var locations = [];              // array of location rows, created_at desc
 var locationById = {};           // uuid -> row
 var recentLocationId = null;     // uuid of the most recently used gym, or null
 
+// Earliest workout date across the user's history, as a YYYY-MM-DD string.
+// Lazy-loaded by the History browser so "Previous week" navigation can be
+// disabled past the user's first-ever workout. null = not loaded yet,
+// '' = no workouts, 'YYYY-MM-DD' = loaded.
+var earliestWorkoutDate = null;
+
 // ---- State helpers ----
 function _planForState(state) {
   if (state && state.planId && planCache[state.planId]) return planCache[state.planId];
@@ -135,6 +141,39 @@ function localDateString(date) {
 // so the DB uniqueness key lines up with what hydrate treats as today.
 function sessionTodayDateString() {
   return localDateString(sessionTodayStart || dayBounds(new Date()).start);
+}
+
+// ---- Week helpers (Sunday → Saturday) ----
+// Slicing unit for the History browser and the AI planner. All helpers
+// operate on YYYY-MM-DD strings aligned with workouts.performed_on.
+
+function weekStartForLocalDate(date) {
+  var d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - d.getDay());  // getDay: 0 = Sunday
+  return localDateString(d);
+}
+
+function addDaysToDateString(ymd, n) {
+  var d = new Date(ymd + 'T00:00:00');
+  d.setDate(d.getDate() + n);
+  return localDateString(d);
+}
+
+// Format a week range for the navigator label, e.g. "Apr 12 – 18, 2026"
+// when the week doesn't cross a month boundary, "Nov 29 – Dec 5, 2026"
+// when it does.
+function formatWeekLabel(startStr, endStr) {
+  var s = new Date(startStr + 'T00:00:00');
+  var e = new Date(endStr + 'T00:00:00');
+  var sameMonth = s.getFullYear() === e.getFullYear() && s.getMonth() === e.getMonth();
+  if (sameMonth) {
+    return s.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) +
+           ' – ' + e.getDate() + ', ' + e.getFullYear();
+  }
+  return s.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) +
+         ' – ' + e.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) +
+         ', ' + e.getFullYear();
 }
 
 // ---- Hydration helpers ----
@@ -299,6 +338,21 @@ async function loadSuggestedDayIndex() {
     return;
   }
   suggestedDayIndex = (res.data[0].day_index + 1) % plan.days.length;
+}
+
+// Lazy-load the earliest workout date once per session. Returns '' if the
+// user has no workouts at all. Cached in earliestWorkoutDate so the
+// History browser doesn't re-query on every week-navigator tick.
+async function loadEarliestWorkoutDate() {
+  if (earliestWorkoutDate !== null) return earliestWorkoutDate;
+  var res = await sb.from('workouts')
+    .select('performed_on')
+    .eq('user_id', userId)
+    .order('performed_on', { ascending: true })
+    .limit(1);
+  if (res.error) return null;
+  earliestWorkoutDate = (res.data && res.data[0]) ? res.data[0].performed_on : '';
+  return earliestWorkoutDate;
 }
 
 // ---- Week summary (shared: History browser UI + AI planner Edge Function) ----

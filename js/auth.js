@@ -128,8 +128,9 @@ function applySession(session) {
     exerciseLibrary = []; exerciseLibraryByName = {}; exerciseLibraryById = {};
     recentExercises = [];
     pickerState = { search: '', equipment: [], muscleGroup: [] };
-    historyWorkouts = []; historyDetails = {};
-    historyLoading = false; historyFullyLoaded = false; historyView = 'list';
+    historyWeekCache = {}; historyDetails = {};
+    historyWeekStart = null; historyWeekLoading = false; historyView = 'week';
+    earliestWorkoutDate = null;
     currentDay = 0;
     hydrate();
   } else {
@@ -146,11 +147,12 @@ function applySession(session) {
     exerciseLibraryById = {};
     recentExercises = [];
     pickerState = { search: '', equipment: [], muscleGroup: [] };
-    historyWorkouts = [];
+    historyWeekCache = {};
     historyDetails = {};
-    historyLoading = false;
-    historyFullyLoaded = false;
-    historyView = 'list';
+    historyWeekStart = null;
+    historyWeekLoading = false;
+    historyView = 'week';
+    earliestWorkoutDate = null;
     document.body.classList.add('unauthed');
   }
 }

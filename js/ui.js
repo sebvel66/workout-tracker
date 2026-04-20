@@ -20,13 +20,13 @@ var sessionTimerInterval = null;
 
 var pickerState = { search: '', equipment: [], muscleGroup: [] };
 
-// History browser state
-var historyWorkouts = [];
-var historyDetails = {};
-var historyLoading = false;
-var historyFullyLoaded = false;
-var historyView = 'list';
-var historyPageSize = 20;
+// History browser state — week-scoped summary view with a detail drill-down
+// when a workout card is tapped. weekStart keys are 'YYYY-MM-DD' (Sunday).
+var historyView = 'week';           // 'week' | 'detail'
+var historyWeekStart = null;        // currently-viewed Sunday, YYYY-MM-DD
+var historyWeekCache = {};          // weekStart → fetchWeekSummary result
+var historyWeekLoading = false;
+var historyDetails = {};            // workoutId → { workout, state } for detail view
 
 // Picker option lists
 var EQUIPMENT_OPTIONS = ['barbell', 'dumbbell', 'cable', 'machine', 'smith machine', 'bodyweight', 'band'];
@@ -862,13 +862,33 @@ function closeExerciseHistory() {
   document.getElementById('exHistoryOverlay').classList.remove('show');
 }
 
-// ---- History browser (list + detail) ----
+// ---- History browser (weekly summary + detail) ----
 async function openHistory() {
-  historyView = 'list';
+  historyView = 'week';
   document.getElementById('historyOverlay').classList.add('show');
-  renderHistoryList();
-  if (historyWorkouts.length === 0 && !historyFullyLoaded) {
-    await loadHistoryPage();
+
+  // Lazy-resolve the earliest workout date so we can gate "Previous week"
+  // at the user's first-ever entry.
+  if (earliestWorkoutDate === null) {
+    await loadEarliestWorkoutDate();
+  }
+
+  // Default to the most recent completed week (= current week - 7 days).
+  // If the user's first workout is newer than that window, default to
+  // their earliest-workout week so the view isn't empty out of the gate.
+  if (!historyWeekStart) {
+    var currentStart = weekStartForLocalDate(new Date(sessionTodayDateString() + 'T00:00:00'));
+    var prevStart = addDaysToDateString(currentStart, -7);
+    if (earliestWorkoutDate && addDaysToDateString(prevStart, 6) < earliestWorkoutDate) {
+      historyWeekStart = weekStartForLocalDate(new Date(earliestWorkoutDate + 'T00:00:00'));
+    } else {
+      historyWeekStart = prevStart;
+    }
+  }
+
+  renderHistoryWeek();
+  if (!historyWeekCache[historyWeekStart]) {
+    loadHistoryWeek(historyWeekStart);
   }
 }
 
@@ -876,119 +896,154 @@ function closeHistory() {
   document.getElementById('historyOverlay').classList.remove('show');
 }
 
-function backToHistoryList() {
-  historyView = 'list';
-  renderHistoryList();
+function backToHistoryWeek() {
+  historyView = 'week';
+  renderHistoryWeek();
 }
 
-async function loadHistoryPage() {
-  if (historyLoading || historyFullyLoaded) return;
-  historyLoading = true;
-  var offset = historyWorkouts.length;
-  var bounds = sessionBounds();
+async function loadHistoryWeek(weekStart) {
+  if (historyWeekLoading) return;
+  historyWeekLoading = true;
+  renderHistoryWeek();
+  var weekEnd = addDaysToDateString(weekStart, 6);
   try {
-    // Include everything except today's in-progress workouts:
-    //   performed_at < today  OR  ended_at IS NOT NULL
-    // This surfaces today's completed sessions for end-of-day review while
-    // keeping actively-logging sessions out (they live on the regular tabs).
-    var res = await sb.from('workouts')
-      .select('id, plan_id, day_index, performed_at, started_at, ended_at, title, paused_ms, location_id, sets(done)')
-      .eq('user_id', userId)
-      .or('performed_at.lt.' + bounds.start.toISOString() + ',ended_at.not.is.null')
-      .order('performed_at', { ascending: false })
-      .range(offset, offset + historyPageSize - 1);
-    if (res.error) throw res.error;
-    var rows = res.data || [];
-    if (rows.length < historyPageSize) historyFullyLoaded = true;
-    for (var i = 0; i < rows.length; i++) {
-      rows[i].doneSetsCount = (rows[i].sets || []).filter(function(s){ return s.done; }).length;
-      delete rows[i].sets; // drop the raw sets array — we only needed the count
-    }
-    // Pre-fetch any plan blobs we'll need for the day names in the list.
-    var uncachedPlans = {};
-    for (var k = 0; k < rows.length; k++) {
-      if (rows[k].plan_id && !planCache[rows[k].plan_id]) {
-        uncachedPlans[rows[k].plan_id] = true;
-      }
-    }
-    var planIds = Object.keys(uncachedPlans);
-    if (planIds.length) {
-      var pr = await sb.from('plans').select('id, data').in('id', planIds);
-      if (pr.data) {
-        for (var p = 0; p < pr.data.length; p++) {
-          planCache[pr.data[p].id] = pr.data[p].data;
-        }
-      }
-    }
-    historyWorkouts = historyWorkouts.concat(rows);
-    if (historyView === 'list') renderHistoryList();
+    var summary = await fetchWeekSummary(userId, weekStart, weekEnd);
+    historyWeekCache[weekStart] = summary;
   } catch(err) {
-    console.error('loadHistoryPage error:', err);
-    showToast("Couldn't load history", function(){ loadHistoryPage(); });
+    console.error('loadHistoryWeek error:', err);
+    showToast("Couldn't load week", function(){ loadHistoryWeek(weekStart); });
   } finally {
-    historyLoading = false;
+    historyWeekLoading = false;
+    if (historyView === 'week' && historyWeekStart === weekStart) {
+      renderHistoryWeek();
+    }
   }
 }
 
-function historyRowDate(workout) {
-  var d = new Date(workout.performed_at);
-  return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+function navigateHistoryWeek(delta) {
+  if (!historyWeekStart) return;
+  var target = addDaysToDateString(historyWeekStart, delta * 7);
+  // Prev-gate: never step past the earliest workout's week.
+  if (delta < 0 && earliestWorkoutDate && addDaysToDateString(target, 6) < earliestWorkoutDate) return;
+  historyWeekStart = target;
+  renderHistoryWeek();
+  if (!historyWeekCache[historyWeekStart]) {
+    loadHistoryWeek(historyWeekStart);
+  }
 }
 
-function historyRowLabel(workout) {
-  if (workout.plan_id === null) {
-    return (workout.title && workout.title.trim()) || 'Ad-hoc session';
-  }
-  var blob = planCache[workout.plan_id];
-  if (blob && blob.days && blob.days[workout.day_index]) {
-    return blob.days[workout.day_index].name;
-  }
-  return workout.day_index != null ? 'Day ' + (workout.day_index + 1) : 'Workout';
-}
-
-function renderHistoryList() {
+function renderHistoryWeek() {
   document.getElementById('btnHistoryBack').style.display = 'none';
   document.getElementById('historyBackSpacer').style.display = 'block';
   document.getElementById('historyTitle').textContent = 'History';
   var body = document.getElementById('historyBody');
+
+  var weekStart = historyWeekStart;
+  var weekEnd = addDaysToDateString(weekStart, 6);
+  var currentStart = weekStartForLocalDate(new Date(sessionTodayDateString() + 'T00:00:00'));
+  var isCurrent = weekStart === currentStart;
+  var isFuture = weekStart > currentStart;
+  var nextDisabled = isCurrent || isFuture;
+  var prevDisabled = false;
+  if (earliestWorkoutDate) {
+    var prevEnd = addDaysToDateString(addDaysToDateString(weekStart, -7), 6);
+    if (prevEnd < earliestWorkoutDate) prevDisabled = true;
+  }
+
+  var label = formatWeekLabel(weekStart, weekEnd);
+  if (isCurrent) label += ' (Current)';
+
   var h = '';
-  if (historyWorkouts.length === 0) {
-    h = historyFullyLoaded
-      ? '<div class="history-empty">No past workouts yet.</div>'
-      : '<div class="history-empty">Loading…</div>';
+  h += '<div class="history-week-nav">';
+  h += '<button class="history-week-arrow" id="btnHistoryWeekPrev" type="button"' + (prevDisabled ? ' disabled' : '') + '>←</button>';
+  h += '<div class="history-week-label">' + escapeHtml(label) + '</div>';
+  h += '<button class="history-week-arrow" id="btnHistoryWeekNext" type="button"' + (nextDisabled ? ' disabled' : '') + '>→</button>';
+  h += '</div>';
+
+  var summary = historyWeekCache[weekStart];
+  if (!summary) {
+    h += '<div class="history-empty">' + (historyWeekLoading ? 'Loading…' : '—') + '</div>';
+    body.innerHTML = h;
+    return;
+  }
+
+  h += renderHistoryWeekSummary(summary);
+  h += renderHistorySkipped(summary);
+
+  if (summary.workouts.length === 0) {
+    h += '<div class="history-empty">No workouts this week.</div>';
   } else {
-    for (var i = 0; i < historyWorkouts.length; i++) {
-      var w = historyWorkouts[i];
-      var isAdHoc = w.plan_id === null;
-      var cls = 'history-row' + (isAdHoc ? ' ad-hoc' : '');
-      var metaParts = [];
-      if (w.started_at && w.ended_at) {
-        var ms = sessionElapsedMs({
-          startedAt: w.started_at, endedAt: w.ended_at,
-          pausedMs: w.paused_ms || 0,
-        });
-        metaParts.push(fmtDuration(ms));
-      }
-      metaParts.push((w.doneSetsCount || 0) + (w.doneSetsCount === 1 ? ' set' : ' sets'));
-      if (w.location_id && locationById[w.location_id]) {
-        metaParts.push(locationById[w.location_id].name);
-      }
-      h += '<button type="button" class="' + cls + '" data-workout-id="' + w.id + '">';
-      h += '<div class="history-row-date">' + escapeHtml(historyRowDate(w)) + '</div>';
-      h += '<div class="history-row-title">' + escapeHtml(historyRowLabel(w)) + '</div>';
-      h += '<div class="history-row-meta">';
-      for (var j = 0; j < metaParts.length; j++) {
-        if (j > 0) h += ' <span class="sep">·</span> ';
-        h += escapeHtml(metaParts[j]);
-      }
-      h += '</div>';
-      h += '</button>';
-    }
-    if (!historyFullyLoaded) {
-      h += '<button type="button" class="history-load-more" id="btnHistoryLoadMore">Load more</button>';
+    for (var i = 0; i < summary.workouts.length; i++) {
+      h += renderHistoryWorkoutCard(summary.workouts[i]);
     }
   }
   body.innerHTML = h;
+}
+
+function renderHistoryWeekSummary(summary) {
+  var stats = [];
+  var sessionLine = summary.workouts.length + (summary.workouts.length === 1 ? ' session' : ' sessions');
+  if (summary.adHocSessions > 0) sessionLine += ' (' + summary.adHocSessions + ' ad-hoc)';
+  stats.push({ label: 'Sessions', value: sessionLine });
+  if (summary.daysPlanned != null) {
+    stats.push({ label: 'Days', value: summary.daysTrained + ' / ' + summary.daysPlanned });
+  }
+  stats.push({ label: 'Volume', value: fmtHistoryVolume(summary.weekTotalVolume) });
+  if (summary.weekAvgRpe != null) {
+    stats.push({ label: 'Avg RPE', value: String(summary.weekAvgRpe) });
+  }
+  if (summary.weekCompletionRate != null) {
+    stats.push({ label: 'Plan complete', value: Math.round(summary.weekCompletionRate * 100) + '%' });
+  }
+  var h = '<div class="history-week-summary">';
+  for (var i = 0; i < stats.length; i++) {
+    h += '<div class="history-week-stat">';
+    h += '<div class="history-week-stat-label">' + escapeHtml(stats[i].label) + '</div>';
+    h += '<div class="history-week-stat-value">' + escapeHtml(stats[i].value) + '</div>';
+    h += '</div>';
+  }
+  h += '</div>';
+  return h;
+}
+
+function renderHistorySkipped(summary) {
+  if (!summary.exercisesSkippedAcrossWeek || !summary.exercisesSkippedAcrossWeek.length) return '';
+  return '<div class="history-skipped">Skipped: ' +
+    escapeHtml(summary.exercisesSkippedAcrossWeek.join(', ')) + '</div>';
+}
+
+function renderHistoryWorkoutCard(w) {
+  var d = new Date(w.date + 'T00:00:00');
+  var dateText = d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+  var metaParts = [];
+  if (w.duration != null) metaParts.push(w.duration + ' min');
+  if (w.totalSets > 0) {
+    metaParts.push(w.completedSets + '/' + w.totalSets + ' sets');
+    metaParts.push(Math.round(w.completionRate * 100) + '%');
+  } else {
+    metaParts.push('0 sets');
+  }
+  var cls = 'history-row' + (w.isAdHoc ? ' ad-hoc' : '');
+  var h = '<button type="button" class="' + cls + '" data-workout-id="' + escapeAttr(w.id) + '">';
+  h += '<div class="history-row-date">' + escapeHtml(dateText) + '</div>';
+  h += '<div class="history-row-title">' + escapeHtml(w.dayName) + '</div>';
+  h += '<div class="history-row-meta">';
+  for (var i = 0; i < metaParts.length; i++) {
+    if (i > 0) h += ' <span class="sep">·</span> ';
+    h += escapeHtml(metaParts[i]);
+  }
+  h += '</div>';
+  h += '</button>';
+  return h;
+}
+
+// Volume in the user's current unit (lbs/kg), abbreviated to 'k' past 10,000.
+function fmtHistoryVolume(lbs) {
+  if (lbs == null) return '—';
+  var unit = getWeightUnit();
+  var v = unit === 'kg' ? (lbs / LBS_PER_KG) : lbs;
+  if (v >= 10000) return (Math.round(v / 100) / 10) + 'k ' + unit;
+  return Math.round(v) + ' ' + unit;
 }
 
 async function openHistoryDetail(workoutId) {
@@ -1193,12 +1248,14 @@ function stopTimerTick() {
 
 // ---- History cache invalidation ----
 // Force the history browser to re-query on its next open. Called whenever
-// a workout's "finished" status changes (Complete or Resume) so the list
-// reflects the current state rather than a stale snapshot.
+// a workout's "finished" status changes (Complete or Resume) so the
+// cached week summary isn't stale. earliestWorkoutDate is also cleared
+// so deleting the user's first-ever workout re-gates "Previous week"
+// correctly.
 function invalidateHistoryCache() {
-  historyWorkouts = [];
+  historyWeekCache = {};
   historyDetails = {};
-  historyFullyLoaded = false;
+  earliestWorkoutDate = null;
 }
 
 // ---- Rest timer ----
@@ -1619,13 +1676,16 @@ document.getElementById('btnExHistoryClose').addEventListener('click', closeExer
 document.getElementById('exHistoryOverlay').addEventListener('click', function(e) {
   if (e.target === this) closeExerciseHistory();
 });
-document.getElementById('btnHistoryBack').addEventListener('click', backToHistoryList);
+document.getElementById('btnHistoryBack').addEventListener('click', backToHistoryWeek);
 document.getElementById('historyOverlay').addEventListener('click', function(e) {
   if (e.target === this) closeHistory();
 });
 document.getElementById('historyBody').addEventListener('click', function(e) {
-  var loadMore = e.target.closest ? e.target.closest('#btnHistoryLoadMore') : null;
-  if (loadMore) { loadHistoryPage(); return; }
+  if (!e.target) return;
+  var prev = e.target.closest ? e.target.closest('#btnHistoryWeekPrev') : null;
+  if (prev) { navigateHistoryWeek(-1); return; }
+  var next = e.target.closest ? e.target.closest('#btnHistoryWeekNext') : null;
+  if (next) { navigateHistoryWeek(1); return; }
   var row = e.target.closest ? e.target.closest('.history-row') : null;
   if (row) {
     openHistoryDetail(row.getAttribute('data-workout-id'));
