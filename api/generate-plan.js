@@ -28,8 +28,13 @@ export const maxDuration = 60;  // Claude generation takes ~10-20s; Hobby plan c
 const MODEL = 'claude-sonnet-4-6';
 const MAX_TOKENS = 16000;
 const TEMPERATURE = 0.3;
-const HISTORY_WEEKS = 4;
-const VERBATIM_WEEKS = 2;
+const DEFAULT_HISTORY_WEEKS = 4;
+const MAX_VERBATIM_WEEKS = 2;   // cap; effective verbatim = min(cap, requested history)
+const DEFAULT_TRAINING_DAYS = 5;
+const MIN_TRAINING_DAYS = 1;
+const MAX_TRAINING_DAYS = 6;
+const MIN_HISTORY_WEEKS = 1;
+const MAX_HISTORY_WEEKS = 12;
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
@@ -77,16 +82,22 @@ export default async function handler(req, res) {
       startDate: typeof rawInputs.start_date === 'string' ? rawInputs.start_date.slice(0, 10) : null,
       targetDuration: Number.isFinite(rawInputs.target_duration) ? rawInputs.target_duration : null,
       notes: (typeof rawInputs.notes === 'string' && rawInputs.notes.trim()) ? rawInputs.notes.trim().slice(0, 500) : null,
+      trainingDays: clampInt(rawInputs.training_days, MIN_TRAINING_DAYS, MAX_TRAINING_DAYS, DEFAULT_TRAINING_DAYS),
+      historyWeeks: clampInt(rawInputs.history_weeks, MIN_HISTORY_WEEKS, MAX_HISTORY_WEEKS, DEFAULT_HISTORY_WEEKS),
+      // Default true: safe backward-compat for any non-form caller. Frontend
+      // explicitly sends false when the checkbox is unchecked.
+      includePhotos: rawInputs.include_photos === false ? false : true,
     };
+    const verbatimWeeks = Math.min(MAX_VERBATIM_WEEKS, userInputs.historyWeeks);
 
     const t0 = Date.now();
     const [activePlan, history, exercises, photos] = await Promise.all([
       fetchActivePlan(userId),
-      fetchRecentWorkouts(userId, HISTORY_WEEKS),
+      fetchRecentWorkouts(userId, userInputs.historyWeeks),
       fetchExerciseLibrary(userId),
-      fetchPhysiquePhotos(userId),
+      userInputs.includePhotos ? fetchPhysiquePhotos(userId) : Promise.resolve({ goal: null, progress: [] }),
     ]);
-    console.log('[generate-plan] data fetch:', Date.now() - t0, 'ms');
+    console.log('[generate-plan] data fetch:', Date.now() - t0, 'ms', '· history_weeks:', userInputs.historyWeeks, '· training_days:', userInputs.trainingDays, '· include_photos:', userInputs.includePhotos);
 
     if (!activePlan) {
       return jsonError(res, 400, 'No active plan. Import a plan before generating.');
@@ -96,7 +107,7 @@ export default async function handler(req, res) {
     }
 
     const t1 = Date.now();
-    const userMessage = await buildUserMessage({ activePlan, history, exercises, photos, userInputs });
+    const userMessage = await buildUserMessage({ activePlan, history, exercises, photos, userInputs, verbatimWeeks });
     console.log('[generate-plan] prompt build (incl photo b64):', Date.now() - t1, 'ms');
 
     const t2 = Date.now();
@@ -165,7 +176,7 @@ export default async function handler(req, res) {
       return jsonError(res, 422, 'Plan generation failed — invalid JSON', { raw: rawText });
     }
 
-    const validationError = validatePlan(plan);
+    const validationError = validatePlan(plan, userInputs.trainingDays);
     if (validationError) {
       return jsonError(res, 422, 'Plan validation failed: ' + validationError, { raw: rawText });
     }
@@ -180,7 +191,9 @@ export default async function handler(req, res) {
     return res.status(200).json({
       plan,
       coaching_notes: plan.coaching_notes || '',
-      weeks_analyzed: HISTORY_WEEKS,
+      weeks_analyzed: userInputs.historyWeeks,
+      training_days: userInputs.trainingDays,
+      include_photos: userInputs.includePhotos,
       model: MODEL,
       usage: claudeData.usage || null,
       generated_at: new Date().toISOString(),
@@ -193,6 +206,14 @@ export default async function handler(req, res) {
 
 function jsonError(res, status, message, extra) {
   return res.status(status).json({ error: message, ...(extra || {}) });
+}
+
+// Clamp a numeric input to [min, max]; fall back to `fallback` if missing or invalid.
+// Accepts numbers and numeric strings from JSON bodies.
+function clampInt(v, min, max, fallback) {
+  const n = typeof v === 'number' ? v : parseInt(v, 10);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, Math.round(n)));
 }
 
 // ---- Auth ----
@@ -284,9 +305,9 @@ async function downloadPhotoAsBase64(storagePath) {
 }
 
 // ---- Prompt assembly ----
-async function buildUserMessage({ activePlan, history, exercises, photos, userInputs }) {
+async function buildUserMessage({ activePlan, history, exercises, photos, userInputs, verbatimWeeks }) {
   const content = [];
-  const { verbatim, summarized } = splitHistoryByRecency(history);
+  const { verbatim, summarized } = splitHistoryByRecency(history, verbatimWeeks);
 
   // Breakpoint 2: exercise library as the FIRST user-message block. Together
   // with the cached system prompt, this caches the full static prefix —
@@ -300,12 +321,16 @@ async function buildUserMessage({ activePlan, history, exercises, photos, userIn
     cache_control: { type: 'ephemeral', ttl: '1h' },
   });
 
+  // Day count + history window are driven by USER INPUTS; the system prompt's
+  // USER INPUTS section holds the rules, the data section below holds the
+  // values. No re-statement of day structure here — that would duplicate what
+  // the CLIENT PROFILE section and the formatCurrentPlan snapshot already say.
   let dynText = '';
   dynText += formatCurrentPlan(activePlan);
-  dynText += formatVerbatimHistory(verbatim, activePlan);
+  dynText += formatVerbatimHistory(verbatim, activePlan, verbatimWeeks);
   dynText += formatSummarizedHistory(summarized);
   dynText += formatUserInputs(userInputs);
-  dynText += '\nGENERATE a full training plan for the upcoming week. Match the current plan\'s day structure (5-day Upper/Lower split, Sunday through Thursday). Return ONLY the JSON object as specified in your instructions. No preamble, no markdown fences, no trailing text.\n';
+  dynText += '\nGENERATE the training plan per the USER INPUTS above. Return ONLY the JSON object as specified in your instructions. No preamble, no markdown fences, no trailing text.\n';
   content.push({ type: 'text', text: dynText });
 
   // Download the two photos in parallel — they're independent Supabase Storage
@@ -329,9 +354,9 @@ async function buildUserMessage({ activePlan, history, exercises, photos, userIn
   return content;
 }
 
-function splitHistoryByRecency(workouts) {
+function splitHistoryByRecency(workouts, verbatimWeeks) {
   const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - VERBATIM_WEEKS * 7);
+  cutoff.setDate(cutoff.getDate() - verbatimWeeks * 7);
   const cutoffStr = cutoff.toISOString().slice(0, 10);
   const verbatim = [];
   const summarized = [];
@@ -376,9 +401,9 @@ function weeksBetweenDates(startYmd, endYmd) {
   return Math.max(0, Math.floor(days / 7));
 }
 
-function formatVerbatimHistory(workouts, activePlan) {
+function formatVerbatimHistory(workouts, activePlan, verbatimWeeks) {
   if (!workouts.length) return '';
-  let out = `RECENT PERFORMANCE (verbatim, last ${VERBATIM_WEEKS} weeks)\n`;
+  let out = `RECENT PERFORMANCE (verbatim, last ${verbatimWeeks} week${verbatimWeeks === 1 ? '' : 's'})\n`;
   const sorted = [...workouts].sort((a, b) => a.performed_on.localeCompare(b.performed_on));
   for (const w of sorted) out += formatWorkoutVerbatim(w, activePlan);
   return out + '\n';
@@ -507,11 +532,16 @@ function weekStartForDateString(ymd) {
 
 function formatUserInputs(userInputs) {
   if (!userInputs) return '';
+  // Training days and history weeks are ALWAYS emitted — they drive plan
+  // structure and context window, so Claude needs them even on the "bare"
+  // call (no optional inputs). Start date / duration / notes only emit when
+  // the user set them; the cached system prompt handles their defaults.
   const parts = [];
+  parts.push(`Training days: ${userInputs.trainingDays}`);
+  parts.push(`History context: ${userInputs.historyWeeks} week${userInputs.historyWeeks === 1 ? '' : 's'} of data in this prompt`);
   if (userInputs.startDate) parts.push(`Plan intended start date: ${userInputs.startDate}`);
   if (userInputs.targetDuration) parts.push(`Target session duration: ${userInputs.targetDuration} min`);
   if (userInputs.notes) parts.push(`Notes from client: "${userInputs.notes}"`);
-  if (!parts.length) return '';
   return '\nUSER INPUTS FOR THIS WEEK\n' + parts.map(p => '  ' + p).join('\n') + '\n';
 }
 
@@ -553,11 +583,14 @@ function expandSetRepeats(plan) {
   return plan;
 }
 
-function validatePlan(plan) {
+function validatePlan(plan, expectedDays) {
   if (!plan || typeof plan !== 'object') return 'plan is not an object';
   if (!plan.title) return 'missing title';
   if (!plan.coaching_notes) return 'missing coaching_notes';
   if (!Array.isArray(plan.days) || !plan.days.length) return 'missing or empty days';
+  if (Number.isFinite(expectedDays) && plan.days.length !== expectedDays) {
+    return `expected ${expectedDays} day${expectedDays === 1 ? '' : 's'}, got ${plan.days.length}`;
+  }
   for (let i = 0; i < plan.days.length; i++) {
     const d = plan.days[i];
     if (!d.name) return `day ${i + 1}: missing name`;

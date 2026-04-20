@@ -62,6 +62,13 @@ var toastCounter = 0;
 function escapeHtml(s) { return String(s == null ? '' : s).replace(/[&<>]/g, function(c){ return c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;'; }); }
 function escapeAttr(s) { return escapeHtml(s).replace(/"/g, '&quot;'); }
 
+// Clamp a form input value to [min, max]; fall back to `fallback` if missing/invalid.
+function clampFormInt(raw, min, max, fallback) {
+  var n = raw == null ? NaN : parseInt(String(raw), 10);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
+}
+
 // ---- Format helpers ----
 function fmtElapsed(ms) {
   var s = Math.max(0, Math.floor(ms / 1000));
@@ -1467,19 +1474,31 @@ function openGenerate() {
 }
 
 async function submitGenerateInputs() {
-  // Collect form values. All are optional — empty/invalid fields pass
-  // through as null so the Edge Function falls back to defaults.
+  // Collect form values. start_date / target_duration / notes are optional —
+  // empty/invalid pass through as null so the Edge Function falls back to
+  // defaults. training_days and history_weeks always emit a clamped value so
+  // the server never has to guess what the user meant. The server also
+  // clamps as defense in depth.
   var startEl = document.getElementById('genFormStartDate');
   var durEl = document.getElementById('genFormDuration');
+  var daysEl = document.getElementById('genFormTrainingDays');
+  var weeksEl = document.getElementById('genFormHistoryWeeks');
+  var photosEl = document.getElementById('genFormIncludePhotos');
   var notesEl = document.getElementById('genFormNotes');
   var startDate = (startEl && startEl.value) || null;
   var targetDuration = durEl && durEl.value ? parseInt(durEl.value, 10) : null;
   if (!Number.isFinite(targetDuration)) targetDuration = null;
   var notes = (notesEl && notesEl.value || '').trim() || null;
+  var trainingDays = clampFormInt(daysEl && daysEl.value, 1, 6, 5);
+  var historyWeeks = clampFormInt(weeksEl && weeksEl.value, 1, 12, 4);
+  var includePhotos = !!(photosEl && photosEl.checked);
 
   generatedInputs = {
     start_date: startDate,
     target_duration: targetDuration,
+    training_days: trainingDays,
+    history_weeks: historyWeeks,
+    include_photos: includePhotos,
     notes: notes,
   };
 
@@ -1634,6 +1653,24 @@ function renderGenerateInputs(body) {
   h += '</label>';
 
   h += '<label class="generate-form-row">';
+  h += '<span class="generate-form-label">Training days</span>';
+  h += '<input type="number" id="genFormTrainingDays" class="generate-form-input" value="5" min="1" max="6" step="1">';
+  h += '<span class="generate-form-hint">Sessions per week (1-6). Claude adapts the split to the count.</span>';
+  h += '</label>';
+
+  h += '<label class="generate-form-row">';
+  h += '<span class="generate-form-label">History context</span>';
+  h += '<input type="number" id="genFormHistoryWeeks" class="generate-form-input" value="4" min="1" max="12" step="1">';
+  h += '<span class="generate-form-hint">Weeks of past training to feed the AI (1-12). More = broader context, slightly longer prompts.</span>';
+  h += '</label>';
+
+  h += '<label class="generate-form-row generate-form-row-inline">';
+  h += '<input type="checkbox" id="genFormIncludePhotos" class="generate-form-checkbox">';
+  h += '<span class="generate-form-label">Include physique photos in analysis</span>';
+  h += '<span class="generate-form-hint">Off by default. Turn on when you\'ve updated a progress photo or want visual-driven recommendations. Adds ~1-2s to generation.</span>';
+  h += '</label>';
+
+  h += '<label class="generate-form-row">';
   h += '<span class="generate-form-label">Notes to coach (optional)</span>';
   h += '<textarea id="genFormNotes" class="generate-form-textarea" rows="3" placeholder="e.g., knee acting up this week, traveling Mon-Wed (dumbbells only)"></textarea>';
   h += '</label>';
@@ -1648,10 +1685,11 @@ function renderGenerateInputs(body) {
 
 function renderGenerateLoading(body) {
   var isRetry = generateAttempt === 2;
+  var weeks = (generatedInputs && generatedInputs.history_weeks) || 4;
   var status = isRetry ? 'Still generating — warming up the AI…' : 'Reviewing your training…';
   var sub = isRetry
     ? 'First call after idle can be slow; retry lands on a warm cache'
-    : 'Analyzing 4 weeks of data · usually 30-60 seconds';
+    : 'Analyzing ' + weeks + ' week' + (weeks === 1 ? '' : 's') + ' of data · usually 30-60 seconds';
   body.innerHTML =
     '<div class="generate-loading">' +
       '<div class="generate-spinner"></div>' +
