@@ -168,6 +168,36 @@ function addDaysToDateString(ymd, n) {
   return localDateString(d);
 }
 
+// Derive a Sun-Sat week label for a plan blob from its start_date,
+// matching the History browser's formatting. Self-heals plans saved
+// before the savePlanAsActive normalization landed. Returns null if
+// there's no usable start_date — caller should fall back to
+// plan.week or an empty string.
+function planWeekLabel(planBlob) {
+  if (!planBlob || !planBlob.start_date) return null;
+  try {
+    var ws = weekStartForLocalDate(new Date(planBlob.start_date + 'T00:00:00'));
+    var we = addDaysToDateString(ws, 6);
+    return formatWeekLabel(ws, we);
+  } catch (e) {
+    return null;
+  }
+}
+
+// If the plan blob was saved before start_date stamping, inject the
+// DB row's created_at as a client-side fallback so week labels and
+// phase-aware rendering work without a DB migration. The blob keeps
+// the injected value in memory only; it'll be persisted the next
+// time the plan is re-saved via savePlanAsActive.
+function ensureStartDate(planBlob, dbRow) {
+  if (!planBlob) return planBlob;
+  if (planBlob.start_date) return planBlob;
+  if (dbRow && dbRow.created_at) {
+    planBlob.start_date = String(dbRow.created_at).slice(0, 10);
+  }
+  return planBlob;
+}
+
 // Format a week range for the navigator label, e.g. "Apr 12 – 18, 2026"
 // when the week doesn't cross a month boundary, "Nov 29 – Dec 5, 2026"
 // when it does.
@@ -1536,6 +1566,14 @@ async function savePlanAsActive(newPlan) {
   if (!newPlan.start_date) {
     newPlan.start_date = sessionTodayDateString();
   }
+  // Normalize plan.week to the Sunday-Saturday range containing
+  // start_date so the tracker header matches the History browser's
+  // week labels (both use formatWeekLabel). Overrides whatever string
+  // Claude emitted — Claude's output is inconsistent (sometimes
+  // "Week 5", sometimes a Mon-Fri range). Single source of truth:
+  // start_date. planWeekLabel() also re-derives this at render time
+  // so plans saved before this fix display correctly.
+  newPlan.week = planWeekLabel(newPlan) || newPlan.week || '';
 
   var r1 = await sb.from('plans').update({ is_active: false })
     .eq('user_id', userId).eq('is_active', true);
@@ -1564,7 +1602,7 @@ async function savePlanAsActive(newPlan) {
   document.getElementById('emptyState').style.display = 'none';
   document.getElementById('summaryBar').style.display = 'flex';
   document.getElementById('planTitle').textContent = plan.title || 'Workout Tracker';
-  document.getElementById('planWeek').textContent = plan.week || '';
+  document.getElementById('planWeek').textContent = planWeekLabel(plan) || plan.week || '';
   buildTabs(); buildDay(0);
   return r2.data;
 }
@@ -1584,7 +1622,7 @@ async function activateExistingPlan(planId) {
   if (r2.error) throw new Error(r2.error.message);
 
   activePlanId = r2.data.id;
-  plan = r2.data.data || {};
+  plan = ensureStartDate(r2.data.data || {}, r2.data);
   planCache[activePlanId] = plan;
   todayState = null;
   todayPlanStates = {};
@@ -1595,7 +1633,7 @@ async function activateExistingPlan(planId) {
   document.getElementById('emptyState').style.display = 'none';
   document.getElementById('summaryBar').style.display = 'flex';
   document.getElementById('planTitle').textContent = plan.title || 'Workout Tracker';
-  document.getElementById('planWeek').textContent = plan.week || '';
+  document.getElementById('planWeek').textContent = planWeekLabel(plan) || plan.week || '';
   buildTabs(); buildDay(0);
   return r2.data;
 }

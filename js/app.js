@@ -7,7 +7,7 @@
 
 // Bump this on every deploy. Displayed at the bottom of the app so stale-
 // cache issues can be diagnosed from the client ("which version am I on?").
-var APP_VERSION = 'v2.0.22';
+var APP_VERSION = 'v2.0.24';
 
 // Paint the version tag in the bottom-right as soon as APP_VERSION is declared.
 // DOM is already parsed here (all the script tags sit at the end of <body>).
@@ -41,12 +41,12 @@ async function hydrate() {
       return;
     }
     activePlanId = planRes.data.id;
-    plan = planRes.data.data;
+    plan = ensureStartDate(planRes.data.data, planRes.data);
     planCache[activePlanId] = plan;
     document.getElementById('emptyState').style.display = 'none';
     document.getElementById('summaryBar').style.display = 'flex';
     document.getElementById('planTitle').textContent = plan.title || 'Workout Tracker';
-    document.getElementById('planWeek').textContent = plan.week || '';
+    document.getElementById('planWeek').textContent = planWeekLabel(plan) || plan.week || '';
 
     await loadExerciseLibrary();
     await loadRecentExercises();
@@ -125,6 +125,15 @@ async function hydrate() {
       currentDay = 0;
     }
     focusTab(currentDay);
+
+    // If the focused plan-day has no today-state yet, auto-load its
+    // most recent historical workout so the tracker shows the user's
+    // last attempt at that day instead of an empty template. Mirrors
+    // the day-picker change handler. Only fires for plan days — ad-hoc
+    // tabs have no historical equivalent.
+    if (!isAdHocKey(currentDay) && !todayPlanStates[currentDay] && !historicalCache[currentDay]) {
+      try { await loadHistorical(currentDay); } catch (e) { /* non-fatal */ }
+    }
 
     buildTabs();
     buildDay(currentDay);
