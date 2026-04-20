@@ -34,6 +34,14 @@ var photosPendingFile = null;       // File selected in the picker, pending uplo
 var photosPendingPreviewUrl = null; // blob: URL for the pending file (revoke when done)
 var photosViewerId = null;          // id of the photo currently in the viewer
 
+// AI plan generator state — modal with a loading view while the Edge
+// Function runs (~30-60s) and a review view once the plan comes back.
+var generateView = 'loading';       // 'loading' | 'review'
+var generatedPlan = null;           // the full plan JSON returned by /api/generate-plan
+var generatedMeta = null;           // { model, usage, generated_at }
+var generateStartedAt = 0;          // ms timestamp when the API call started
+var generateInFlight = false;       // prevents double-fire of the generate button
+
 // Picker option lists
 var EQUIPMENT_OPTIONS = ['barbell', 'dumbbell', 'cable', 'machine', 'smith machine', 'bodyweight', 'band'];
 var MUSCLE_OPTIONS = ['chest', 'back', 'shoulders', 'biceps', 'triceps', 'quads', 'hamstrings', 'glutes', 'core', 'calves'];
@@ -1428,6 +1436,206 @@ async function onPhotoDelete(id) {
   }
 }
 
+// ---- AI plan generation (Generate + Review) ----
+async function openGenerate() {
+  if (generateInFlight) return;  // protect against double-click
+  generateInFlight = true;
+  generateView = 'loading';
+  generatedPlan = null;
+  generatedMeta = null;
+  generateStartedAt = Date.now();
+  document.getElementById('generateOverlay').classList.add('show');
+  renderGenerate();
+
+  try {
+    var sessionRes = await sb.auth.getSession();
+    var token = sessionRes.data && sessionRes.data.session && sessionRes.data.session.access_token;
+    if (!token) throw new Error('Not signed in');
+
+    var res = await fetch('/api/generate-plan', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + token },
+    });
+    var body = await res.json().catch(function() { return null; });
+
+    if (res.status !== 200 || !body || !body.plan) {
+      var msg = (body && body.error) || ('HTTP ' + res.status);
+      closeGenerate();
+      showToast('Plan generation failed: ' + msg, null);
+      return;
+    }
+
+    generatedPlan = body.plan;
+    generatedMeta = {
+      model: body.model || 'unknown',
+      weeks_analyzed: body.weeks_analyzed,
+      generated_at: body.generated_at,
+      elapsed_s: Math.round((Date.now() - generateStartedAt) / 1000),
+    };
+    generateView = 'review';
+    renderGenerate();
+  } catch(err) {
+    console.error('openGenerate error:', err);
+    closeGenerate();
+    showToast('Plan generation failed: ' + (err.message || 'network error'), null);
+  } finally {
+    generateInFlight = false;
+  }
+}
+
+function closeGenerate() {
+  document.getElementById('generateOverlay').classList.remove('show');
+  generatedPlan = null;
+  generatedMeta = null;
+  generateInFlight = false;
+}
+
+function renderGenerate() {
+  var title = document.getElementById('generateTitle');
+  var body = document.getElementById('generateBody');
+  if (generateView === 'loading') {
+    title.textContent = 'Generating…';
+    renderGenerateLoading(body);
+  } else if (generateView === 'review') {
+    title.textContent = 'Review plan';
+    renderGenerateReview(body);
+  }
+}
+
+function renderGenerateLoading(body) {
+  body.innerHTML =
+    '<div class="generate-loading">' +
+      '<div class="generate-spinner"></div>' +
+      '<div class="generate-status">Reviewing your training…</div>' +
+      '<div class="generate-status-sub">Analyzing 4 weeks of data · usually 30-60 seconds</div>' +
+    '</div>';
+}
+
+function renderGenerateReview(body) {
+  if (!generatedPlan) { body.innerHTML = ''; return; }
+  var p = generatedPlan;
+  var coaching = p.coaching_notes || '';
+  var meta = generatedMeta || {};
+
+  var h = '<div class="generate-review">';
+
+  if (coaching) {
+    h += '<div class="generate-coaching-card">';
+    h += '<div class="generate-coaching-label">Coach\'s notes</div>';
+    h += '<div class="generate-coaching-text">' + escapeHtml(coaching) + '</div>';
+    h += '</div>';
+  }
+
+  h += '<div class="generate-meta">' +
+    escapeHtml(p.title || 'New plan') +
+    (p.week ? ' · ' + escapeHtml(p.week) : '') +
+    (meta.model ? ' · ' + escapeHtml(meta.model) : '') +
+    (meta.elapsed_s ? ' · ' + meta.elapsed_s + 's' : '') +
+    '</div>';
+
+  var days = Array.isArray(p.days) ? p.days : [];
+  for (var di = 0; di < days.length; di++) {
+    var day = days[di];
+    var exCount = Array.isArray(day.exercises) ? day.exercises.length : 0;
+    var setCount = 0;
+    for (var i = 0; i < exCount; i++) {
+      setCount += Array.isArray(day.exercises[i].sets) ? day.exercises[i].sets.length : 0;
+    }
+    h += '<div class="generate-day-card">';
+    h += '<div class="generate-day-header">';
+    h += '<div class="generate-day-name">' + escapeHtml(day.name || 'Day ' + (di + 1)) + '</div>';
+    h += '<div class="generate-day-meta">' + exCount + ' exercise' + (exCount === 1 ? '' : 's') +
+         ' · ' + setCount + ' set' + (setCount === 1 ? '' : 's') + '</div>';
+    h += '</div>';
+    for (var j = 0; j < exCount; j++) {
+      h += renderGenerateExercise(day.exercises[j]);
+    }
+    h += '</div>';
+  }
+
+  h += '<div class="generate-actions">';
+  h += '<button class="generate-btn-cancel" id="btnGenerateCancel" type="button">Cancel</button>';
+  h += '<button class="generate-btn-accept" id="btnGenerateAccept" type="button">Accept plan</button>';
+  h += '</div>';
+  h += '</div>';
+  body.innerHTML = h;
+}
+
+function renderGenerateExercise(ex) {
+  var name = ex.name || 'exercise';
+  var mode = weightModeForName(name);
+  var sets = Array.isArray(ex.sets) ? ex.sets : [];
+  var setsLine = formatGenerateSets(sets, mode);
+  var h = '<div class="generate-exercise">';
+  h += '<div class="generate-exercise-name">' + escapeHtml(name) + '</div>';
+  h += '<div class="generate-exercise-sets">' + escapeHtml(setsLine) + '</div>';
+  if (ex.note) {
+    h += '<div class="generate-exercise-note">' + escapeHtml(ex.note) + '</div>';
+  }
+  h += '</div>';
+  return h;
+}
+
+// Compact per-exercise set summary. Collapses runs of identical sets
+// into "Nx reps @ weight" form; if sets differ, lists them inline.
+function formatGenerateSets(sets, mode) {
+  if (!sets.length) return '—';
+  var unit = getWeightUnit();
+  function fmtWeight(w) {
+    if (w == null) return '';
+    var val = displayWeight(w, unit);
+    if (mode === 'per_side') return val + ' ' + unit + '/ea';
+    if (mode === 'bodyweight') return w === 0 ? 'BW' : ('BW+' + val + ' ' + unit);
+    if (mode === 'none') return '';
+    return val + ' ' + unit;
+  }
+  function fmtReps(s) {
+    if (s.reps_range) return s.reps_range;
+    if (s.reps_target != null) return String(s.reps_target);
+    return '?';
+  }
+  function sigKey(s) { return (s.weight != null ? s.weight : '') + '|' + fmtReps(s); }
+
+  // Collapse contiguous identical sets.
+  var groups = [];
+  var current = null;
+  for (var i = 0; i < sets.length; i++) {
+    var s = sets[i];
+    var k = sigKey(s);
+    if (current && current.key === k) {
+      current.count++;
+    } else {
+      current = { key: k, count: 1, set: s };
+      groups.push(current);
+    }
+  }
+  var parts = [];
+  for (var g = 0; g < groups.length; g++) {
+    var gp = groups[g];
+    var reps = fmtReps(gp.set);
+    var wt = fmtWeight(gp.set.weight);
+    var line = gp.count + '×' + reps + (wt ? ' @ ' + wt : '');
+    parts.push(line);
+  }
+  return parts.join(', ');
+}
+
+async function onAcceptGeneratedPlan() {
+  if (!generatedPlan) return;
+  var btn = document.getElementById('btnGenerateAccept');
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+  try {
+    await savePlanAsActive(generatedPlan);
+    var label = generatedPlan.week || generatedPlan.title || 'New plan';
+    closeGenerate();
+    showToast(label + ' loaded', null);
+  } catch(err) {
+    console.error('onAcceptGeneratedPlan error:', err);
+    showToast('Failed to save plan: ' + (err.message || 'unknown error'), null);
+    if (btn) { btn.disabled = false; btn.textContent = 'Accept plan'; }
+  }
+}
+
 // ---- Toast ----
 function showToast(msg, retryFn) {
   toastCounter++;
@@ -1787,6 +1995,20 @@ document.getElementById('menuGymProfiles').addEventListener('click', function() 
 document.getElementById('menuPhotos').addEventListener('click', function() {
   closeMenu();
   openPhotos();
+});
+document.getElementById('menuGenerate').addEventListener('click', function() {
+  closeMenu();
+  openGenerate();
+});
+document.getElementById('btnGenerateClose').addEventListener('click', closeGenerate);
+document.getElementById('generateOverlay').addEventListener('click', function(e) {
+  // Don't dismiss mid-generation — only allow overlay click to close on the review screen.
+  if (e.target === this && generateView === 'review') closeGenerate();
+});
+document.getElementById('generateBody').addEventListener('click', function(e) {
+  if (!e.target || !e.target.closest) return;
+  if (e.target.closest('#btnGenerateAccept')) { onAcceptGeneratedPlan(); return; }
+  if (e.target.closest('#btnGenerateCancel')) { closeGenerate(); return; }
 });
 document.getElementById('menuWeightUnit').addEventListener('click', function() {
   setWeightUnit(getWeightUnit() === 'lbs' ? 'kg' : 'lbs');

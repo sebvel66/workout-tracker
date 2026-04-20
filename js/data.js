@@ -1520,9 +1520,47 @@ async function resumeSession() {
 }
 
 // ---- Import ----
-// ---- Import ----
 // Historical workouts and sets rows are NEVER modified on import.
 // See DECISIONS.md → "No more log wipes".
+//
+// savePlanAsActive persists a plan blob to Supabase, flips the previously
+// active plan to inactive, and refreshes the in-memory view. Shared
+// between file-based import (handleImport) and AI-generated plans
+// (onAcceptGeneratedPlan). Throws on error so callers can decide how to
+// surface the failure.
+async function savePlanAsActive(newPlan) {
+  var r1 = await sb.from('plans').update({ is_active: false })
+    .eq('user_id', userId).eq('is_active', true);
+  if (r1.error) throw new Error(r1.error.message);
+
+  var r2 = await sb.from('plans').insert({
+    user_id: userId,
+    title: newPlan.title || null,
+    week: newPlan.week || null,
+    data: newPlan,
+    is_active: true,
+  }).select().single();
+  if (r2.error) throw new Error(r2.error.message);
+
+  activePlanId = r2.data.id;
+  plan = newPlan;
+  planCache[activePlanId] = plan;
+  // Reset plan-related in-memory view only; past workouts/sets remain
+  // untouched in the DB. Ad-hoc sessions are plan-agnostic and stay.
+  todayState = null;
+  todayPlanStates = {};
+  historicalCache = {};
+  exerciseIdCache = {};
+  currentDay = 0;
+
+  document.getElementById('emptyState').style.display = 'none';
+  document.getElementById('summaryBar').style.display = 'flex';
+  document.getElementById('planTitle').textContent = plan.title || 'Workout Tracker';
+  document.getElementById('planWeek').textContent = plan.week || '';
+  buildTabs(); buildDay(0);
+  return r2.data;
+}
+
 function handleImport(event) {
   var file = event.target.files[0]; if (!file) return;
   var reader = new FileReader();
@@ -1533,36 +1571,7 @@ function handleImport(event) {
       if (data.plan) newPlan = data.plan;
       else if (data.days) newPlan = data;
       else { showToast('Invalid plan file format', null); return; }
-
-      var r1 = await sb.from('plans').update({ is_active: false })
-        .eq('user_id', userId).eq('is_active', true);
-      if (r1.error) { showToast('Import failed: ' + r1.error.message, null); return; }
-
-      var r2 = await sb.from('plans').insert({
-        user_id: userId,
-        title: newPlan.title || null,
-        week: newPlan.week || null,
-        data: newPlan,
-        is_active: true,
-      }).select().single();
-      if (r2.error) { showToast('Import failed: ' + r2.error.message, null); return; }
-
-      activePlanId = r2.data.id;
-      plan = newPlan;
-      planCache[activePlanId] = plan;
-      // Reset plan-related in-memory view only; past workouts/sets remain
-      // untouched in the DB. Ad-hoc sessions are plan-agnostic and stay.
-      todayState = null;
-      todayPlanStates = {};
-      historicalCache = {};
-      exerciseIdCache = {};
-      currentDay = 0;
-
-      document.getElementById('emptyState').style.display = 'none';
-      document.getElementById('summaryBar').style.display = 'flex';
-      document.getElementById('planTitle').textContent = plan.title || 'Workout Tracker';
-      document.getElementById('planWeek').textContent = plan.week || '';
-      buildTabs(); buildDay(0);
+      await savePlanAsActive(newPlan);
       document.getElementById('importModal').classList.remove('show');
     } catch(err) {
       console.error(err);
