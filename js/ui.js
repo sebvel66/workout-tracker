@@ -1680,7 +1680,6 @@ document.getElementById('dayPicker').addEventListener('change', async function(e
   buildTabs();
   buildDay(currentDay);
 });
-document.getElementById('btnNewSession').addEventListener('click', createAdHocSession);
 
 // WORKOUT CONTAINER clicks
 document.getElementById('workoutContainer').addEventListener('click', function(e) {

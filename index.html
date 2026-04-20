@@ -104,22 +104,6 @@ html, body {
 .day-picker option { background: var(--surface2); color: var(--text); }
 .day-picker optgroup { color: var(--text3); font-family: 'JetBrains Mono', monospace; }
 
-.new-session-btn {
-  flex-shrink: 0;
-  background: var(--surface2);
-  border: 2px dashed var(--border);
-  color: var(--text2);
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 18px; font-weight: 700;
-  padding: 0 16px;
-  border-radius: 10px;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-}
-.new-session-btn:active {
-  background: var(--surface3); color: var(--text);
-}
-
 .day-tabs {
   display: flex;
   gap: 8px;
@@ -1210,7 +1194,6 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
   <div class="day-tabs-wrapper">
     <div class="day-picker-row">
       <select class="day-picker" id="dayPicker"></select>
-      <button class="new-session-btn" id="btnNewSession" type="button" title="New ad-hoc session">+</button>
     </div>
   </div>
 </div>
