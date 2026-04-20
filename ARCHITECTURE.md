@@ -96,6 +96,7 @@ Every top-level `var` is declared in exactly one file. Cross-file reads are via 
 | `userId` | auth.js | Set in `hydrate`; `null` when signed out. |
 | `hydratedForUser` | auth.js | Prevents double-hydration on the same session. |
 | `activePlanId`, `plan`, `currentDay` | data.js | Active plan metadata + focused-tab key. |
+| `suggestedDayIndex` | data.js | Rotation+1 from most recent completed workout; null if no plan. Populated once per hydrate by `loadSuggestedDayIndex`. Consumed by the start-screen modal. |
 | `sessionTodayStart` | data.js | Snapshot of local-midnight at hydrate time. |
 | `todayPlanStates` | data.js | `{ [dayIndex]: state }` for plan-day workouts today. |
 | `todayAdHocs` | data.js | Array of ad-hoc session states. |
@@ -147,7 +148,7 @@ Net shape: the hottest boundary is `ui.js ↔ data.js`. `auth.js` and `app.js` a
 
 Patterns established through earlier features. Reuse these when adding new UI rather than inventing new ones.
 
-- **Bottom-sheet modals.** `.modal-overlay` wrapper + an inner sheet with `border-radius: 20px 20px 0 0`, `max-width: 500px`, `padding-bottom: calc(16px + var(--safe-bottom))`, `animation: slideUp 0.3s ease`. Used by History, Import, Export, Exercise Picker, History Detail, Gym Profiles, Hamburger Menu, Exercise History, Custom Form. New modals should follow this pattern.
+- **Bottom-sheet modals.** `.modal-overlay` wrapper + an inner sheet with `border-radius: 20px 20px 0 0`, `max-width: 500px`, `padding-bottom: calc(16px + var(--safe-bottom))`, `animation: slideUp 0.3s ease`. Used by History, Import, Export, Exercise Picker, History Detail, Gym Profiles, Hamburger Menu, Exercise History, Custom Form, Start Screen. New modals should follow this pattern.
 - **Overlay-tap to close.** Every modal has a listener on the overlay: `if (e.target === this) closeX();`.
 - **Toast feedback.** Errors call `showToast(msg, retryFn)` with a retry callback. Sticky until tapped. Informational toasts call with `null` retryFn and auto-dismiss at 20s.
 - **Event delegation.** Mutations on `#workoutContainer` go through a single click delegate + a single change delegate at the top of `ui.js`'s event-listener block. Classes like `.set-check`, `.rpe-btn`, `.session-notes-header`, `.session-location-prompt`, `.session-location-select`, `.card-delete`, `.set-delete`, `.exercise-note-input` etc. are dispatched from there.

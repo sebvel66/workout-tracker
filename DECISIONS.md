@@ -2,6 +2,32 @@
 
 Running log of architecture/behavior decisions for the workout tracker. Newest first.
 
+## 2026-04-19 — Explicit session-start modal replaces silent day-of-focus default
+
+Before `v2.0.16`, hydrate silently chose which tab to focus: lowest-index plan day with a today-state, else Day 0, else the first ad-hoc. No choice point, no concept of "which day am I actually training today." This mapped poorly to the real-world case where the user's calendar doesn't match the plan's rotation (skipped rest day, travel week, rearranged split). It also meant a user with no active plan had nowhere to begin — the tab strip only rendered when a plan existed.
+
+**Chosen:** a bottom-sheet modal on hydrate whenever no session is in-progress. Three paths:
+
+1. **Suggested day** — `(lastCompletedDayIndex + 1) mod plan.days.length`, computed once per hydrate by `loadSuggestedDayIndex()` via one SELECT on `workouts` filtered to `plan_id = active AND ended_at IS NOT NULL ORDER BY ended_at DESC LIMIT 1`. First-ever session → Day 0.
+2. **Pick a different day** — in-place expanding list of all plan days with badges (`in progress`, `completed today`).
+3. **Blank session** — existing `createAdHocSession()`; no plan dependency, so this is also the only path in the no-active-plan state.
+
+**Why this shape:**
+
+- **Modal, not full-screen takeover.** Reuses the existing `.modal-overlay` pattern (History, Hamburger, Gym Profiles, etc.), so zero new CSS primitives and the hydrate render flow is unchanged — the session view still renders beneath, the modal overlays.
+- **Rotation+1, not day-of-week.** Day-of-week mapping would re-introduce exactly the calendar-rigidity the modal is trying to break. Rotation+1 honors "the plan is the rotation, not the calendar" — skip Tuesday, come back Wednesday, still suggest the next plan day.
+- **In-progress sessions skip the modal.** Modal is the *start* experience; once you're mid-workout, reloads should drop you straight back into the session. The focus hierarchy (v2.0.16) also promotes an in-progress session above lowest-day-index, so a user who completed Day 2 and started Day 3 today lands on Day 3 on reload instead of Day 2.
+- **"Start another workout" hamburger item is always available.** Covers the second-session-same-day and the "I changed my mind mid-session but haven't logged anything yet" cases with a single trigger.
+- **No schema changes.** One SELECT added to hydrate, everything else composes from existing tables.
+
+**How to apply:**
+
+- Any feature that wants to insert a new session-start path should add a fourth card to the modal rather than introducing a new entry point. The modal is the canonical "which workout am I doing" surface.
+- Do not re-introduce day-of-week auto-selection. If the user wants the modal to remember a different default, that's a preference setting, not a silent heuristic.
+- The "+ New Session" standalone button has been removed as redundant — "Blank session" (Path 3) is the canonical ad-hoc entry. Don't re-add a shortcut button for ad-hoc.
+
+Design: [docs/superpowers/specs/2026-04-19-flexible-session-start-design.md](docs/superpowers/specs/2026-04-19-flexible-session-start-design.md).
+
 ## 2026-04-19 — Partial unique index on `sets (workout_id, exercise_id, exercise_order, set_order) where done = true`
 
 The v1 schema indexed `sets (workout_id, exercise_order, set_order)` for in-session ordered reads but did not make the combination unique. This let a historical-data import script (Fitbod CSV pasted into the Supabase SQL Editor) re-run end-to-end and silently double-insert ~1107 set rows across ~22 workouts, surfacing as doubled entries in the per-exercise View Recent modal (see `MAJOR-BUGS.md` for the full incident write-up).
