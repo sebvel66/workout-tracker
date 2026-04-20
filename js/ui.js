@@ -190,8 +190,10 @@ function buildTabs() {
       var hasData = hasToday || historicalCache[i];
       var dot = hasData ? '● ' : '';
       var label = d.short ? d.short + ' — ' + (d.name || '') : (d.name || 'Day ' + (i + 1));
+      var inProg = planDayState && planDayState.workoutId && planDayState.startedAt && !planDayState.endedAt;
+      var suffix = inProg ? ' (in progress)' : '';
       var sel_attr = currentDay === i ? ' selected' : '';
-      h += '<option value="' + i + '"' + sel_attr + '>' + dot + escapeHtml(label) + '</option>';
+      h += '<option value="' + i + '"' + sel_attr + '>' + dot + escapeHtml(label) + suffix + '</option>';
     }
     h += '</optgroup>';
   }
@@ -204,7 +206,9 @@ function buildTabs() {
       var adLabel = ah.title && ah.title.trim() ? ah.title.trim() : 'Session ' + (j + 1);
       var adKey = 'ah_' + ah.workoutId;
       var adSel = currentDay === adKey ? ' selected' : '';
-      h += '<option value="' + adKey + '"' + adSel + '>' + adDot + 'S' + (j + 1) + ' — ' + escapeHtml(adLabel) + '</option>';
+      var adInProg = ah.workoutId && ah.startedAt && !ah.endedAt;
+      var adSuffix = adInProg ? ' (in progress)' : '';
+      h += '<option value="' + adKey + '"' + adSel + '>' + adDot + 'S' + (j + 1) + ' — ' + escapeHtml(adLabel) + adSuffix + '</option>';
     }
     h += '</optgroup>';
   }

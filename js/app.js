@@ -7,7 +7,7 @@
 
 // Bump this on every deploy. Displayed at the bottom of the app so stale-
 // cache issues can be diagnosed from the client ("which version am I on?").
-var APP_VERSION = 'v2.0.15';
+var APP_VERSION = 'v2.0.16';
 
 // Paint the version tag in the bottom-right as soon as APP_VERSION is declared.
 // DOM is already parsed here (all the script tags sit at the end of <body>).
@@ -37,6 +37,7 @@ async function hydrate() {
       document.getElementById('planTitle').textContent = 'Workout Tracker';
       document.getElementById('planWeek').textContent = 'No plan loaded';
       document.getElementById('dayPicker').innerHTML = '';
+      openStartScreen();
       return;
     }
     activePlanId = planRes.data.id;
@@ -50,6 +51,7 @@ async function hydrate() {
     await loadExerciseLibrary();
     await loadRecentExercises();
     await loadLocations();
+    await loadSuggestedDayIndex();
 
     var bounds = sessionBounds();
     var wRes = await sb.from('workouts').select('*, sets(*)')
@@ -85,10 +87,36 @@ async function hydrate() {
       }
     }
 
-    // Default focus: today's plan workout if any, else plan day 0, else first ad-hoc.
-    var planDayKeys = Object.keys(todayPlanStates).map(Number).sort(function(a, b) { return a - b; });
-    if (planDayKeys.length) {
-      currentDay = planDayKeys[0];
+    // Focus hierarchy:
+    //   1. An in-progress session (started_at set, ended_at null) wins.
+    //   2. Else the lowest plan-day with any today-state.
+    //   3. Else plan day 0.
+    //   4. Else the first ad-hoc.
+    //   5. Else day 0.
+    // In-progress winning matters so a user who completed Day 2 today and
+    // started Day 3 lands on Day 3 on reload, not the lowest-index Day 2.
+    var inProgressKey = null;
+    var planDayKeysAsc = Object.keys(todayPlanStates).map(Number).sort(function(a, b) { return a - b; });
+    for (var pk = 0; pk < planDayKeysAsc.length; pk++) {
+      var ps = todayPlanStates[planDayKeysAsc[pk]];
+      if (ps && ps.workoutId && ps.startedAt && !ps.endedAt) {
+        inProgressKey = planDayKeysAsc[pk];
+        break;
+      }
+    }
+    if (inProgressKey == null) {
+      for (var ak = 0; ak < todayAdHocs.length; ak++) {
+        var as = todayAdHocs[ak];
+        if (as && as.workoutId && as.startedAt && !as.endedAt) {
+          inProgressKey = 'ah_' + as.workoutId;
+          break;
+        }
+      }
+    }
+    if (inProgressKey != null) {
+      currentDay = inProgressKey;
+    } else if (planDayKeysAsc.length) {
+      currentDay = planDayKeysAsc[0];
     } else if (plan) {
       currentDay = 0;
     } else if (todayAdHocs.length) {
@@ -100,6 +128,12 @@ async function hydrate() {
 
     buildTabs();
     buildDay(currentDay);
+
+    // Auto-open the start modal when no session is in-progress. Completed
+    // sessions do not block the modal.
+    if (inProgressKey == null) {
+      openStartScreen();
+    }
   } catch(err) {
     console.error('Hydrate error:', err);
     showToast('Something went wrong loading your data', null);
