@@ -671,6 +671,87 @@ body.unauthed #emptyState { display: none !important; }
 .menu-row:last-child { border-bottom: none; }
 .menu-row.danger { color: var(--danger); }
 
+/* Start screen modal (bottom-sheet; three paths: suggested day, pick day, blank) */
+.start-modal {
+  background: var(--surface);
+  border-radius: 20px 20px 0 0;
+  padding-bottom: calc(16px + var(--safe-bottom));
+  width: 100%; max-width: 500px;
+  display: flex; flex-direction: column;
+  animation: slideUp 0.3s ease;
+}
+.start-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 14px 14px 12px; border-bottom: 1px solid var(--border);
+}
+.start-title { font-size: 16px; font-weight: 700; flex: 1; text-align: center; }
+.start-close {
+  background: transparent; border: none; color: var(--text2);
+  font-size: 22px; cursor: pointer; padding: 0 6px; line-height: 1;
+  width: 32px; text-align: center;
+  -webkit-tap-highlight-color: transparent;
+}
+.start-close.hidden { visibility: hidden; }
+.start-body { display: flex; flex-direction: column; padding: 12px; gap: 10px; }
+.start-card {
+  display: block; width: 100%;
+  padding: 16px;
+  border: 2px solid var(--border);
+  background: var(--surface2); color: var(--text);
+  font-family: 'Outfit', sans-serif;
+  font-size: 15px; font-weight: 600;
+  text-align: left; cursor: pointer;
+  border-radius: 12px;
+  -webkit-tap-highlight-color: transparent;
+}
+.start-card:active { background: var(--surface3); }
+.start-card.primary {
+  border-color: var(--accent); background: var(--accent);
+  color: var(--bg); font-weight: 700;
+}
+.start-card.primary:active { opacity: 0.85; }
+.start-card-title { font-size: 16px; line-height: 1.2; }
+.start-card-hint {
+  font-size: 12px; font-weight: 500; margin-top: 4px;
+  color: inherit; opacity: 0.75;
+}
+.start-card-badge {
+  display: inline-block;
+  font-size: 11px; font-weight: 600;
+  padding: 2px 8px; margin-left: 8px;
+  border-radius: 999px;
+  background: var(--surface3); color: var(--text2);
+  vertical-align: middle;
+}
+.start-card-badge.in-progress { background: var(--accent); color: var(--bg); }
+.start-daylist { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.start-daylist.hidden { display: none; }
+.start-day-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface2); color: var(--text);
+  font-size: 14px; font-weight: 500;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.start-day-row:active { background: var(--surface3); }
+.start-empty-hint {
+  padding: 8px 4px 0;
+  font-size: 13px; color: var(--text2);
+  text-align: center;
+}
+.start-empty-hint.hidden { display: none; }
+.start-import-link {
+  display: inline-block;
+  margin-top: 8px;
+  color: var(--accent);
+  font-size: 14px; font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
 /* History browser */
 .history-modal {
   background: var(--surface);
@@ -1314,6 +1395,33 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
       <button class="menu-row" id="menuHistory" type="button">History</button>
       <button class="menu-row" id="menuGymProfiles" type="button">Gym Profiles</button>
       <button class="menu-row danger" id="menuSignOut" type="button">Sign Out</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="startScreenOverlay">
+  <div class="start-modal">
+    <div class="start-header">
+      <div style="width:32px"></div>
+      <div class="start-title">Start a workout</div>
+      <button class="start-close" id="btnStartClose" type="button">×</button>
+    </div>
+    <div class="start-body">
+      <button class="start-card primary" id="startPathSuggested" type="button">
+        <div class="start-card-title" id="startPathSuggestedTitle">Start</div>
+        <div class="start-card-hint" id="startPathSuggestedHint"></div>
+      </button>
+      <button class="start-card" id="startPathPickDay" type="button">
+        <div class="start-card-title">Pick a different day</div>
+      </button>
+      <div class="start-daylist hidden" id="startPathPickDayList"></div>
+      <button class="start-card" id="startPathBlank" type="button">
+        <div class="start-card-title">Blank session</div>
+      </button>
+      <div class="start-empty-hint hidden" id="startPathEmptyHint">
+        No active plan. Start a blank session, or
+        <span class="start-import-link" id="startPathImportLink">import a plan</span>.
+      </div>
     </div>
   </div>
 </div>
