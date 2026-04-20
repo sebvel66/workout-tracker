@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/generate-plan.js": {
+      "includeFiles": "system-prompt.md"
+    }
+  }
+}
