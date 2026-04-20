@@ -301,6 +301,226 @@ async function loadSuggestedDayIndex() {
   suggestedDayIndex = (res.data[0].day_index + 1) % plan.days.length;
 }
 
+// ---- Week summary (shared: History browser UI + AI planner Edge Function) ----
+//
+// Fetches one week of training data and returns a structured summary with
+// per-workout detail plus week-level aggregates. Contract is stable so a
+// Node-side variant in api/generate-plan.js can mirror the same shape.
+//
+// weekStartDate / weekEndDate are inclusive 'YYYY-MM-DD' calendar dates.
+// Uses workouts.performed_on (a NOT NULL date column) so the window is
+// purely calendar-based — no timezone math on the client.
+//
+// Volume respects weight_mode:
+//   - 'total'       → weight × reps
+//   - 'per_side'    → weight × 2 × reps    (weight is per-hand)
+//   - 'bodyweight'  → weight × reps        (weight = ADDED load only;
+//                                           we never estimate body weight)
+//   - 'none'        → 0
+// Only done=true sets contribute to volume, completion counts, and RPE avgs.
+// Extras (exercise_order past plan length, or set_order past prescribed
+// count) count toward volume but NOT toward completion ratios, so
+// completionRate measures plan adherence rather than effort.
+async function fetchWeekSummary(userId, weekStartDate, weekEndDate) {
+  var wRes = await sb.from('workouts')
+    .select('*, sets(*, exercises(name, equipment, muscle_group, weight_mode))')
+    .eq('user_id', userId)
+    .gte('performed_on', weekStartDate)
+    .lte('performed_on', weekEndDate)
+    .order('performed_on', { ascending: true })
+    .order('started_at', { ascending: true, nullsFirst: true });
+  if (wRes.error) throw wRes.error;
+  var rows = wRes.data || [];
+
+  // Pre-fetch any plan blobs not already cached (mirrors runExport).
+  var uncached = {};
+  for (var i = 0; i < rows.length; i++) {
+    var pid = rows[i].plan_id;
+    if (pid && !planCache[pid]) uncached[pid] = true;
+  }
+  var pending = Object.keys(uncached);
+  if (pending.length) {
+    var pRes = await sb.from('plans').select('id, title, data').in('id', pending);
+    if (pRes.error) throw pRes.error;
+    var planRows = pRes.data || [];
+    for (var p = 0; p < planRows.length; p++) {
+      planCache[planRows[p].id] = planRows[p].data;
+      planCache[planRows[p].id]._title = planRows[p].title;
+    }
+  }
+
+  var workouts = rows.map(_summarizeWorkoutRow);
+
+  // Week-level rollup.
+  var trainedPlanDays = {};
+  var skippedAcross = {};
+  var adHocCount = 0;
+  var volSum = 0;
+  var rpeSum = 0, rpeSetCount = 0;
+  var planForWeek = null;
+
+  for (var j = 0; j < workouts.length; j++) {
+    var w = workouts[j];
+    volSum += w.totalVolume;
+    if (w.avgRpe != null && w.completedSets > 0) {
+      rpeSum += w.avgRpe * w.completedSets;
+      rpeSetCount += w.completedSets;
+    }
+    if (w.isAdHoc) {
+      adHocCount++;
+    } else {
+      if (w._dayIndex != null && w.completedSets > 0) trainedPlanDays[w._dayIndex] = true;
+      for (var s = 0; s < w.skippedExercises.length; s++) {
+        skippedAcross[w.skippedExercises[s]] = true;
+      }
+      if (!planForWeek && w._planBlob) planForWeek = w._planBlob;
+    }
+    delete w._dayIndex;
+    delete w._planBlob;
+  }
+
+  var daysPlanned = planForWeek && planForWeek.days ? planForWeek.days.length : null;
+  var daysTrained = Object.keys(trainedPlanDays).length;
+
+  return {
+    weekStart: weekStartDate,
+    weekEnd: weekEndDate,
+    workouts: workouts,
+    daysPlanned: daysPlanned,
+    daysTrained: daysTrained,
+    weekCompletionRate: daysPlanned ? Math.round((daysTrained / daysPlanned) * 100) / 100 : null,
+    weekAvgRpe: rpeSetCount ? Math.round((rpeSum / rpeSetCount) * 10) / 10 : null,
+    weekTotalVolume: Math.round(volSum),
+    exercisesSkippedAcrossWeek: Object.keys(skippedAcross).sort(),
+    adHocSessions: adHocCount,
+  };
+}
+
+// Map one workouts row (with sets + exercises joined) into the per-workout
+// summary shape. Uses _dayIndex / _planBlob as transient fields the
+// week-level rollup strips before returning.
+function _summarizeWorkoutRow(row) {
+  var isAdHoc = row.plan_id === null;
+  var planBlob = row.plan_id ? planCache[row.plan_id] : null;
+  var dayPlan = (planBlob && planBlob.days && planBlob.days[row.day_index]) || null;
+  var planTitle = planBlob ? (planBlob.title || planBlob._title || null) : null;
+  var dayName = isAdHoc
+    ? ((row.title && row.title.trim()) ? row.title.trim() : 'Ad-hoc session')
+    : (dayPlan ? dayPlan.name : 'Day ' + ((row.day_index || 0) + 1));
+
+  // durationMs <= 0 covers historical imports that set started_at === ended_at
+  // (instant-inserted rows have no real duration); return null so consumers
+  // can distinguish "unknown" from "very short."
+  var durationMs = (row.started_at && row.ended_at)
+    ? (new Date(row.ended_at).getTime() - new Date(row.started_at).getTime() - (row.paused_ms || 0))
+    : null;
+  var duration = (durationMs != null && durationMs > 0) ? Math.round(durationMs / 60000) : null;
+
+  var sorted = (row.sets || []).slice().sort(function(a, b) {
+    if (a.exercise_order !== b.exercise_order) return a.exercise_order - b.exercise_order;
+    return a.set_order - b.set_order;
+  });
+
+  var planLen = (dayPlan && dayPlan.exercises) ? dayPlan.exercises.length : 0;
+  var byOrder = {};
+  var totalVolume = 0;
+  var loggedSets = 0, loggedDone = 0;
+  var rpeSum = 0, rpeCount = 0;
+  var completedPrescribed = 0;
+
+  for (var i = 0; i < sorted.length; i++) {
+    var s = sorted[i];
+    var ex = s.exercises || {};
+    var mode = ex.weight_mode || 'total';
+    var eo = s.exercise_order;
+
+    if (!byOrder[eo]) {
+      byOrder[eo] = {
+        name: ex.name || null,
+        equipment: ex.equipment || null,
+        muscleGroup: ex.muscle_group || null,
+        weightMode: mode,
+        sets: [],
+      };
+    }
+    byOrder[eo].sets.push({
+      weight: s.weight,
+      reps: s.reps,
+      rpe: s.rpe,
+      prescribedWeight: s.prescribed_weight,
+      prescribedReps: s.prescribed_reps,
+      done: !!s.done,
+      completedAt: s.completed_at,
+    });
+
+    loggedSets++;
+    if (s.done) {
+      loggedDone++;
+      totalVolume += _volumeForSet(s.weight, s.reps, mode);
+      if (s.rpe != null) { rpeSum += s.rpe; rpeCount++; }
+      // Count toward prescribed completion only if this set lands in a
+      // prescribed slot (not an extras-exercise, not an extra set past the
+      // prescribed count for that exercise).
+      if (!isAdHoc && planLen && eo < planLen) {
+        var prescEx = dayPlan.exercises[eo];
+        var prescSetCount = (prescEx && prescEx.sets) ? prescEx.sets.length : 0;
+        if (prescSetCount && s.set_order < prescSetCount) completedPrescribed++;
+      }
+    }
+  }
+
+  var exercises = Object.keys(byOrder)
+    .map(function(k) { return { order: parseInt(k, 10), data: byOrder[k] }; })
+    .sort(function(a, b) { return a.order - b.order; })
+    .map(function(e) { return e.data; });
+
+  var skipped = [];
+  var prescribedTotal = 0;
+  if (!isAdHoc && dayPlan && dayPlan.exercises) {
+    for (var p = 0; p < dayPlan.exercises.length; p++) {
+      var pe = dayPlan.exercises[p];
+      prescribedTotal += (pe && pe.sets) ? pe.sets.length : 0;
+      if (!byOrder[p]) skipped.push(pe.name);
+    }
+  }
+
+  var totalSets, completedSets;
+  if (isAdHoc) {
+    totalSets = loggedSets;
+    completedSets = loggedDone;
+  } else {
+    totalSets = prescribedTotal;
+    completedSets = completedPrescribed;
+  }
+
+  return {
+    id: row.id,
+    date: row.performed_on,
+    dayName: dayName,
+    isAdHoc: isAdHoc,
+    planTitle: planTitle,
+    duration: duration,
+    exercises: exercises,
+    totalSets: totalSets,
+    completedSets: completedSets,
+    completionRate: totalSets ? Math.round((completedSets / totalSets) * 100) / 100 : 0,
+    skippedExercises: skipped,
+    avgRpe: rpeCount ? Math.round((rpeSum / rpeCount) * 10) / 10 : null,
+    totalVolume: Math.round(totalVolume),
+    notes: row.notes || '',
+    _dayIndex: row.day_index,
+    _planBlob: planBlob,
+  };
+}
+
+function _volumeForSet(weight, reps, mode) {
+  if (!reps || reps <= 0) return 0;
+  if (mode === 'none') return 0;
+  if (weight == null) return 0;
+  if (mode === 'per_side') return weight * 2 * reps;
+  return weight * reps;
+}
+
 // ---- Weight unit conversion (kg / lbs) ----
 // Canonical storage for sets.weight is always lbs. Conversion happens at the
 // display/input boundary based on the user's localStorage preference. See
