@@ -1455,6 +1455,10 @@ document.getElementById('menuExport').addEventListener('click', function() {
   closeMenu();
   openExportModal();
 });
+document.getElementById('menuStartAnother').addEventListener('click', function() {
+  closeMenu();
+  openStartScreen();
+});
 document.getElementById('menuHistory').addEventListener('click', function() {
   closeMenu();
   openHistory();
