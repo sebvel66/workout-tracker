@@ -2,6 +2,41 @@
 
 Running log of architecture/behavior decisions for the workout tracker. Newest first.
 
+## 2026-04-20 — Cold-start UX: client-side silent retry over server-side warm-up (v2.0.26)
+
+The `/api/generate-plan` serverless function has a known worst-case latency pattern: first call after the Anthropic 1h ephemeral cache expires takes 35-45s (cache miss) vs 22-30s warm. On slow-response days this occasionally tips past the 55s server-side abort, surfacing as a 504 toast. Vercel's Fluid Compute already blunts traditional serverless cold-boot cost (instance reuse across concurrent requests) — the dominant "first call slow" driver in this codebase is the Anthropic prompt cache, not V8 warmup or Supabase connection establishment.
+
+**Chosen:** client-side auto-retry in [js/ui.js](js/ui.js). On the first failure with a retriable outcome (network error / 5xx / 504), fire a second identical request silently. The retry lands on a now-warm Anthropic cache + warm function instance and almost always succeeds within the original elapsed-time budget the user was already waiting through.
+
+**Retry matrix, explicit:**
+
+| Outcome | Retry? |
+|---|---|
+| Network error (DNS, connection refused) | yes |
+| `AbortError` from user-initiated Cancel | no (re-throw → exit clean) |
+| HTTP 504 (server-side 55s timeout) | yes |
+| HTTP 5xx (anything else) | yes |
+| HTTP 4xx | no (won't fix itself) |
+| 200 but `!body.plan` | no (content failure, not warmth) |
+
+Exactly one retry. A second retry on a sustained outage gains ~0 expected success rate at the cost of 30-55s more user wait — worse UX than failing fast.
+
+**Alternatives considered and rejected:**
+
+- **Parallelize Supabase queries in the function.** Already shipped — `Promise.all` at [api/generate-plan.js](api/generate-plan.js) L83-88 wraps all four data fetches. No headroom here.
+- **Reduce history scope on first call.** Would cut input tokens but *not* latency — per [MAJOR-BUGS.md](MAJOR-BUGS.md) 2026-04-20, output tokens dominate generation time (Sonnet ~70-90 tok/s). Cutting context degrades AI quality without moving the wall-clock. Explicitly refused.
+- **Cron warm-up ping every 5 min.** Keeps one function instance hot but does nothing for the Anthropic cache (which is what actually causes the 15s latency delta). Under Fluid Compute the instance-warmth win is smaller than on classic serverless. Also uses Hobby-plan cron slots. Deferred to [ROADMAP.md](ROADMAP.md) — revisit only if the retry UX still feels bad in practice.
+- **Vercel Pro (300s timeout).** Valid but $20/mo for a personal app; a $0 client-side retry covers the same failure mode for the common case.
+
+**Also shipped same version:** goal + progress photo downloads in `buildUserMessage` now run via `Promise.all` instead of serially (~200-500ms saved on the prompt-build phase, no cache impact since block order is preserved).
+
+**How to apply:**
+
+- Any future long-running LLM / AI endpoint should implement the same two-state loading pattern (first attempt → retry attempt) with a single silent retry on transient server/network errors. Use the `attemptGeneratePlan` helper shape in [js/ui.js](js/ui.js) as the template.
+- Do NOT retry on 4xx, 200-with-bad-body, or user-cancel. The retry should eliminate *transient warmth problems*, not paper over content/auth failures.
+- Keep the second-attempt loading message honest about what's happening ("warming up…"). Silent retry with no UI feedback feels broken on slow second attempts.
+- If this approach ever stops covering the failure rate: next escalation is cron warm-up (cheap, small win under Fluid Compute) then Vercel Pro (larger timeout budget).
+
 ## 2026-04-20 — AI plan generation: Vercel Node function + raw fetch + file-based system prompt
 
 Session B shipped an AI plan generator that reads 4 weeks of training history + physique photos and emits a full week's plan via Claude Sonnet 4.6. The architecture hit several forks worth recording:
