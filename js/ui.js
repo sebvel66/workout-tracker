@@ -829,8 +829,9 @@ async function openExerciseHistory(exerciseName) {
         contextText += ' · ' + locationById[sess.locationId].name;
       }
       sess.sets.sort(function(a, b) { return a.set_order - b.set_order; });
+      var recentUnit = getWeightUnit();
       var setStrs = sess.sets.map(function(s) {
-        var w = s.weight != null ? s.weight : '—';
+        var w = s.weight != null ? displayWeight(s.weight, recentUnit) : '—';
         var r = s.reps != null ? s.reps : '—';
         return w + ' × ' + r;
       });
