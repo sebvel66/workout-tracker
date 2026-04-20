@@ -2,6 +2,59 @@
 
 Running log of architecture/behavior decisions for the workout tracker. Newest first.
 
+## 2026-04-20 — User-controlled plan inputs (training days / history weeks / photos) + system prompt as single source of truth (v2.0.27)
+
+Before v2.0.27, day count (5), day placement (Sun-Thu), split structure (Upper/Lower), and history window (4 weeks verbatim+summary) were all baked as constants — some in the serverless function, some in the system prompt. Changing any of them meant editing code or prompt and redeploying. v2.0.27 makes each a per-call input.
+
+**Design decisions worth recording:**
+
+**1. Cached rules, per-call data — consistent with the 2026-04-20 USER INPUTS pattern.**
+
+Training days and History context are always emitted in the per-call user message; the *rules* for how to handle them live in the cached system prompt (`USER INPUTS FOR THIS WEEK` section). Same split as start_date / target_duration / notes — runtime data flows in dynText, interpretation rules stay in the cached prefix. Avoids the MAJOR-BUGS.md 2026-04-20 failure mode where instruction text in dynText added ~1000 output tokens and 6-10s of latency.
+
+**2. Frontend clamps, server re-clamps. Defense in depth.**
+
+`clampFormInt` on the client keeps the form input inside valid ranges; `clampInt` on the server re-validates in case a non-form caller (or a future tool) hits the API with out-of-range values. Both default to the same fallback (5 for training_days, 4 for history_weeks) so a missing field silently produces today's behavior.
+
+**3. `validatePlan` now hard-enforces day count.**
+
+Previous validation was "at least 1 day, each has exercises." New validation: `plan.days.length === expectedDays`. Wrong count → 422 with a specific error. Claude has two reasons to respect the input (cached HARD CONSTRAINT + server validation); if both fail, the user sees an actionable error instead of a silently wrong plan.
+
+**4. `include_photos` defaults are asymmetric: client unchecked, server true.**
+
+The checkbox defaults to OFF because photo analysis costs 1-3s and ~1-2K tokens per image; most weeks the user doesn't upload a new progress photo, so the marginal information gain is near zero. But the server's default-when-absent is ON, so any non-form caller (a future cron, a debug script) gets today's behavior. The explicit `false` from the form is the only path that skips the photo fetch.
+
+When off, `fetchPhysiquePhotos(userId)` is replaced in the `Promise.all` with `Promise.resolve({ goal: null, progress: [] })`. No Supabase Storage round-trip, no photo download, no image blocks in the user message. `buildUserMessage` handles this case naturally since the existing `photos.goal && goalImg` and `photos.progress.length && progressImg` guards are falsy.
+
+**5. System prompt: single source of truth for day count.**
+
+Hardcoded "5-day Upper/Lower Sun-Thu" previously appeared in three places (CLIENT PROFILE, OUTPUT FORMAT, HARD CONSTRAINTS). Now it appears only in USER INPUTS as the default-when-missing, and the CLIENT PROFILE reframes it as *historical preference* with explicit "overridden by Training days" language. The priority rule says user inputs win — no per-call reconciliation reasoning.
+
+**6. Audit pass removed four residual conflict-risk spots.**
+
+Even after the hardcoded structural references were gone, generic coaching language could still collide with user inputs:
+- `"shorten the plan"` in Execution rate over plan length → `"trim exercises per session (don't reduce the day count — that's Training days)"`.
+- Split re-evaluation bullet in Proactive program re-evaluation → scoped to *"Within the given Training days count..."* with explicit *"Do not propose a different day count."*
+- Cut-phase *"reduce session duration"* → *"subject to Target session duration — never trim below the user-specified target."*
+- Active-recovery phrasing in CLIENT PROFILE → *"typically the tail end of the week, but which days those are depends on the Training days count"* instead of assuming weekends.
+
+Lesson: when moving a hardcoded value to an input, audit the entire prompt for generic coaching phrases that *implicitly* referenced the old value. The priority rule at the end of USER INPUTS backstops edge cases, but explicit guardrails in each affected section eliminate reconciliation work.
+
+**7. Photo-handling section intentionally left alone.**
+
+The existing `### Physique-driven programming` section is already correctly conditional: *"may include attached images / When these images are present"* + *"If no photos are attached: Rely entirely on training data..."*. Claude cannot distinguish "user has no photos" from "user excluded photos this call" — and shouldn't need to. The opt-out checkbox works without any prompt change. Don't add instruction text about the checkbox; it would add per-call reasoning cost for zero behavioral benefit.
+
+**8. Day placement stays Sunday-anchored.**
+
+Day 1 = Sunday, Day 2 = Monday, etc. — regardless of how many days the user picked. Simpler than letting the user pick a start-of-week, and matches the existing Weekly History browser's Sunday convention. The plan's `start_date` is still the Sunday the plan kicks in.
+
+**How to apply:**
+
+- Any future per-call input should follow the same split: rules in cached system prompt, values in dynText, server clamping, server validation. Put the "what to do if absent" logic in the cached prefix — never in dynText.
+- When adding a HARD CONSTRAINT that references an input value, also audit COACHING PHILOSOPHY for generic phrases that could contradict. The priority rule is a backstop, not an excuse to skip the audit.
+- Don't over-constrain in the prompt when a server-side validation can catch it. For day count, we have both (belt + suspenders); for something less critical, one is enough.
+- Asymmetric defaults (client vs server) are a legitimate pattern for opt-in-heavy features. Don't try to unify them — the divergence encodes policy that matters.
+
 ## 2026-04-20 — Cold-start UX: client-side silent retry over server-side warm-up (v2.0.26)
 
 The `/api/generate-plan` serverless function has a known worst-case latency pattern: first call after the Anthropic 1h ephemeral cache expires takes 35-45s (cache miss) vs 22-30s warm. On slow-response days this occasionally tips past the 55s server-side abort, surfacing as a 504 toast. Vercel's Fluid Compute already blunts traditional serverless cold-boot cost (instance reuse across concurrent requests) — the dominant "first call slow" driver in this codebase is the Anthropic prompt cache, not V8 warmup or Supabase connection establishment.
