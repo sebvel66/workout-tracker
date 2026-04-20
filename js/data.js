@@ -301,6 +301,64 @@ async function loadSuggestedDayIndex() {
   suggestedDayIndex = (res.data[0].day_index + 1) % plan.days.length;
 }
 
+// ---- Weight unit conversion (kg / lbs) ----
+// Canonical storage for sets.weight is always lbs. Conversion happens at the
+// display/input boundary based on the user's localStorage preference. See
+// docs/superpowers/specs/2026-04-19-kg-lbs-toggle-design.md.
+var LBS_PER_KG = 2.20462;
+
+function getWeightUnit() {
+  var v = localStorage.getItem('weightUnit');
+  return v === 'kg' ? 'kg' : 'lbs';
+}
+
+function setWeightUnit(unit) {
+  localStorage.setItem('weightUnit', unit === 'kg' ? 'kg' : 'lbs');
+}
+
+function lbsToKg(lbs) {
+  if (lbs == null) return null;
+  return Math.round((lbs / LBS_PER_KG) * 10) / 10;
+}
+
+function kgToLbs(kg) {
+  if (kg == null) return null;
+  return Math.round(kg * LBS_PER_KG * 100) / 100;
+}
+
+// Render a canonical lbs value as a display string in the requested unit.
+// lbs: up to 2 decimal places, trailing zeros stripped ("90", "88.18").
+// kg: 1 decimal place ("40.0", "39.9").
+function displayWeight(lbsValue, unit) {
+  if (lbsValue == null || lbsValue === '') return '';
+  if (unit === 'kg') {
+    var kg = lbsToKg(lbsValue);
+    return kg.toFixed(1);
+  }
+  var n = Math.round(lbsValue * 100) / 100;
+  if (n === Math.floor(n)) return String(Math.floor(n));
+  return String(n).replace(/\.?0+$/, '');
+}
+
+// Parse a raw input string in the given unit and return the canonical
+// lbs value (number) or null for empty/invalid input.
+function parseWeightInput(rawStr, unit) {
+  if (rawStr === '' || rawStr == null) return null;
+  var parsed = parseFloat(rawStr);
+  if (isNaN(parsed)) return null;
+  if (unit === 'kg') return kgToLbs(parsed);
+  return Math.round(parsed * 100) / 100;
+}
+
+// Normalize a prescribed-set object's weight to canonical lbs, regardless of
+// the plan JSON's declared unit. Plans that omit `unit` or use 'lbs' pass
+// through; 'kg' converts. Used by fmtP and placeholder rendering.
+function normalizePrescribedLbs(prescribedSet) {
+  if (!prescribedSet || prescribedSet.weight == null) return null;
+  if (prescribedSet.unit === 'kg') return kgToLbs(prescribedSet.weight);
+  return prescribedSet.weight;
+}
+
 function bumpRecent(exerciseRow) {
   if (!exerciseRow) return;
   var filtered = recentExercises.filter(function(e) { return e.id !== exerciseRow.id; });
@@ -695,8 +753,16 @@ async function logSet(di, ei, si, field, val) {
   if (!st) return;
   var exState = getOrInitExercise(st, ei);
   var sl = getOrInitSet(exState, si);
-  var parsed = val === '' ? null : parseFloat(val);
-  sl[field] = (parsed == null || isNaN(parsed)) ? null : parsed;
+  var parsed;
+  if (val === '' || val == null) {
+    parsed = null;
+  } else if (field === 'weight') {
+    parsed = parseWeightInput(val, getWeightUnit());
+  } else {
+    parsed = parseFloat(val);
+    if (isNaN(parsed)) parsed = null;
+  }
+  sl[field] = parsed;
   if (!sl.startedAt) sl.startedAt = new Date().toISOString();
   // Edit-after-done: if the row exists, push the update; else memory only.
   if (sl.setId) await persistSet(di, ei, si);
