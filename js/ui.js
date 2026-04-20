@@ -636,6 +636,80 @@ async function submitCustomForm() {
   }
 }
 
+// ---- Start screen modal (flexible session start) ----
+function openStartScreen() {
+  var overlay = document.getElementById('startScreenOverlay');
+  var suggestedBtn = document.getElementById('startPathSuggested');
+  var pickDayBtn = document.getElementById('startPathPickDay');
+  var pickDayList = document.getElementById('startPathPickDayList');
+  var blankBtn = document.getElementById('startPathBlank');
+  var emptyHint = document.getElementById('startPathEmptyHint');
+  var closeBtn = document.getElementById('btnStartClose');
+
+  // Collapse the day-picker list on every re-open (fresh state each time).
+  pickDayList.classList.add('hidden');
+  pickDayList.innerHTML = '';
+
+  var hasPlan = !!(plan && plan.days && plan.days.length);
+  if (hasPlan) {
+    suggestedBtn.style.display = '';
+    pickDayBtn.style.display = '';
+    emptyHint.classList.add('hidden');
+    var si = (suggestedDayIndex != null && suggestedDayIndex >= 0 && suggestedDayIndex < plan.days.length)
+      ? suggestedDayIndex : 0;
+    var dayName = plan.days[si].name || ('Day ' + (si + 1));
+    document.getElementById('startPathSuggestedTitle').textContent = 'Start ' + dayName;
+    // Hint: last completed day name + a relative date if we have it in memory.
+    // Keep it terse — empty when no prior completion known to the client.
+    document.getElementById('startPathSuggestedHint').textContent = '';
+    suggestedBtn.setAttribute('data-di', String(si));
+  } else {
+    suggestedBtn.style.display = 'none';
+    pickDayBtn.style.display = 'none';
+    emptyHint.classList.remove('hidden');
+  }
+
+  // Close affordance: only allowed when there is a fallback state to land on.
+  // No-plan + nothing-focused case hides close; user must pick a path.
+  var hasFallback = hasPlan || (todayAdHocs && todayAdHocs.length);
+  if (hasFallback) {
+    closeBtn.classList.remove('hidden');
+  } else {
+    closeBtn.classList.add('hidden');
+  }
+
+  overlay.classList.add('show');
+}
+
+function closeStartScreen() {
+  document.getElementById('startScreenOverlay').classList.remove('show');
+}
+
+function renderStartPathDayList() {
+  var list = document.getElementById('startPathPickDayList');
+  list.innerHTML = '';
+  if (!plan || !plan.days) return;
+  for (var i = 0; i < plan.days.length; i++) {
+    var d = plan.days[i];
+    var name = d.name || ('Day ' + (i + 1));
+    var badge = '';
+    var st = todayPlanStates[i];
+    if (st && st.workoutId) {
+      if (st.endedAt) {
+        badge = '<span class="start-card-badge">completed today</span>';
+      } else if (st.startedAt) {
+        badge = '<span class="start-card-badge in-progress">in progress</span>';
+      }
+    }
+    var row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'start-day-row';
+    row.setAttribute('data-di', String(i));
+    row.innerHTML = '<span>' + escapeHtml(name) + '</span><span>' + badge + '</span>';
+    list.appendChild(row);
+  }
+}
+
 // ---- Per-exercise recent history modal ----
 async function openExerciseHistory(exerciseName) {
   var title = exerciseName || 'Recent';
@@ -1388,6 +1462,50 @@ document.getElementById('menuGymProfiles').addEventListener('click', function() 
 document.getElementById('menuSignOut').addEventListener('click', function() {
   closeMenu();
   sb.auth.signOut();
+});
+
+// Start-screen modal wiring.
+document.getElementById('btnStartClose').addEventListener('click', closeStartScreen);
+document.getElementById('startScreenOverlay').addEventListener('click', function(e) {
+  // Only close on overlay tap when close is allowed (close button not hidden).
+  if (e.target !== this) return;
+  if (document.getElementById('btnStartClose').classList.contains('hidden')) return;
+  closeStartScreen();
+});
+document.getElementById('startPathSuggested').addEventListener('click', function() {
+  var di = parseInt(this.getAttribute('data-di'), 10);
+  if (isNaN(di)) return;
+  closeStartScreen();
+  focusTab(di);
+  buildTabs();
+  buildDay(di);
+});
+document.getElementById('startPathPickDay').addEventListener('click', function() {
+  var list = document.getElementById('startPathPickDayList');
+  if (list.classList.contains('hidden')) {
+    renderStartPathDayList();
+    list.classList.remove('hidden');
+  } else {
+    list.classList.add('hidden');
+  }
+});
+document.getElementById('startPathPickDayList').addEventListener('click', function(e) {
+  var row = e.target.closest('.start-day-row');
+  if (!row) return;
+  var di = parseInt(row.getAttribute('data-di'), 10);
+  if (isNaN(di)) return;
+  closeStartScreen();
+  focusTab(di);
+  buildTabs();
+  buildDay(di);
+});
+document.getElementById('startPathBlank').addEventListener('click', function() {
+  closeStartScreen();
+  createAdHocSession();
+});
+document.getElementById('startPathImportLink').addEventListener('click', function() {
+  closeStartScreen();
+  document.getElementById('fileInput').click();
 });
 
 // Gym Profiles modal wiring.
