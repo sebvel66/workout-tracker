@@ -21,6 +21,7 @@ var EXERCISE_ALIASES = {
   'cable rope overhead triceps extension':   'overhead tricep extension (cable)',
   'cable tricep pushdown':                   'tricep pushdown',
   'cable woodchop':                          'woodchop',
+  'db bench press':                          'dumbbell bench press',
   'db flat bench press':                     'dumbbell bench press',
   'db incline bench press':                  'incline dumbbell bench press',
   'db lateral raise':                        'lateral raise',

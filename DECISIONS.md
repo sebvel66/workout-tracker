@@ -2,6 +2,30 @@
 
 Running log of architecture/behavior decisions for the workout tracker. Newest first.
 
+## 2026-04-19 — Partial unique index on `sets (workout_id, exercise_id, exercise_order, set_order) where done = true`
+
+The v1 schema indexed `sets (workout_id, exercise_order, set_order)` for in-session ordered reads but did not make the combination unique. This let a historical-data import script (Fitbod CSV pasted into the Supabase SQL Editor) re-run end-to-end and silently double-insert ~1107 set rows across ~22 workouts, surfacing as doubled entries in the per-exercise View Recent modal (see `MAJOR-BUGS.md` for the full incident write-up).
+
+**Chosen shape:**
+
+```sql
+create unique index sets_unique_position_per_workout
+  on sets (workout_id, exercise_id, exercise_order, set_order)
+  where done = true;
+```
+
+**Why this exact shape rather than a full unique index:**
+
+- `done = true` partial: leaves room for non-done placeholder or transient rows (if ever introduced — e.g. an auto-save that pre-creates rows before the checkbox flips) without failing the constraint. Only finalized/history rows are constrained.
+- Includes `exercise_id` in the key: the partial workout-uniqueness index (from 2026-04-16) is `(user_id, plan_id, day_index, performed_on)` — it guards against duplicate *workouts*. This index is the complementary set-level guard. Including `exercise_id` handles the case where a client or import assigns identical `(exercise_order, set_order)` to rows that genuinely belong to different exercises (unlikely in the current app but defensive for bulk inserts).
+- Chosen over application-level dedup: the actual incident was an external SQL Editor script, not client code, so only a DB-level constraint could have prevented it.
+
+**How to apply:**
+
+- Any future SQL import / bulk insert that re-runs will now 23505 instead of silently double-inserting. Scripts should `ON CONFLICT DO NOTHING` if idempotent re-runs are expected.
+- Client-side `persistSet` already handles one-row-at-a-time and will never trip the constraint under normal tap-done flow. The `update` / `insert` branches in [persistSet](js/data.js) don't need changes.
+- Migration file is forward-only: `supabase/migrations/20260419010000_sets_unique_position.sql`. Must be dedup'd first (any pre-existing duplicates will block creation).
+
 ## 2026-04-19 — Timers use wall-clock deadlines, not counters. Notification API rejected for rest timer.
 
 All time-sensitive UI in this app must be **wall-clock anchored** rather than counter-based. The session timer already does this (`sessionElapsedMs = Date.now() - startedAt - pausedMs`); the rest timer was the outlier until `v2.0.14` — it counted down a `restSeconds` variable via `setInterval(..., 1000)`, and iOS suspended the interval when the PWA lost focus, freezing the timer mid-rest.
