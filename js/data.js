@@ -83,6 +83,14 @@ var recentLocationId = null;     // uuid of the most recently used gym, or null
 // '' = no workouts, 'YYYY-MM-DD' = loaded.
 var earliestWorkoutDate = null;
 
+// Physique photos — goal (latest only displayed) and progress (chronological).
+// photosLoaded gates re-fetch; photosSignedUrls caches short-lived signed URLs
+// keyed by storage_path so we don't re-sign on every re-render.
+var photosGoal = null;           // row | null
+var photosProgress = [];         // rows, newest first
+var photosLoaded = false;
+var photosSignedUrls = {};       // storage_path → { url, expiresAtMs }
+
 // ---- State helpers ----
 function _planForState(state) {
   if (state && state.planId && planCache[state.planId]) return planCache[state.planId];
@@ -573,6 +581,99 @@ function _volumeForSet(weight, reps, mode) {
   if (weight == null) return 0;
   if (mode === 'per_side') return weight * 2 * reps;
   return weight * reps;
+}
+
+// ---- Physique photos ----
+// Backed by the private 'physique-photos' storage bucket + the
+// physique_photos metadata table. Files are stored under
+// '{user_id}/{uuid}.{ext}' so the bucket's path-prefix RLS policies
+// scope access to the owner. Rendering uses signed URLs issued on
+// demand (public URLs aren't available on a private bucket).
+
+async function loadPhysiquePhotos() {
+  var res = await sb.from('physique_photos')
+    .select('*')
+    .eq('user_id', userId)
+    .order('taken_at', { ascending: false });
+  if (res.error) { showToast('Failed to load photos', null); return; }
+  var rows = res.data || [];
+  photosGoal = null;
+  photosProgress = [];
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i];
+    if (r.photo_type === 'goal') {
+      // First hit is the most recent (ordered desc). Older goal photos
+      // stay in storage for history but only the latest is displayed.
+      if (!photosGoal) photosGoal = r;
+    } else {
+      photosProgress.push(r);
+    }
+  }
+  photosLoaded = true;
+}
+
+// Signed URL for a storage path, cached for ~1 hour. Re-signs when the
+// cached URL is within 60s of expiry so long-open tabs don't briefly
+// render broken thumbnails. Returns null on failure.
+async function getPhotoSignedUrl(path) {
+  var cached = photosSignedUrls[path];
+  if (cached && cached.expiresAtMs > Date.now() + 60000) return cached.url;
+  var res = await sb.storage.from('physique-photos').createSignedUrl(path, 3600);
+  if (res.error || !res.data) {
+    console.error('createSignedUrl error:', res.error);
+    return null;
+  }
+  photosSignedUrls[path] = { url: res.data.signedUrl, expiresAtMs: Date.now() + 3600 * 1000 };
+  return res.data.signedUrl;
+}
+
+// Upload a file to storage and insert the matching metadata row. On
+// insert failure, the uploaded file is removed so we don't leave
+// orphans. takenAtYmd is a 'YYYY-MM-DD' string from the date input;
+// stored as noon-local to avoid timezone drift at date boundaries.
+async function uploadPhysiquePhoto(file, type, takenAtYmd, notes) {
+  if (!file || !userId) throw new Error('Missing file or user');
+  var extMatch = file.name && file.name.match(/\.([a-zA-Z0-9]+)$/);
+  var ext = extMatch ? extMatch[1].toLowerCase()
+    : (file.type ? file.type.split('/')[1] : 'jpg');
+  if (ext === 'jpeg') ext = 'jpg';
+  var uuid = (crypto && crypto.randomUUID) ? crypto.randomUUID()
+    : ('p-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10));
+  var path = userId + '/' + uuid + '.' + ext;
+  var takenAtIso = new Date(takenAtYmd + 'T12:00:00').toISOString();
+
+  var up = await sb.storage.from('physique-photos').upload(path, file, {
+    contentType: file.type || ('image/' + ext),
+    cacheControl: '3600',
+    upsert: false,
+  });
+  if (up.error) throw up.error;
+
+  var ins = await sb.from('physique_photos').insert({
+    user_id: userId,
+    storage_path: path,
+    photo_type: type,
+    taken_at: takenAtIso,
+    notes: notes || null,
+  }).select().single();
+  if (ins.error) {
+    try { await sb.storage.from('physique-photos').remove([path]); } catch(e) { /* best effort */ }
+    throw ins.error;
+  }
+  return ins.data;
+}
+
+async function deletePhysiquePhoto(id, storagePath) {
+  // Remove storage first; if the row delete later fails, the file is
+  // already gone — fine. If storage fails, the row stays so the user
+  // can retry. Orphan-row risk exists if the row delete fails after a
+  // successful storage remove, but the render path treats a missing
+  // file as a broken thumb (user can delete again).
+  var rm = await sb.storage.from('physique-photos').remove([storagePath]);
+  if (rm.error) throw rm.error;
+  var del = await sb.from('physique_photos').delete().eq('id', id);
+  if (del.error) throw del.error;
+  delete photosSignedUrls[storagePath];
 }
 
 // ---- Weight unit conversion (kg / lbs) ----

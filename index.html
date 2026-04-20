@@ -827,6 +827,104 @@ body.unauthed #emptyState { display: none !important; }
   background: var(--surface2);
   border-bottom: 1px solid var(--border);
 }
+
+/* Physique photos — gallery, upload form, viewer. */
+.photos-gallery-actions { padding: 14px; border-bottom: 1px solid var(--border); }
+.photos-upload-btn {
+  display: block; width: 100%;
+  background: var(--accent2); color: #000;
+  border: none; border-radius: 10px;
+  padding: 12px 16px;
+  font-family: 'Outfit', sans-serif; font-size: 14px; font-weight: 600;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.photos-upload-btn:active { opacity: 0.85; }
+.photos-section-title {
+  padding: 16px 14px 8px;
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
+  color: var(--text3); text-transform: uppercase; letter-spacing: 0.5px;
+}
+.photos-empty {
+  padding: 0 14px 8px;
+  color: var(--text3); font-size: 12px; font-style: italic;
+}
+.photos-goal-wrap { padding: 0 14px 8px; }
+.photos-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 6px; padding: 0 14px 14px;
+}
+.photos-thumb {
+  background: transparent; border: none; padding: 0; margin: 0;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+  text-align: left; font-family: inherit;
+}
+.photos-thumb-img {
+  background-color: var(--surface2);
+  background-size: cover; background-position: center;
+  border-radius: 8px; aspect-ratio: 1 / 1; width: 100%;
+}
+.photos-thumb.goal-hero .photos-thumb-img { aspect-ratio: 4 / 5; }
+.photos-thumb-date {
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
+  color: var(--text3); margin-top: 4px;
+}
+.photos-upload-form {
+  padding: 14px; display: flex; flex-direction: column; gap: 12px;
+}
+.photos-upload-preview {
+  background-color: var(--surface2);
+  background-size: cover; background-position: center;
+  border-radius: 10px; aspect-ratio: 4 / 5; max-height: 55vh;
+}
+.photos-form-row {
+  display: flex; flex-direction: column; gap: 4px;
+}
+.photos-form-label {
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
+  color: var(--text3); text-transform: uppercase; letter-spacing: 0.5px;
+}
+.photos-form-input {
+  background: var(--surface2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px;
+  font-family: 'Outfit', sans-serif; font-size: 14px;
+}
+.photos-submit-btn {
+  margin-top: 4px; padding: 12px 16px;
+  background: var(--accent2); color: #000; border: none; border-radius: 10px;
+  font-family: 'Outfit', sans-serif; font-size: 14px; font-weight: 600;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.photos-submit-btn:active:not(:disabled) { opacity: 0.85; }
+.photos-submit-btn:disabled { opacity: 0.5; cursor: default; }
+.photos-viewer { padding: 14px; }
+.photos-viewer-img {
+  background-color: var(--surface2);
+  background-size: contain; background-position: center;
+  background-repeat: no-repeat;
+  aspect-ratio: 4 / 5; max-height: 70vh;
+  border-radius: 10px;
+}
+.photos-viewer-meta { margin-top: 14px; }
+.photos-viewer-type {
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
+  color: var(--text3); text-transform: uppercase; letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+.photos-viewer-date {
+  font-size: 14px; font-weight: 600; color: var(--text);
+  margin-bottom: 6px;
+}
+.photos-viewer-notes { font-size: 13px; color: var(--text2); }
+.photos-delete-btn {
+  margin-top: 20px; width: 100%;
+  background: transparent; color: var(--danger);
+  border: 1px solid var(--danger); border-radius: 10px;
+  padding: 10px 16px;
+  font-family: 'Outfit', sans-serif; font-size: 14px; font-weight: 600;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.photos-delete-btn:active { opacity: 0.8; }
 .history-empty {
   text-align: center; padding: 40px 20px;
   color: var(--text3); font-size: 13px;
@@ -1403,6 +1501,19 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
   </div>
 </div>
 
+<div class="modal-overlay" id="photosOverlay">
+  <div class="history-modal">
+    <div class="history-header">
+      <button class="history-back" id="btnPhotosBack" type="button" style="display:none">←</button>
+      <div style="width:32px;display:block" id="photosBackSpacer"></div>
+      <div class="history-title" id="photosTitle">Photos</div>
+      <button class="history-close" id="btnPhotosClose" type="button">×</button>
+    </div>
+    <div class="history-body" id="photosBody"></div>
+  </div>
+</div>
+<input type="file" id="photosFileInput" accept="image/*" capture="environment" style="display:none">
+
 <div class="modal-overlay" id="menuOverlay">
   <div class="menu-modal">
     <div class="menu-header">
@@ -1416,6 +1527,7 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
       <button class="menu-row" id="menuExport" type="button">Export Data</button>
       <button class="menu-row" id="menuHistory" type="button">History</button>
       <button class="menu-row" id="menuGymProfiles" type="button">Gym Profiles</button>
+      <button class="menu-row" id="menuPhotos" type="button">Photos</button>
       <button class="menu-row" id="menuWeightUnit" type="button">Weight unit (lbs)</button>
       <button class="menu-row danger" id="menuSignOut" type="button">Sign Out</button>
     </div>

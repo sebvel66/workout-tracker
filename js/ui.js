@@ -28,6 +28,12 @@ var historyWeekCache = {};          // weekStart → fetchWeekSummary result
 var historyWeekLoading = false;
 var historyDetails = {};            // workoutId → { workout, state } for detail view
 
+// Physique photos browser state — modal with three sub-views.
+var photosView = 'gallery';         // 'gallery' | 'upload' | 'viewer'
+var photosPendingFile = null;       // File selected in the picker, pending upload
+var photosPendingPreviewUrl = null; // blob: URL for the pending file (revoke when done)
+var photosViewerId = null;          // id of the photo currently in the viewer
+
 // Picker option lists
 var EQUIPMENT_OPTIONS = ['barbell', 'dumbbell', 'cable', 'machine', 'smith machine', 'bodyweight', 'band'];
 var MUSCLE_OPTIONS = ['chest', 'back', 'shoulders', 'biceps', 'triceps', 'quads', 'hamstrings', 'glutes', 'core', 'calves'];
@@ -1198,6 +1204,230 @@ function renderHistoryExerciseCard(ei, exState, name, weightMode, prescribedSets
   return h;
 }
 
+// ---- Physique photos browser ----
+async function openPhotos() {
+  resetPhotosPendingPreview();
+  photosView = 'gallery';
+  photosViewerId = null;
+  document.getElementById('photosOverlay').classList.add('show');
+  renderPhotos();
+  if (!photosLoaded) {
+    await loadPhysiquePhotos();
+    if (photosView === 'gallery') renderPhotos();
+  }
+}
+
+function closePhotos() {
+  document.getElementById('photosOverlay').classList.remove('show');
+  resetPhotosPendingPreview();
+  photosPendingFile = null;
+  photosViewerId = null;
+}
+
+function backToPhotosGallery() {
+  resetPhotosPendingPreview();
+  photosPendingFile = null;
+  photosViewerId = null;
+  photosView = 'gallery';
+  renderPhotos();
+}
+
+function resetPhotosPendingPreview() {
+  if (photosPendingPreviewUrl) {
+    URL.revokeObjectURL(photosPendingPreviewUrl);
+    photosPendingPreviewUrl = null;
+  }
+}
+
+function renderPhotos() {
+  var backBtn = document.getElementById('btnPhotosBack');
+  var spacer = document.getElementById('photosBackSpacer');
+  var title = document.getElementById('photosTitle');
+  var body = document.getElementById('photosBody');
+  if (photosView === 'gallery') {
+    backBtn.style.display = 'none';
+    spacer.style.display = 'block';
+    title.textContent = 'Photos';
+    renderPhotosGallery(body);
+  } else if (photosView === 'upload') {
+    backBtn.style.display = 'block';
+    spacer.style.display = 'none';
+    title.textContent = 'Add photo';
+    renderPhotosUploadForm(body);
+  } else if (photosView === 'viewer') {
+    backBtn.style.display = 'block';
+    spacer.style.display = 'none';
+    title.textContent = 'Photo';
+    renderPhotosViewer(body);
+  }
+}
+
+function renderPhotosGallery(body) {
+  var h = '';
+  h += '<div class="photos-gallery-actions">';
+  h += '<button type="button" class="photos-upload-btn" id="photosUploadBtn">Upload Photo</button>';
+  h += '</div>';
+
+  if (!photosLoaded) {
+    h += '<div class="history-empty">Loading…</div>';
+    body.innerHTML = h;
+    return;
+  }
+
+  h += '<div class="photos-section-title">Goal</div>';
+  if (!photosGoal) {
+    h += '<div class="photos-empty">No goal photo yet. Upload one to set your target physique.</div>';
+  } else {
+    h += '<div class="photos-goal-wrap">' + renderPhotosThumb(photosGoal, 'goal-hero') + '</div>';
+  }
+
+  h += '<div class="photos-section-title">Progress</div>';
+  if (!photosProgress.length) {
+    h += '<div class="photos-empty">No progress photos yet.</div>';
+  } else {
+    h += '<div class="photos-grid">';
+    for (var i = 0; i < photosProgress.length; i++) {
+      h += renderPhotosThumb(photosProgress[i], 'progress-thumb');
+    }
+    h += '</div>';
+  }
+
+  body.innerHTML = h;
+  // Thumbs render with empty background-image placeholders; resolve the
+  // signed URLs asynchronously and paint each slot as its URL returns.
+  hydratePhotosThumbs();
+}
+
+function renderPhotosThumb(row, cssClass) {
+  var dateStr = new Date(row.taken_at).toLocaleDateString(undefined, {
+    month: 'short', day: 'numeric', year: 'numeric',
+  });
+  return '<button type="button" class="photos-thumb ' + cssClass + '" data-photo-id="' + escapeAttr(row.id) + '">' +
+    '<div class="photos-thumb-img" data-storage-path="' + escapeAttr(row.storage_path) + '"></div>' +
+    '<div class="photos-thumb-date">' + escapeHtml(dateStr) + '</div>' +
+    '</button>';
+}
+
+function hydratePhotosThumbs() {
+  var slots = document.querySelectorAll('.photos-thumb-img[data-storage-path]');
+  for (var i = 0; i < slots.length; i++) {
+    (function(slot) {
+      var path = slot.getAttribute('data-storage-path');
+      getPhotoSignedUrl(path).then(function(url) {
+        if (!url || !slot.isConnected) return;
+        slot.style.backgroundImage = 'url("' + url + '")';
+      });
+    })(slots[i]);
+  }
+}
+
+function renderPhotosUploadForm(body) {
+  var today = sessionTodayDateString();
+  var h = '<div class="photos-upload-form">';
+  h += '<div class="photos-upload-preview" id="photosUploadPreview"></div>';
+  h += '<label class="photos-form-row">';
+  h += '<span class="photos-form-label">Type</span>';
+  h += '<select id="photosFormType" class="photos-form-input">';
+  h += '<option value="progress">Progress</option>';
+  h += '<option value="goal">Goal</option>';
+  h += '</select></label>';
+  h += '<label class="photos-form-row">';
+  h += '<span class="photos-form-label">Date</span>';
+  h += '<input type="date" id="photosFormDate" class="photos-form-input" value="' + escapeAttr(today) + '">';
+  h += '</label>';
+  h += '<label class="photos-form-row">';
+  h += '<span class="photos-form-label">Notes (optional)</span>';
+  h += '<input type="text" id="photosFormNotes" class="photos-form-input" placeholder="e.g. front double biceps, morning">';
+  h += '</label>';
+  h += '<button type="button" class="photos-submit-btn" id="photosSubmitBtn">Upload</button>';
+  h += '</div>';
+  body.innerHTML = h;
+  if (photosPendingPreviewUrl) {
+    document.getElementById('photosUploadPreview').style.backgroundImage = 'url("' + photosPendingPreviewUrl + '")';
+  }
+}
+
+function renderPhotosViewer(body) {
+  var row = findPhotoById(photosViewerId);
+  if (!row) {
+    body.innerHTML = '<div class="history-empty">Photo not found.</div>';
+    return;
+  }
+  var dateStr = new Date(row.taken_at).toLocaleDateString(undefined, {
+    weekday: 'short', month: 'long', day: 'numeric', year: 'numeric',
+  });
+  var typeLabel = row.photo_type === 'goal' ? 'Goal' : 'Progress';
+  var h = '<div class="photos-viewer">';
+  h += '<div class="photos-viewer-img" id="photosViewerImg" data-storage-path="' + escapeAttr(row.storage_path) + '"></div>';
+  h += '<div class="photos-viewer-meta">';
+  h += '<div class="photos-viewer-type">' + escapeHtml(typeLabel) + '</div>';
+  h += '<div class="photos-viewer-date">' + escapeHtml(dateStr) + '</div>';
+  if (row.notes) h += '<div class="photos-viewer-notes">' + escapeHtml(row.notes) + '</div>';
+  h += '</div>';
+  h += '<button type="button" class="photos-delete-btn" id="photosDeleteBtn" data-photo-id="' + escapeAttr(row.id) + '">Delete photo</button>';
+  h += '</div>';
+  body.innerHTML = h;
+  getPhotoSignedUrl(row.storage_path).then(function(url) {
+    var slot = document.getElementById('photosViewerImg');
+    if (url && slot) slot.style.backgroundImage = 'url("' + url + '")';
+  });
+}
+
+function findPhotoById(id) {
+  if (photosGoal && photosGoal.id === id) return photosGoal;
+  for (var i = 0; i < photosProgress.length; i++) {
+    if (photosProgress[i].id === id) return photosProgress[i];
+  }
+  return null;
+}
+
+function handlePhotoPicked(e) {
+  var file = e.target.files && e.target.files[0];
+  e.target.value = '';  // allow re-picking the same file in a later session
+  if (!file) return;
+  resetPhotosPendingPreview();
+  photosPendingFile = file;
+  photosPendingPreviewUrl = URL.createObjectURL(file);
+  photosView = 'upload';
+  renderPhotos();
+}
+
+async function submitPhotoUpload() {
+  if (!photosPendingFile) return;
+  var type = document.getElementById('photosFormType').value;
+  var takenAt = document.getElementById('photosFormDate').value || sessionTodayDateString();
+  var notes = (document.getElementById('photosFormNotes').value || '').trim();
+  var btn = document.getElementById('photosSubmitBtn');
+  btn.disabled = true;
+  btn.textContent = 'Uploading…';
+  try {
+    await uploadPhysiquePhoto(photosPendingFile, type, takenAt, notes);
+    await loadPhysiquePhotos();
+    backToPhotosGallery();
+    showToast('Photo uploaded', null);
+  } catch(err) {
+    console.error('submitPhotoUpload error:', err);
+    showToast('Upload failed: ' + (err.message || 'unknown error'), null);
+    btn.disabled = false;
+    btn.textContent = 'Upload';
+  }
+}
+
+async function onPhotoDelete(id) {
+  var row = findPhotoById(id);
+  if (!row) return;
+  if (!confirm('Delete this photo? This cannot be undone.')) return;
+  try {
+    await deletePhysiquePhoto(id, row.storage_path);
+    await loadPhysiquePhotos();
+    backToPhotosGallery();
+    showToast('Photo deleted', null);
+  } catch(err) {
+    console.error('onPhotoDelete error:', err);
+    showToast('Delete failed: ' + (err.message || 'unknown error'), null);
+  }
+}
+
 // ---- Toast ----
 function showToast(msg, retryFn) {
   toastCounter++;
@@ -1554,6 +1784,10 @@ document.getElementById('menuGymProfiles').addEventListener('click', function() 
   closeMenu();
   openGymProfiles();
 });
+document.getElementById('menuPhotos').addEventListener('click', function() {
+  closeMenu();
+  openPhotos();
+});
 document.getElementById('menuWeightUnit').addEventListener('click', function() {
   setWeightUnit(getWeightUnit() === 'lbs' ? 'kg' : 'lbs');
   closeMenu();
@@ -1679,6 +1913,35 @@ document.getElementById('exHistoryOverlay').addEventListener('click', function(e
 document.getElementById('btnHistoryBack').addEventListener('click', backToHistoryWeek);
 document.getElementById('historyOverlay').addEventListener('click', function(e) {
   if (e.target === this) closeHistory();
+});
+document.getElementById('btnPhotosClose').addEventListener('click', closePhotos);
+document.getElementById('btnPhotosBack').addEventListener('click', backToPhotosGallery);
+document.getElementById('photosOverlay').addEventListener('click', function(e) {
+  if (e.target === this) closePhotos();
+});
+document.getElementById('photosFileInput').addEventListener('change', handlePhotoPicked);
+document.getElementById('photosBody').addEventListener('click', function(e) {
+  if (!e.target || !e.target.closest) return;
+  if (e.target.closest('#photosUploadBtn')) {
+    document.getElementById('photosFileInput').click();
+    return;
+  }
+  if (e.target.closest('#photosSubmitBtn')) {
+    submitPhotoUpload();
+    return;
+  }
+  var delBtn = e.target.closest('#photosDeleteBtn');
+  if (delBtn) {
+    onPhotoDelete(delBtn.getAttribute('data-photo-id'));
+    return;
+  }
+  var thumb = e.target.closest('.photos-thumb');
+  if (thumb) {
+    photosViewerId = thumb.getAttribute('data-photo-id');
+    photosView = 'viewer';
+    renderPhotos();
+    return;
+  }
 });
 document.getElementById('historyBody').addEventListener('click', function(e) {
   if (!e.target) return;

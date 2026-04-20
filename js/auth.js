@@ -131,6 +131,8 @@ function applySession(session) {
     historyWeekCache = {}; historyDetails = {};
     historyWeekStart = null; historyWeekLoading = false; historyView = 'week';
     earliestWorkoutDate = null;
+    photosGoal = null; photosProgress = []; photosLoaded = false;
+    photosSignedUrls = {};
     currentDay = 0;
     hydrate();
   } else {
@@ -153,6 +155,10 @@ function applySession(session) {
     historyWeekLoading = false;
     historyView = 'week';
     earliestWorkoutDate = null;
+    photosGoal = null;
+    photosProgress = [];
+    photosLoaded = false;
+    photosSignedUrls = {};
     document.body.classList.add('unauthed');
   }
 }
