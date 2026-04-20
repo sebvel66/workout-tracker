@@ -59,9 +59,11 @@ function fmtDuration(ms) {
 
 // ---- Render helpers ----
 function renderSetRow(di, ei, si, sl, prescribedSet, weightMode, disabledAttr, prText, deletable) {
-  var weightCls = prescribedSet ? inputCls(sl.weight, prescribedSet.weight) : '';
+  var currentUnit = getWeightUnit();
+  var prescribedLbs = normalizePrescribedLbs(prescribedSet);
+  var weightCls = prescribedLbs != null ? inputCls(sl.weight, prescribedLbs) : '';
   var repsCls = prescribedSet ? inputCls(sl.reps, prescribedSet.reps_target) : '';
-  var weightPlaceholder = prescribedSet && prescribedSet.weight ? prescribedSet.weight : '—';
+  var weightPlaceholder = prescribedLbs != null ? displayWeight(prescribedLbs, currentUnit) : '—';
   var repsPlaceholder = prescribedSet && prescribedSet.reps_target ? prescribedSet.reps_target : '—';
 
   var out = '';
@@ -71,9 +73,14 @@ function renderSetRow(di, ei, si, sl, prescribedSet, weightMode, disabledAttr, p
   out += '<div class="set-prescribed">' + (prText || '—') + '</div>';
   out += '<div class="set-actual">';
   if (weightMode !== 'none') {
-    var lbl = weightMode === 'bodyweight' ? 'ADD WT' : 'LBS';
+    var lbl;
+    if (weightMode === 'bodyweight') {
+      lbl = 'ADD WT';
+    } else {
+      lbl = currentUnit === 'kg' ? 'KG' : 'LBS';
+    }
     out += '<div class="input-group"><label class="input-label">' + lbl + '</label>';
-    out += '<input type="number" inputmode="decimal" class="set-input ' + weightCls + '" value="' + (sl.weight != null ? sl.weight : '') + '" placeholder="' + weightPlaceholder + '" data-di="' + di + '" data-ei="' + ei + '" data-si="' + si + '" data-field="weight" onfocus="this.select()"' + disabledAttr + '>';
+    out += '<input type="number" inputmode="decimal" class="set-input ' + weightCls + '" value="' + displayWeight(sl.weight, currentUnit) + '" placeholder="' + weightPlaceholder + '" data-di="' + di + '" data-ei="' + ei + '" data-si="' + si + '" data-field="weight" onfocus="this.select()"' + disabledAttr + '>';
     if (weightMode === 'per_side') out += '<div class="weight-mode-hint">per side</div>';
     out += '</div>';
   }
