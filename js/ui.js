@@ -34,11 +34,14 @@ var photosPendingFile = null;       // File selected in the picker, pending uplo
 var photosPendingPreviewUrl = null; // blob: URL for the pending file (revoke when done)
 var photosViewerId = null;          // id of the photo currently in the viewer
 
-// AI plan generator state — modal with a loading view while the Edge
-// Function runs (~30-60s) and a review view once the plan comes back.
-var generateView = 'loading';       // 'loading' | 'review'
+// AI plan generator state — modal cycles through three sub-views:
+// 'inputs' (user sets start date, target duration, notes),
+// 'loading' (spinner while the Edge Function runs, ~30-60s), and
+// 'review' (accept/cancel the returned plan).
+var generateView = 'inputs';        // 'inputs' | 'loading' | 'review'
 var generatedPlan = null;           // the full plan JSON returned by /api/generate-plan
 var generatedMeta = null;           // { model, usage, generated_at }
+var generatedInputs = null;         // { start_date, target_duration, notes } from the form
 var generateStartedAt = 0;          // ms timestamp when the API call started
 var generateInFlight = false;       // prevents double-fire of the generate button
 var generateAbortController = null; // wired to the in-flight fetch so Cancel can abort
@@ -1442,7 +1445,7 @@ async function onPhotoDelete(id) {
 }
 
 // ---- AI plan generation (Generate + Review) ----
-async function openGenerate() {
+function openGenerate() {
   // If a previous fetch is still running, re-surface the loading modal
   // rather than silently ignoring the click or firing a duplicate
   // request. vercel dev serializes local function invocations, so
@@ -1452,13 +1455,39 @@ async function openGenerate() {
     renderGenerate();
     return;
   }
-  generateInFlight = true;
-  generateView = 'loading';
+  // Fresh open: show the inputs form. The fetch only fires when the
+  // user submits via submitGenerateInputs().
+  generateView = 'inputs';
   generatedPlan = null;
   generatedMeta = null;
+  generatedInputs = null;
+  document.getElementById('generateOverlay').classList.add('show');
+  renderGenerate();
+}
+
+async function submitGenerateInputs() {
+  // Collect form values. All are optional — empty/invalid fields pass
+  // through as null so the Edge Function falls back to defaults.
+  var startEl = document.getElementById('genFormStartDate');
+  var durEl = document.getElementById('genFormDuration');
+  var notesEl = document.getElementById('genFormNotes');
+  var startDate = (startEl && startEl.value) || null;
+  var targetDuration = durEl && durEl.value ? parseInt(durEl.value, 10) : null;
+  if (!Number.isFinite(targetDuration)) targetDuration = null;
+  var notes = (notesEl && notesEl.value || '').trim() || null;
+
+  generatedInputs = {
+    start_date: startDate,
+    target_duration: targetDuration,
+    notes: notes,
+  };
+
+  // Now fire the fetch. State transition: inputs → loading → review/error.
+  if (generateInFlight) return;
+  generateInFlight = true;
+  generateView = 'loading';
   generateStartedAt = Date.now();
   generateAbortController = new AbortController();
-  document.getElementById('generateOverlay').classList.add('show');
   renderGenerate();
 
   try {
@@ -1468,7 +1497,11 @@ async function openGenerate() {
 
     var res = await fetch('/api/generate-plan', {
       method: 'POST',
-      headers: { Authorization: 'Bearer ' + token },
+      headers: {
+        Authorization: 'Bearer ' + token,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(generatedInputs),
       signal: generateAbortController.signal,
     });
     var body = await res.json().catch(function() { return null; });
@@ -1494,7 +1527,7 @@ async function openGenerate() {
       // User canceled — the close/cleanup already ran from cancelGenerate.
       return;
     }
-    console.error('openGenerate error:', err);
+    console.error('submitGenerateInputs error:', err);
     closeGenerate();
     showToast('Plan generation failed: ' + (err.message || 'network error'), null);
   } finally {
@@ -1528,13 +1561,51 @@ function closeGenerate() {
 function renderGenerate() {
   var title = document.getElementById('generateTitle');
   var body = document.getElementById('generateBody');
-  if (generateView === 'loading') {
+  if (generateView === 'inputs') {
+    title.textContent = 'Generate next week';
+    renderGenerateInputs(body);
+  } else if (generateView === 'loading') {
     title.textContent = 'Generating…';
     renderGenerateLoading(body);
   } else if (generateView === 'review') {
     title.textContent = 'Review plan';
     renderGenerateReview(body);
   }
+}
+
+function renderGenerateInputs(body) {
+  // Default start date: next Sunday (start of a new training week).
+  // If today is Sunday, that's today; else the upcoming Sunday.
+  var todayStr = sessionTodayDateString();
+  var d = new Date(todayStr + 'T00:00:00');
+  var dow = d.getDay();  // 0 = Sunday
+  d.setDate(d.getDate() + (dow === 0 ? 0 : (7 - dow)));
+  var defaultStart = localDateString(d);
+
+  var h = '<div class="generate-inputs">';
+  h += '<label class="generate-form-row">';
+  h += '<span class="generate-form-label">Start date</span>';
+  h += '<input type="date" id="genFormStartDate" class="generate-form-input" value="' + escapeAttr(defaultStart) + '">';
+  h += '<span class="generate-form-hint">When does this plan take effect. Typically the upcoming Sunday.</span>';
+  h += '</label>';
+
+  h += '<label class="generate-form-row">';
+  h += '<span class="generate-form-label">Target session duration</span>';
+  h += '<input type="number" id="genFormDuration" class="generate-form-input" value="60" min="30" max="120" step="5">';
+  h += '<span class="generate-form-hint">Minutes per session. Claude will program toward this.</span>';
+  h += '</label>';
+
+  h += '<label class="generate-form-row">';
+  h += '<span class="generate-form-label">Notes to coach (optional)</span>';
+  h += '<textarea id="genFormNotes" class="generate-form-textarea" rows="3" placeholder="e.g., knee acting up this week, traveling Mon-Wed (dumbbells only)"></textarea>';
+  h += '</label>';
+
+  h += '<div class="generate-inputs-actions">';
+  h += '<button type="button" class="generate-btn-cancel" id="btnGenerateInputCancel">Cancel</button>';
+  h += '<button type="button" class="generate-btn-accept" id="btnGenerateInputSubmit">Generate</button>';
+  h += '</div>';
+  h += '</div>';
+  body.innerHTML = h;
 }
 
 function renderGenerateLoading(body) {
@@ -1658,6 +1729,13 @@ function formatGenerateSets(sets, mode) {
 
 async function onAcceptGeneratedPlan() {
   if (!generatedPlan) return;
+  // Respect the user's chosen start_date from the inputs form. This
+  // overrides savePlanAsActive's auto-stamp (which defaults to today)
+  // so a plan generated Thursday for next Sunday's start is dated
+  // correctly, not backdated to Thursday.
+  if (generatedInputs && generatedInputs.start_date) {
+    generatedPlan.start_date = generatedInputs.start_date;
+  }
   var btn = document.getElementById('btnGenerateAccept');
   if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
   try {
@@ -2188,6 +2266,8 @@ document.getElementById('generateOverlay').addEventListener('click', function(e)
 });
 document.getElementById('generateBody').addEventListener('click', function(e) {
   if (!e.target || !e.target.closest) return;
+  if (e.target.closest('#btnGenerateInputSubmit')) { submitGenerateInputs(); return; }
+  if (e.target.closest('#btnGenerateInputCancel')) { closeGenerate(); return; }
   if (e.target.closest('#btnGenerateAccept')) { onAcceptGeneratedPlan(); return; }
   if (e.target.closest('#btnGenerateCancel')) { closeGenerate(); return; }
   if (e.target.closest('#btnGenerateAbort')) { cancelGenerate(); return; }

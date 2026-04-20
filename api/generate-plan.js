@@ -69,12 +69,24 @@ export default async function handler(req, res) {
     const userId = await verifyUser(req.headers.authorization);
     if (!userId) return jsonError(res, 401, 'Authentication required');
 
+    // Parse user-supplied inputs from the Generate form (all optional).
+    // Vercel's Node runtime auto-parses JSON request bodies when the
+    // Content-Type header is application/json.
+    const rawInputs = (req.body && typeof req.body === 'object') ? req.body : {};
+    const userInputs = {
+      startDate: typeof rawInputs.start_date === 'string' ? rawInputs.start_date.slice(0, 10) : null,
+      targetDuration: Number.isFinite(rawInputs.target_duration) ? rawInputs.target_duration : null,
+      notes: (typeof rawInputs.notes === 'string' && rawInputs.notes.trim()) ? rawInputs.notes.trim().slice(0, 500) : null,
+    };
+
+    const t0 = Date.now();
     const [activePlan, history, exercises, photos] = await Promise.all([
       fetchActivePlan(userId),
       fetchRecentWorkouts(userId, HISTORY_WEEKS),
       fetchExerciseLibrary(userId),
       fetchPhysiquePhotos(userId),
     ]);
+    console.log('[generate-plan] data fetch:', Date.now() - t0, 'ms');
 
     if (!activePlan) {
       return jsonError(res, 400, 'No active plan. Import a plan before generating.');
@@ -83,31 +95,52 @@ export default async function handler(req, res) {
       return jsonError(res, 400, 'No workout history found. Log at least one week of training before generating a plan.');
     }
 
-    const userMessage = await buildUserMessage({ activePlan, history, exercises, photos });
+    const t1 = Date.now();
+    const userMessage = await buildUserMessage({ activePlan, history, exercises, photos, userInputs });
+    console.log('[generate-plan] prompt build (incl photo b64):', Date.now() - t1, 'ms');
 
-    const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        max_tokens: MAX_TOKENS,
-        temperature: TEMPERATURE,
-        // Breakpoint 1: the system prompt alone. Cached at the tools→system
-        // boundary. Invalidated only when system-prompt.md changes.
-        system: [
-          {
-            type: 'text',
-            text: SYSTEM_PROMPT,
-            cache_control: { type: 'ephemeral', ttl: '1h' },
-          },
-        ],
-        messages: [{ role: 'user', content: userMessage }],
-      }),
-    });
+    const t2 = Date.now();
+    // Wrap the Anthropic call in a hard timeout so a stuck upstream
+    // can't leave the user staring at an infinite spinner. 55s sits
+    // just under Vercel Hobby's 60s function cap, giving us time to
+    // return a clean error envelope if Anthropic goes unresponsive.
+    const claudeAbort = new AbortController();
+    const claudeTimeout = setTimeout(() => claudeAbort.abort(), 55000);
+    let claudeRes;
+    try {
+      claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: MODEL,
+          max_tokens: MAX_TOKENS,
+          temperature: TEMPERATURE,
+          // Breakpoint 1: the system prompt alone. Cached at the tools→system
+          // boundary. Invalidated only when system-prompt.md changes.
+          system: [
+            {
+              type: 'text',
+              text: SYSTEM_PROMPT,
+              cache_control: { type: 'ephemeral', ttl: '1h' },
+            },
+          ],
+          messages: [{ role: 'user', content: userMessage }],
+        }),
+        signal: claudeAbort.signal,
+      });
+    } catch (err) {
+      clearTimeout(claudeTimeout);
+      if (err && err.name === 'AbortError') {
+        console.error('[generate-plan] claude call: TIMEOUT after', Date.now() - t2, 'ms');
+        return jsonError(res, 504, 'AI service timed out (55s). Try again — cache should be warm on the next call.');
+      }
+      throw err;
+    }
+    clearTimeout(claudeTimeout);
 
     if (!claudeRes.ok) {
       const errBody = await claudeRes.text();
@@ -116,6 +149,7 @@ export default async function handler(req, res) {
     }
 
     const claudeData = await claudeRes.json();
+    console.log('[generate-plan] claude call:', Date.now() - t2, 'ms · usage:', JSON.stringify(claudeData.usage || {}));
 
     if (claudeData.stop_reason === 'max_tokens') {
       return jsonError(res, 422, 'Response truncated (max_tokens hit). Plan may be incomplete.', { raw: claudeData });
@@ -250,7 +284,7 @@ async function downloadPhotoAsBase64(storagePath) {
 }
 
 // ---- Prompt assembly ----
-async function buildUserMessage({ activePlan, history, exercises, photos }) {
+async function buildUserMessage({ activePlan, history, exercises, photos, userInputs }) {
   const content = [];
   const { verbatim, summarized } = splitHistoryByRecency(history);
 
@@ -270,6 +304,7 @@ async function buildUserMessage({ activePlan, history, exercises, photos }) {
   dynText += formatCurrentPlan(activePlan);
   dynText += formatVerbatimHistory(verbatim, activePlan);
   dynText += formatSummarizedHistory(summarized);
+  dynText += formatUserInputs(userInputs);
   dynText += '\nGENERATE a full training plan for the upcoming week. Match the current plan\'s day structure (5-day Upper/Lower split, Sunday through Thursday). Return ONLY the JSON object as specified in your instructions. No preamble, no markdown fences, no trailing text.\n';
   content.push({ type: 'text', text: dynText });
 
@@ -466,6 +501,16 @@ function weekStartForDateString(ymd) {
   const dow = d.getUTCDay();
   d.setUTCDate(d.getUTCDate() - dow);
   return d.toISOString().slice(0, 10);
+}
+
+function formatUserInputs(userInputs) {
+  if (!userInputs) return '';
+  const parts = [];
+  if (userInputs.startDate) parts.push(`Plan intended start date: ${userInputs.startDate}`);
+  if (userInputs.targetDuration) parts.push(`Target session duration: ${userInputs.targetDuration} min`);
+  if (userInputs.notes) parts.push(`Notes from client: "${userInputs.notes}"`);
+  if (!parts.length) return '';
+  return '\nUSER INPUTS FOR THIS WEEK\n' + parts.map(p => '  ' + p).join('\n') + '\n';
 }
 
 function formatExerciseLibrary(exercises) {
