@@ -19,6 +19,10 @@ var restAudioCtx = null;
 var sessionTimerInterval = null;
 
 var pickerState = { search: '', equipment: [], muscleGroup: [] };
+// Callback invoked on exercise selection. Defaults to the "add to session"
+// behavior. Alternative callers (e.g. substitution in v2.2.1) swap this in
+// when opening the picker; always reset on close so stale callbacks can't fire.
+var pickerOnSelect = null;
 
 // History browser state — week-scoped summary view with a detail drill-down
 // when a workout card is tapped. weekStart keys are 'YYYY-MM-DD' (Sunday).
@@ -310,19 +314,36 @@ function buildDay(di) {
     var stat = ad ? dn + '/' + exTotal + ' ✓' : dn + '/' + exTotal;
     var cc = ad ? ' complete' : sd ? ' partial' : '';
     var dis = readOnly ? ' disabled' : '';
-    var weightMode = weightModeForName(ex.name);
+    // Weight mode + display name track the substitute when one is set —
+    // a per_side substitute for a total prescribed exercise needs the
+    // right label ("LBS/ea") and its own name visible on the card.
+    var weightMode = (exState.subExercise && exState.subExercise.weight_mode)
+      ? exState.subExercise.weight_mode
+      : weightModeForName(ex.name);
+    var displayName = exState.subExercise ? exState.subExercise.name : ex.name;
+    var prescribedBadge = exState.subExercise
+      ? '<span class="exercise-sub-origin">was: ' + escapeHtml(ex.name) + '</span>'
+      : '';
 
     h += '<div class="exercise-card' + cc + '">';
     var swapBtn = readOnly ? '' : '<button class="card-swap" data-swap-di="' + di + '" data-swap-ei="' + ei + '" aria-label="Swap exercise" type="button">⇄</button>';
-    h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + escapeHtml(ex.name) + '</div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(ex.name) + '">view recent</button></div><div class="exercise-status ' + sc + '">' + stat + '</div>' + swapBtn + '</div>';
+    h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + escapeHtml(displayName) + prescribedBadge + '</div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(displayName) + '">view recent</button></div><div class="exercise-status ' + sc + '">' + stat + '</div>' + swapBtn + '</div>';
     if (ex.note) h += '<div class="exercise-note">' + escapeHtml(ex.note) + '</div>';
     h += '<div class="sets-container">';
 
     for (var si = 0; si < ex.sets.length; si++) {
       var set = ex.sets[si];
       var sl = exState.sets[si] || {};
-      var pr = fmtP(set);
-      h += renderSetRow(di, ei, si, sl, set, weightMode, dis, pr);
+      // When substituted, the prescribed weight doesn't port to the
+      // substitute (different weight_mode, different strength curve, etc).
+      // Drop the weight anchor but keep rep targets — reps translate across
+      // most substitutions and still give the user a target. User can enter
+      // weight manually or (v2.2.2+) request an AI recommendation.
+      var effectiveSet = exState.subExercise
+        ? { reps_target: set && set.reps_target, reps_range: set && set.reps_range }
+        : set;
+      var pr = fmtP(effectiveSet);
+      h += renderSetRow(di, ei, si, sl, effectiveSet, weightMode, dis, pr);
     }
 
     // Extras on this prescribed exercise: sets past the plan-defined count.
@@ -344,7 +365,29 @@ function buildDay(di) {
     }
     h += '</div></div></div>';
 
-    h += '<div class="sub-row"><div class="sub-label">SUB:</div><input type="text" class="sub-input" value="' + escapeAttr(exState.sub || '') + '" placeholder="Substituted exercise" data-di="' + di + '" data-ei="' + ei + '"' + dis + '></div>';
+    // Substitution row. In editable mode, tapping opens the exercise picker.
+    // When set: shows the substitute's name with a ✕ clear button.
+    // Legacy free-text state.sub (pre-v2.2.1) still renders if present so
+    // historical values don't vanish until the user re-saves.
+    if (readOnly) {
+      if (exState.subExercise || exState.sub) {
+        var subLabel = exState.subExercise ? exState.subExercise.name : exState.sub;
+        h += '<div class="sub-row"><div class="sub-label">SUB:</div><div class="sub-readonly">' + escapeHtml(subLabel) + '</div></div>';
+      }
+    } else {
+      h += '<div class="sub-row"><div class="sub-label">SUB:</div>';
+      if (exState.subExercise) {
+        h += '<button type="button" class="sub-picker-btn has-value" data-di="' + di + '" data-ei="' + ei + '" data-action="pick">' + escapeHtml(exState.subExercise.name) + '</button>';
+        h += '<button type="button" class="sub-clear-btn" data-di="' + di + '" data-ei="' + ei + '" data-action="clear" aria-label="Clear substitution">×</button>';
+      } else if (exState.sub) {
+        // Legacy free-text value — show it but with a note that tapping upgrades to a picker selection.
+        h += '<button type="button" class="sub-picker-btn legacy" data-di="' + di + '" data-ei="' + ei + '" data-action="pick">' + escapeHtml(exState.sub) + ' (tap to re-link)</button>';
+        h += '<button type="button" class="sub-clear-btn" data-di="' + di + '" data-ei="' + ei + '" data-action="clear" aria-label="Clear substitution">×</button>';
+      } else {
+        h += '<button type="button" class="sub-picker-btn" data-di="' + di + '" data-ei="' + ei + '" data-action="pick">Substitute exercise…</button>';
+      }
+      h += '</div>';
+    }
     h += '<div style="padding:0 14px 14px"><textarea class="exercise-note-input" rows="1" placeholder="Notes" data-di="' + di + '" data-ei="' + ei + '"' + dis + '>' + escapeHtml(exState.note || '') + '</textarea></div>';
     h += '</div>';
   }
@@ -564,10 +607,17 @@ function renderGymProfiles() {
 }
 
 // ---- Exercise picker ----
-function openPicker() {
+// Open the exercise picker. `onSelect` (optional) is called with the
+// selected library row when the user picks one — defaults to the
+// "add exercise to current session" behavior for the existing Add
+// Exercise entry point. Alternative callers (substitution in v2.2.1)
+// pass their own callback. Always cleared on close so a subsequent
+// default-open can't accidentally re-run the previous callback.
+function openPicker(onSelect) {
   pickerState.search = '';
   pickerState.equipment = [];
   pickerState.muscleGroup = [];
+  pickerOnSelect = onSelect || null;
   var si = document.getElementById('pickerSearch');
   if (si) si.value = '';
   renderPicker();
@@ -577,6 +627,7 @@ function openPicker() {
 
 function closePicker() {
   document.getElementById('pickerOverlay').classList.remove('show');
+  pickerOnSelect = null;
 }
 
 function renderPicker() {
@@ -661,8 +712,10 @@ function togglePickerChip(kind, value) {
 function selectExerciseFromPicker(exerciseId) {
   var row = exerciseLibraryById[exerciseId];
   if (!row) { showToast('Exercise not found', null); return; }
+  var cb = pickerOnSelect;
   closePicker();
-  addExerciseToSession(row);
+  if (cb) cb(row);
+  else addExerciseToSession(row);
 }
 
 // ---- Custom-exercise form ----
@@ -1245,8 +1298,11 @@ function renderHistoryExerciseCard(ei, exState, name, weightMode, prescribedSets
     }
     h += '</div></div>';
   }
-  if (exState.sub) {
-    h += '<div class="sub-row"><div class="sub-label">SUB:</div><div style="font-size:12px;color:var(--text2);flex:1">' + escapeHtml(exState.sub) + '</div></div>';
+  if (exState.subExercise || exState.sub) {
+    // subExercise is the structured v2.2.1 field (library row); sub is the
+    // legacy free-text fallback. Prefer structured when both are present.
+    var histSubLabel = exState.subExercise ? exState.subExercise.name : exState.sub;
+    h += '<div class="sub-row"><div class="sub-label">SUB:</div><div style="font-size:12px;color:var(--text2);flex:1">' + escapeHtml(histSubLabel) + '</div></div>';
   }
   if (exState.note) {
     h += '<div style="padding:10px 14px 14px"><div class="exercise-note" style="display:block;padding:0">' + escapeHtml(exState.note) + '</div></div>';
@@ -2360,6 +2416,10 @@ function renderSwapReview(body) {
     h += '<div class="swap-review-meta">Rest: ' + Math.round(r.rest) + 's</div>';
   }
   if (r.note) h += '<div class="swap-review-note">' + escapeHtml(r.note) + '</div>';
+  // Scope callout — makes the plan-level mutation explicit before the
+  // user taps Accept. Paired with the substitution (SUB) flow's toast
+  // that clarifies session-only scope. See DECISIONS v2.2.1 entry.
+  h += '<div class="swap-scope-warning">Accepting replaces this exercise in your plan for the rest of the week. For a one-session change, close this and use <strong>SUB</strong> on the card.</div>';
   h += '<div class="swap-actions">';
   h += '<button type="button" class="swap-btn-cancel" id="btnSwapCancel">Cancel</button>';
   h += '<button type="button" class="swap-btn-retry" id="btnSwapRetry">Try again</button>';
@@ -2467,7 +2527,7 @@ async function acceptSwap() {
     closeSwapModal();
     buildTabs();
     buildDay(currentDay);
-    showToast('Replaced ' + oldName + ' → ' + repl.name, null);
+    showToast('Swapped ' + oldName + ' → ' + repl.name + ' for the rest of the week. Plan updated.', null);
   } catch(err) {
     console.error('acceptSwap error:', err);
     // Revert in-memory mutation to the exact original so UI doesn't drift
@@ -3657,6 +3717,35 @@ document.getElementById('workoutContainer').addEventListener('click', function(e
     );
     return;
   }
+  // Substitution: open the exercise picker (pick) or clear.
+  var subPick = target.closest ? target.closest('.sub-picker-btn') : null;
+  if (subPick) {
+    var diPick = parseInt(subPick.getAttribute('data-di'), 10);
+    var eiPick = parseInt(subPick.getAttribute('data-ei'), 10);
+    var prescribedName = (plan && plan.days[diPick] && plan.days[diPick].exercises[eiPick])
+      ? plan.days[diPick].exercises[eiPick].name : '';
+    openPicker(async function(libRow) {
+      await logSubstitute(diPick, eiPick, libRow);
+      // Scope toast — pair to the swap review warning. Makes the
+      // session-only semantics explicit so the user doesn't assume
+      // the plan has changed permanently.
+      showToast(
+        'Subbed ' + (prescribedName ? prescribedName : 'exercise') + ' → ' + libRow.name +
+        ' for today only. Plan unchanged — use the ⇄ Swap icon to change the week.',
+        null
+      );
+    });
+    return;
+  }
+  var subClear = target.closest ? target.closest('.sub-clear-btn') : null;
+  if (subClear) {
+    var diClear = parseInt(subClear.getAttribute('data-di'), 10);
+    var eiClear = parseInt(subClear.getAttribute('data-ei'), 10);
+    logSubstitute(diClear, eiClear, null).then(function() {
+      showToast('Substitution cleared', null);
+    });
+    return;
+  }
 });
 
 // WORKOUT CONTAINER input changes
@@ -3667,9 +3756,9 @@ document.getElementById('workoutContainer').addEventListener('change', function(
     logSet(currentDay, parseInt(t.getAttribute('data-ei')),
       parseInt(t.getAttribute('data-si')), t.getAttribute('data-field'), t.value);
   }
-  if (t.classList.contains('sub-input')) {
-    logSub(currentDay, parseInt(t.getAttribute('data-ei')), t.value);
-  }
+  // .sub-input was removed in v2.2.1 — substitution now uses the exercise
+  // picker via .sub-picker-btn (click-handled, not change-handled). The
+  // legacy handler is intentionally gone; no fallback to logSub needed.
   if (t.classList.contains('exercise-note-input')) {
     logNote(currentDay, parseInt(t.getAttribute('data-ei')), t.value);
   }

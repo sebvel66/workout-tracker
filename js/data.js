@@ -235,7 +235,11 @@ function stateFromWorkout(row) {
     var s = sets[i];
     var ek = 'ex_' + s.exercise_order;
     if (!state.exercises[ek]) {
-      state.exercises[ek] = { rpe: null, note: '', sub: '', sets: [] };
+      // subExercise: structured substitution (library row). Populated below
+      // when any set for this exercise has prescribed_exercise_id != exercise_id.
+      // `sub` retained as a legacy free-text fallback for pre-v2.2.1 sets
+      // (read-only; new writes don't populate it).
+      state.exercises[ek] = { rpe: null, note: '', sub: '', subExercise: null, sets: [] };
       // For ad-hoc workouts, every exercise has no prescription — attach meta
       // but don't flag isExtra (the "added" badge only applies on plan days).
       // For plan-based workouts, sets past plan length are extras.
@@ -257,13 +261,30 @@ function stateFromWorkout(row) {
     var setIsExtra = isAdHocWorkout || isExtraOnPlan || isExtraOnPlanExercise;
     state.exercises[ek].sets[s.set_order] = {
       setId: s.id, weight: s.weight, reps: s.reps, done: !!s.done,
+      // exerciseId = what actually happened (substitute if subbed).
+      // prescribedExerciseId (optional) = what the plan asked for when this
+      // set was a plan-day set. Null for ad-hoc/extras; also null on legacy
+      // rows inserted before the v2.2.1 migration backfill.
       exerciseId: s.exercise_id,
+      prescribedExerciseId: s.prescribed_exercise_id || null,
       startedAt: s.started_at, completedAt: s.completed_at,
     };
     if (setIsExtra) state.exercises[ek].sets[s.set_order].isExtra = true;
     if (s.rpe != null) state.exercises[ek].rpe = s.rpe;
     if (s.note) state.exercises[ek].note = s.note;
+    // Legacy free-text substitution (pre-v2.2.1). Kept for display fallback
+    // on old rows; new writes use the structured prescribed_exercise_id path.
     if (s.substitution) state.exercises[ek].sub = s.substitution;
+    // Structured substitution detection: set was logged with a non-null
+    // prescribed_exercise_id that differs from the actual exercise_id.
+    // exercise_id is the substitute; prescribed_exercise_id is the plan's
+    // original. Load the substitute's library row so the UI and coach
+    // context can render its name and weight_mode.
+    if (s.prescribed_exercise_id && s.prescribed_exercise_id !== s.exercise_id
+        && !state.exercises[ek].subExercise) {
+      var subRow = exerciseLibraryById && exerciseLibraryById[s.exercise_id];
+      if (subRow) state.exercises[ek].subExercise = subRow;
+    }
   }
   return state;
 }
@@ -277,8 +298,14 @@ function seedExerciseIdCache(state) {
     var ei = parseInt(ek.slice(3), 10);
     var arr = state.exercises[ek].sets;
     for (var si = 0; si < arr.length; si++) {
-      if (arr[si] && arr[si].exerciseId && exs[ei]) {
-        exerciseIdCache[normName(exs[ei].name)] = arr[si].exerciseId;
+      var slot = arr[si];
+      if (!slot || !exs[ei]) continue;
+      // Prefer prescribedExerciseId for the cache mapping — that's the id
+      // for the plan exercise's name. When the set was substituted,
+      // slot.exerciseId points to the substitute (wrong target for this cache).
+      var cacheTarget = slot.prescribedExerciseId || slot.exerciseId;
+      if (cacheTarget) {
+        exerciseIdCache[normName(exs[ei].name)] = cacheTarget;
       }
     }
   }
@@ -827,7 +854,7 @@ function getOrInitToday(di) {
 }
 function getOrInitExercise(state, ei) {
   var ek = 'ex_' + ei;
-  if (!state.exercises[ek]) state.exercises[ek] = { rpe: null, note: '', sub: '', sets: [] };
+  if (!state.exercises[ek]) state.exercises[ek] = { rpe: null, note: '', sub: '', subExercise: null, sets: [] };
   return state.exercises[ek];
 }
 function getOrInitSet(exState, si) {
@@ -1047,13 +1074,15 @@ async function ensureWorkout(di) {
 }
 
 function buildSetPayload(di, ei, si) {
-  var exState = todayState.exercises['ex_' + ei] || { rpe: null, note: '', sub: '', sets: [] };
+  var exState = todayState.exercises['ex_' + ei] || { rpe: null, note: '', sub: '', subExercise: null, sets: [] };
   var sl = exState.sets[si] || {};
   var isExtraSet = todayState.isAdHoc || exState.isExtra || sl.isExtra;
-  var exerciseId, prescribedWeight, prescribedReps;
+  var exerciseId, prescribedExerciseId, prescribedWeight, prescribedReps;
   // Ad-hoc sessions, "extras" exercises on plan days, and extra sets on
   // prescribed exercises all skip prescription. Prescribed sets look up
-  // the prescription from the plan JSON.
+  // the prescription from the plan JSON — and now may carry a substitution
+  // (state.subExercise) which retargets exercise_id while prescribed_exercise_id
+  // still points at the plan's original.
   if (isExtraSet) {
     if (todayState.isAdHoc || exState.isExtra) {
       exerciseId = exState.exerciseId;
@@ -1061,12 +1090,19 @@ function buildSetPayload(di, ei, si) {
       // Extra set on a prescribed exercise — reuse the prescribed exercise's id.
       exerciseId = exerciseIdCache[normName(plan.days[di].exercises[ei].name)];
     }
+    prescribedExerciseId = null;
     prescribedWeight = null;
     prescribedReps = null;
   } else {
     var ex = plan.days[di].exercises[ei];
     var set = ex.sets[si];
-    exerciseId = exerciseIdCache[normName(ex.name)];
+    prescribedExerciseId = exerciseIdCache[normName(ex.name)];
+    // Substitution retargets exercise_id to the substitute; prescribed_exercise_id
+    // preserves the plan's original so plan-adherence + substitution-pattern
+    // queries remain possible.
+    exerciseId = (exState.subExercise && exState.subExercise.id)
+      ? exState.subExercise.id
+      : prescribedExerciseId;
     prescribedWeight = set.weight != null ? set.weight : null;
     prescribedReps = set.reps_target != null ? set.reps_target : null;
   }
@@ -1074,6 +1110,7 @@ function buildSetPayload(di, ei, si) {
     user_id: userId,
     workout_id: todayState.workoutId,
     exercise_id: exerciseId,
+    prescribed_exercise_id: prescribedExerciseId,
     exercise_order: ei,
     set_order: si,
     weight: sl.weight != null ? sl.weight : null,
@@ -1081,7 +1118,9 @@ function buildSetPayload(di, ei, si) {
     rpe: exState.rpe != null ? exState.rpe : null,
     prescribed_weight: prescribedWeight,
     prescribed_reps: prescribedReps,
-    substitution: exState.sub || null,
+    // Legacy free-text column — we no longer populate it on new writes;
+    // substitution is now carried structurally via exercise_id mismatch.
+    substitution: null,
     note: exState.note || null,
     done: !!sl.done,
     started_at: sl.startedAt || null,
@@ -1139,12 +1178,39 @@ async function updateExerciseFanOut(di, ei) {
   try {
     var patch = {
       rpe: exState.rpe != null ? exState.rpe : null,
-      substitution: exState.sub || null,
       note: exState.note || null,
     };
+    // Plan-day prescribed exercises (not ad-hoc, not extras) participate in
+    // the structured-substitution scheme. Mid-session sub change retargets
+    // all already-persisted sets' exercise_id to the substitute (or reverts
+    // to the prescribed when cleared). Ad-hoc + extras never have a
+    // prescribed_exercise_id, so we skip those.
+    var isPrescribedOnPlan = !todayState.isAdHoc && !exState.isExtra
+      && plan && plan.days[di] && plan.days[di].exercises[ei];
+    if (isPrescribedOnPlan) {
+      var prescribedId = exerciseIdCache[normName(plan.days[di].exercises[ei].name)];
+      var actualId = (exState.subExercise && exState.subExercise.id)
+        ? exState.subExercise.id : prescribedId;
+      if (actualId) patch.exercise_id = actualId;
+      if (prescribedId) patch.prescribed_exercise_id = prescribedId;
+      // Clear any legacy free-text substitution on fan-out — structured
+      // substitution supersedes it for post-v2.2.1 rows.
+      patch.substitution = null;
+    }
     var r = await sb.from('sets').update(patch)
       .eq('workout_id', todayState.workoutId).eq('exercise_order', ei);
     if (r.error) throw r.error;
+    // Keep the in-memory set slots in sync with what we just wrote so a
+    // subsequent render or buildSetPayload reflects the new exercise_id.
+    if (isPrescribedOnPlan && patch.exercise_id) {
+      for (var si = 0; si < exState.sets.length; si++) {
+        var slot = exState.sets[si];
+        if (slot && slot.setId) {
+          slot.exerciseId = patch.exercise_id;
+          slot.prescribedExerciseId = patch.prescribed_exercise_id || null;
+        }
+      }
+    }
   } catch(err) {
     console.error('updateExerciseFanOut error:', err);
     showToast("Exercise details didn't save", function() { updateExerciseFanOut(di, ei); });
@@ -1260,12 +1326,19 @@ async function logNote(di, ei, n) {
   await updateExerciseFanOut(di, ei);
 }
 
-async function logSub(di, ei, s) {
+// Structured substitution: accepts a library row (the substitute) or null
+// to clear. Writes to state.subExercise and fans out exercise_id +
+// prescribed_exercise_id to all already-persisted sets of this exercise.
+// Legacy free-text state.sub is cleared on new substitute/clear so the
+// two representations don't diverge.
+async function logSubstitute(di, ei, libRow) {
   if (viewModeFor(di) !== 'editable') return;
   var st = getOrInitToday(di);
   var exState = getOrInitExercise(st, ei);
-  exState.sub = s;
+  exState.subExercise = libRow || null;
+  exState.sub = '';  // drop any legacy free-text — structured field is source of truth now
   await updateExerciseFanOut(di, ei);
+  buildDay(di);
 }
 
 // ---- Add Exercise / Add Set (plan extras + ad-hoc sessions) ----
@@ -2109,7 +2182,16 @@ function getLiveContext() {
           logged.push(wt + '×' + r);
         }
       }
-      var line = '  ' + ex.name + ' [plan: ' + prescStr + ']: ' +
+      // Substitution: if the user swapped this exercise for something else,
+      // show the label as "Prescribed → Substitute" so the coach knows what
+      // was actually performed and doesn't confuse it with the plan exercise.
+      var displayName = ex.name;
+      if (exState.subExercise && exState.subExercise.name) {
+        displayName = ex.name + ' → ' + exState.subExercise.name;
+      } else if (exState.sub) {
+        displayName = ex.name + ' → ' + exState.sub + ' (legacy)';
+      }
+      var line = '  ' + displayName + ' [plan: ' + prescStr + ']: ' +
                  (logged.length ? logged.join(', ') + ' — ' : '') +
                  doneCount + '/' + totalSets + ' done';
       if (exState.rpe != null) line += ' — RPE ' + exState.rpe;

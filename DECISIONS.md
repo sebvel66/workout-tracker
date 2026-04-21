@@ -2,6 +2,66 @@
 
 Running log of architecture/behavior decisions for the workout tracker. Newest first.
 
+## 2026-04-21 — Structured per-session substitutions: `exercise_id` = actual, new `prescribed_exercise_id` = plan's ask (v2.2.1)
+
+Replaces the v1 free-text `sets.substitution` column with a structured FK. The v1 design let users type "machine row" into a free-text SUB field; those sets were invisible in Machine Row's history (because `exercise_id` still pointed at Cable Row) and the AI couldn't reason about swap patterns. v2.2.1 fixes both at the schema + UX level.
+
+**Design decisions worth recording:**
+
+**1. `exercise_id` changes semantics: what actually happened, not what was prescribed.**
+
+Before: `sets.exercise_id` was always the plan's prescribed exercise. After: it's what the user actually performed (substitute if subbed, else prescribed). New `sets.prescribed_exercise_id` nullable column records the plan's ask; null on ad-hoc / extra sets.
+
+Chosen over the alternative of adding `substituted_exercise_id` as a sidecar column because:
+- View Recent on the substitute *just works* — sets filter on `exercise_id` and land under the correct exercise.
+- Plan adherence is a clean one-liner: `WHERE prescribed_exercise_id IS NOT NULL AND prescribed_exercise_id != exercise_id`.
+- The backfill is trivial: for every pre-v2.2.1 plan-day set, `prescribed_exercise_id = exercise_id` (substitution was in the separate text column and didn't affect `exercise_id`). One-shot migration, no ongoing special-case logic.
+
+**2. Substitution is session-scoped; swap is plan-scoped. Both are legitimate; the UI makes the split explicit.**
+
+Swap (v2.0.29): mutates `plan.data`. The change lives on the plan for the rest of the week. Next session on this day shows the swapped exercise. Natural fit for "knee's been bothering me; use leg press instead of squats for a while."
+
+Substitute (v2.2.1): doesn't touch the plan. Just this workout's sets get logged under the substitute. Next session shows the prescribed exercise again. Natural fit for "at a different gym today; using dumbbell row instead."
+
+Both features converged on similar UX (exercise library picker, AI recommendation next) — which initially felt redundant. Resolution: keep both, make the scope split explicit via UI callouts:
+- Swap review modal carries a yellow callout: *"Accepting replaces this exercise in your plan for the rest of the week. For a one-session change, close this and use SUB on the card."*
+- Swap accept toast: *"...for the rest of the week. Plan updated."*
+- Substitute apply toast: *"...for today only. Plan unchanged — use the ⇄ Swap icon to change the week."*
+
+The scope callouts make the durable-vs-ephemeral distinction impossible to miss. User decision tree shifts from *"which button?"* to *"do I want this to stick beyond today?"*
+
+**3. Weight-mode and display-name track the substitute, not the prescribed exercise.**
+
+When substituted, the card:
+- Shows the substitute's name with a subtle `was: Cable Row` tag (keeps plan origin visible without dominating).
+- Uses the substitute's `weight_mode` for the input label (`LBS/ea` for per_side, `ADD WT` for bodyweight, etc.).
+- Clears the prescribed-weight placeholder (the plan's 120 lbs is meaningless on a different exercise with different strength curve).
+- Keeps the rep target (reps port across most substitutions).
+
+Without these, substituting Cable Row (total, 120) for Dumbbell Row (per_side, ~55) would show the Cable Row weight anchor on the DB Row card — confusing and data-hostile. This was a real bug, not a polish item.
+
+**4. Reuse the exercise picker via a generic `openPicker(onSelect)` callback.**
+
+The picker was hardcoded to `addExerciseToSession`. Refactored to accept an optional callback; default behavior preserved when no callback given. Substitution passes `logSubstitute` as its callback. Pattern is reusable for future library-lookup features without further picker changes. Callback is nulled on close so a subsequent default-open can't accidentally re-run a stale callback.
+
+**5. Legacy free-text `sets.substitution` column: leave as-is.**
+
+New writes set it to null. Old rows keep their text values for display-only fallback (the card shows "<text> (tap to re-link)" until the user re-picks via the library). Considered a one-shot SQL backfill (run `resolveLibraryRow` over every non-null text and promote to the structured columns) — deferred. Volume is small and the display-fallback covers legibility without schema churn.
+
+**6. `updateExerciseFanOut` retargets mid-session.**
+
+If the user substitutes after already logging sets (e.g., they finished set 1 on Cable Row, then the cable machine got taken, they sub to DB Row), the already-persisted sets need their `exercise_id` flipped to the substitute. `updateExerciseFanOut` now does this as part of its existing update-all-sets-for-an-exercise fan-out. In-memory set slots are updated post-write so subsequent re-renders and `buildSetPayload` calls see the fresh ids.
+
+**7. AI recommendation for weight/reps deferred to v2.2.2.**
+
+Shipping the structured plumbing first lets the user validate the core substitution UX with manual weight entry. The v2.2.2 layer adds a `mode: "substitute_recommend"` branch on `/api/generate-plan` that takes the prescribed exercise + chosen substitute + history context and returns calibrated sets. Post-substitute sheet offers three options — suggest / manual / cancel. Manual-entry-with-no-goal is a first-class path (matches ad-hoc exercise add UX). Schema + write path already support it; only the AI call and post-pick prompt remain.
+
+**How to apply:**
+
+- When adding structure to an existing free-text field, audit ALL downstream read paths before changing semantics. History queries, analytics, coach context all needed updates here.
+- Scope callouts (toasts + inline modal warnings) are cheap insurance against user confusion between similar-but-distinct features. Two toasts + one modal callout cost ~10 lines of code and remove a full class of "wait did I just change my plan?" moments.
+- Generic callback refactors (picker in this case) pay for themselves quickly when a second caller appears. Don't premature-abstract, but when the second caller shows up, extract the callback path.
+
 ## 2026-04-20 — Coach Chat: four-layer context, Haiku, separate endpoint, ephemeral history by default (v2.2.0)
 
 Real-time AI coaching during training sessions. Claude Haiku 4.5 on a new endpoint, with context assembled from four layers (static system prompt / semi-static per-session summary / live per-message session state / ephemeral chat history).
