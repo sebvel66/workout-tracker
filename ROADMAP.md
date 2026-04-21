@@ -25,7 +25,7 @@ First v2.1 bundle. Three features as one minor-version bump.
 
 ### Shipped — v2.2.0 (2026-04-20)
 
-- **Coach Chat.** Real-time AI coaching via floating chat button. Haiku 4.5 on a new endpoint at [api/coach-chat.js](api/coach-chat.js); ~1-2s warm response. Four-layer context (system prompt / semi-static per-session / live per-message / ephemeral history). Plan prescription inline in live context so standardization comparisons land in one line. Cron warmup was attempted but reverted — Vercel Hobby caps crons at once-per-day max (useless for interactive UX). `?warmup=true` branches remain in both endpoints for manual pings and a future Pro upgrade. Chat history intentionally ephemeral for v1 — persistence is a candidate follow-up.
+- **Coach Chat.** Real-time AI coaching via floating chat button. Haiku 4.5 on a new endpoint at [api/coach-chat.js](api/coach-chat.js); ~1-2s warm response. Four-layer context (system prompt / semi-static per-session / live per-message / ephemeral history). Plan prescription inline in live context so standardization comparisons land in one line. Cron warmup runs daily at 5am ET for both endpoints — Vercel Hobby caps crons at once-per-day max, blocking the original `*/5` / `*/10` design. Narrow benefit (warms for ~15-45 min after the ping); external pinger or Pro upgrade would unlock per-minute crons. Chat history intentionally ephemeral for v1 — persistence is a candidate follow-up.
 
 ## AI / Coaching (v2.3+)
 

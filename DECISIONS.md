@@ -35,16 +35,18 @@ First draft had plan prescriptions only in Layer 2 (the cached plan block). Haik
 
 Persistence is a **valid follow-up** if practice shows otherwise. The schema would be `coach_messages (id, user_id, workout_id nullable, role, content, created_at)` with the standard `own_X` RLS policy; load-on-chat-open would add ~100-300ms; the plan generator could then reference cross-session coaching. That's v2.2.1+ work — don't build it speculatively.
 
-**5. Cron warmup attempted, reverted due to Vercel Hobby plan limits.**
+**5. Cron warmup: once daily at 5am ET, constrained by Vercel Hobby plan limits.**
 
-Initial v2.2.0 shipped with `*/5 * * * *` (coach-chat) and `*/10 * * * *` (generate-plan) cron entries in `vercel.json`. **The deploy failed.** Vercel Hobby caps cron jobs at **once per day max** — `/docs/cron-jobs/usage-and-pricing` is explicit: *"Hobby accounts are limited to cron jobs that run once per day. Cron expressions that would run more frequently will fail during deployment."* A once-a-day warm ping is useless for an interactive UX, so cron warmup was removed.
+Initial v2.2.0 shipped with `*/5 * * * *` (coach-chat) and `*/10 * * * *` (generate-plan) cron entries. **The deploy failed.** Vercel Hobby caps cron jobs at **once per day max** — `/docs/cron-jobs/usage-and-pricing` is explicit: *"Hobby accounts are limited to cron jobs that run once per day. Cron expressions that would run more frequently will fail during deployment."*
 
-Both endpoints keep their `?warmup=true` early-return branch — harmless, useful for manual pings, and ready if the account ever upgrades to Pro (per-minute crons included). For now, the first-call-of-the-day cold-start cost is just accepted. Haiku warms fast; plan generation has the v2.0.26 silent retry covering timeouts.
+Reverted to daily warmup for both endpoints at `0 9 * * *` (9am UTC = 5am EDT / 4am EST — Vercel cron is UTC-only, no timezone support, so the local time drifts an hour across DST). Both endpoints keep a `?warmup=true` early-return branch that short-circuits before Anthropic, so the cron is free in token terms — just one Vercel invocation each per day.
+
+**Honest benefit is narrow:** a daily 5am ping warms a Fluid Compute instance that typically stays hot for ~15-45 minutes under low traffic. If the user trains early morning, the first real call benefits. If they train later, the instance is cold again and the cron saved nothing. For an interactive UX ideally we'd want every-5-minute pings (what the original config tried) — blocked by the Hobby cap.
 
 If cold-start latency ever feels bad in practice, options ranked by cost:
-1. External pinger (GitHub Actions cron, UptimeRobot free tier) hitting `?warmup=true` — zero cost, 5-min cadence possible.
+1. External pinger (GitHub Actions cron, UptimeRobot free tier) hitting `?warmup=true` — zero cost, 5-min cadence possible, stays on Hobby.
 2. Vercel Pro upgrade ($20/mo) — per-minute crons included plus other benefits.
-3. Keep cold-start as-is and lean on UX (typing indicator handles the perceived delay).
+3. Keep current daily + lean on UX (typing indicator + silent retry handle perceived delay).
 
 **6. Live context inline prescription format: `[plan: N×R @W]` next to each exercise.**
 
