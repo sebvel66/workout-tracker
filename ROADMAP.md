@@ -23,6 +23,22 @@ First v2.1 bundle. Three features as one minor-version bump.
 - **AI exercise swap.** Small ⇄ icon on plan exercise cards (editable mode only) opens a modal that finds an AI-suggested replacement for one exercise via `POST /api/generate-plan { mode: "swap", ... }`. Server early-dispatches to `handleSwap` with its own inline system prompt (1h cache, 500 max tokens, ~8-15s warm). Optional reason input ("different gym", "knee pain", etc.) factors into selection. On Accept, mutates `plan.days[di].exercises[ei]` and writes `plans.data`. Already-logged sets stay attached to their original `exercise_id` in the sets table.
 - **View Recent enhancements.** Exercise-level notes now surface below RPE in the View Recent modal (muted italic). Gym location tag gets an "@" prefix for clarity. Both lines render only when data exists — no empty placeholders.
 
+### Shipped — v2.2.5 (2026-04-21)
+
+- **Drag-to-reorder exercise cards.** Long-press (400ms) → SortableJS lift → drop within the same sort zone. Two zones on plan days (prescribed / extras, can't cross); one zone on ad-hoc. Plan-zone reorder mutates `plan.data` (same scope as Swap — *"for the rest of the week"*); extras / ad-hoc reorder is session-only. Current workout's sets are remapped so each stays attached to its exercise across the drag; remap is two-phase (`+10000` temp shift) to dodge the partial unique index on `(workout_id, exercise_id, exercise_order, set_order) WHERE done = true`. SortableJS 1.15.2 via CDN.
+
+### Shipped — v2.2.4 (2026-04-21)
+
+- **Manual session duration adjustment.** `✎` button next to every duration display (running timer, completed-today, historical day view, ad-hoc running/completed, history detail). Prompts for minutes (0-600 validated), back-computes `started_at = (ended_at || now) - minutes*60000` and zeros `paused_ms`. Context-aware refresh — today patches in-memory state + re-renders; history invalidates cache + re-opens detail. No schema changes.
+
+### Shipped — v2.2.3 (2026-04-21)
+
+Hotfix for three v2.2.2 regressions surfaced during local-dev testing.
+
+- **PostgREST FK ambiguity (PGRST201)** — v2.2.1's migration added `sets.prescribed_exercise_id` as a second FK from `sets` to `exercises`. Broke `fetchWeekSummary` ("couldn't load week"), coach context's recent-performance block, `runExport`, and the Edge Function's history fetch (which is shared with swap mode — this was the real cause of "swap not working"). Fix: disambiguate each embed as `exercises!exercise_id(...)`.
+- **"Bring to today" did nothing visible** — `reactivateWorkout` updated `performed_on` but not `performed_at`. Hydrate filters today's workouts by `performed_at`, so the reactivated workout was excluded → `todayPlanStates` empty → session-start modal popped up instead. Fix: add `performed_at: now` to the UPDATE.
+- **Discard typo** — called `renderHistory()` instead of `renderHistoryWeek()`. DB delete actually succeeded but the ReferenceError surfaced as a misleading error toast requiring hard-reload. Fix: typo corrected.
+
 ### Shipped — v2.2.2 (2026-04-21)
 
 - **Session lifecycle recovery.** History detail modal gains "Bring to today" (moves a past workout to today with timer reset, sets preserved) and "Discard session" (deletes the workout + cascades sets). Today's 0-set in-progress plan-day session gets a dashed "Cancel session" affordance under the session bar. Closes the midnight-trap bug where accidentally-started-and-paused sessions couldn't be recovered.

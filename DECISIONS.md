@@ -2,6 +2,116 @@
 
 Running log of architecture/behavior decisions for the workout tracker. Newest first.
 
+## 2026-04-21 — Drag-to-reorder exercise cards, two zones, plan-level mutation (v2.2.5)
+
+Long-press an exercise card to lift it via SortableJS, drag within the same sort zone, drop. Plan-day sessions have two zones (prescribed / extras); ad-hoc sessions have one. Zones don't cross.
+
+**Design decisions worth recording:**
+
+**1. Plan-zone reorder is plan-level (mirrors Swap v2.0.29).**
+
+When the user reorders a prescribed plan exercise, we mutate `plan.days[di].exercises` in-place and write `plans.data` back to Supabase. Future sessions on this plan day follow the new order. Alternative considered: session-scoped reorder via a new `workouts.exercise_order jsonb` permutation map. Rejected because it requires a migration + render-logic changes at every site that iterates `plan.days[di].exercises` — significantly more surface to get wrong for a feature that maps cleanly onto the Swap pattern already in use. Scope toast matches Swap: *"Reordered for the rest of the week. Plan updated."*
+
+**2. Extras / ad-hoc reorder is session-only.**
+
+Ad-hoc exercises have no plan-blob representation — they exist only as `sets` rows at particular `exercise_order` values. Reordering them remaps `sets.exercise_order` for the current workout only. No plan mutation. Scope toast: *"Reordered — this session only."* This mirrors Substitute (v2.2.1) semantically — one session of difference, plan untouched.
+
+**3. Sets follow their exercise across a drag — two-phase remap avoids unique-index collisions.**
+
+Per the user's explicit ask: sets remap so each set stays attached to its exercise. The partial unique index `(workout_id, exercise_id, exercise_order, set_order) WHERE done = true` (from v2.0.15) would throw 23505 if we tried to update `exercise_order` directly from position N to M while another row's existing value collided mid-shuffle. Fix: **two-phase update**. Phase 1 shifts every affected row to a `+10000` temp range; phase 2 brings each row down to its final position. Each phase parallelizes across affected positions via `Promise.all`; phase 2 waits on phase 1 completing. PostgREST doesn't support column arithmetic in updates, so each phase issues one `.update()` per old-position key.
+
+**4. Two zones that can't cross.**
+
+Per the user's compromise: plan exercises can reorder among themselves, ad-hoc extras can reorder among themselves, but you can't drag a plan exercise into the extras zone (or vice versa). Enforced via SortableJS `group` — distinct group names (`exercise-plan-zone` vs `exercise-extras-zone` vs `exercise-adhoc-session`) prevent cross-zone drops. Interleaving is a future enhancement if needed; current split avoids the complexity of "is this exercise plan-prescribed or user-added?" becoming draggable across that boundary.
+
+**5. SortableJS + long-press + filter, not a dedicated drag handle.**
+
+SortableJS 1.15.2 via CDN. `delay: 400` + `delayOnTouchOnly: true` means a normal tap never initiates drag; holding on the card for 400ms lifts it. `filter: 'input, textarea, button, select, .set-row, .exercise-note, .exercise-note-input, .sub-row, .rpe-row'` means long-pressing on an input, button, set row, RPE row, or sub row never triggers a drag — the tap falls through to the interactive element as normal. No dedicated drag handle (e.g. a grip icon in the card header) — the entire card chrome is the drag surface, which is simpler and matches the user's spec (*"long-press an exercise card"*).
+
+**6. Plan write failure reverts in-memory state.**
+
+If the Supabase `plans.data` update fails (network blip, RLS denial), we splice the array back to its pre-drag order and re-render. Matches the Swap pattern's `originalExercise` deep-clone revert. The set remap is separate from the plan write — if the plan write succeeds but the set remap fails, we surface the mismatch with a specific toast rather than rolling back the plan (the user's reorder intent should stand; they can re-log affected sets if any ended up mis-attributed). Partial failure tolerance is correct here; mass rollback on a sets write failure would lose the plan-level intent.
+
+**7. Read-only views skip Sortable.**
+
+`initSortableZones` is only called when `mode === 'editable'` (active session on today's date). Historical day-picker views, template previews, and history-detail modals render the sort-zone wrappers as ordinary `<div>`s without attaching SortableJS. Prevents accidental reorder of read-only state.
+
+**How to apply:**
+
+- For future features that need to persist a user-ordered permutation of existing rows, use the two-phase temp-shift pattern. PostgREST's no-column-arithmetic limitation means individual `.update()` calls per affected row are unavoidable; pair that with a temp-range offset and you get safe bulk remapping.
+- When adding drag interactions on mobile, always set `delay: 400` + `delayOnTouchOnly: true` and a thorough `filter` selector covering every interactive child. Short delays conflict with tap-to-log-a-set UX; long delays don't actually hurt because the user has to commit to the drag intent.
+- When a feature's default scope matches an existing feature's (Swap's "for the rest of the week"), use the same toast template + pattern so the user builds one mental model instead of two. Consistent UX framing reduces cognitive load as the app grows.
+
+## 2026-04-21 — Manual session duration adjustment via `started_at` back-compute (v2.2.4)
+
+Every place a session duration is displayed — running timer, completed-today bar, historical day-picker view, ad-hoc running/completed bars, history detail — gets a small `✎` button. Tap prompts for minutes, back-computes `started_at` so the displayed duration equals the requested value.
+
+**Design decisions worth recording:**
+
+**1. Adjust `started_at`, don't store a separate "manual duration" field.**
+
+The displayed duration is computed as `sessionElapsedMs(state) = (ended_at || now) - started_at - paused_ms`. To make that equal N minutes, we set `started_at = (ended_at || now) - N*60000` and zero `paused_ms`. No schema change; the existing timer calc continues to do the right thing. Alternative considered: add a `workouts.manual_duration_minutes int` column that overrides the calc. Rejected — adds a special case everywhere duration is read, and the `started_at` adjustment is semantically honest (we're saying "the workout started N minutes ago from now/end").
+
+**2. `paused_ms` zeroed on every manual edit.**
+
+If the user has paused-resumed a few times, there's accumulated time in `paused_ms`. Manual adjustment resets it to 0 — the user's new explicit duration collapses any prior pause accounting. Usually what they want ("just make it say 45 min") and avoids double-counting the adjustment.
+
+**3. Running-session adjustment anchors to "now" and keeps ticking.**
+
+If the user adjusts mid-session: `started_at = now - N*60000`. Timer continues to read the elapsed from that new base. If they set it to 40 min now and look again 5 min later, timer reads 45. That's correct — they said "I've been here 40 min already, continue from there."
+
+**4. Context-aware post-save refresh.**
+
+Two contexts distinguished by a `data-ctx` attribute on the edit button:
+- `'today'`: patch in-memory state (`todayState`, `todayPlanStates[k]`, `todayAdHocs[i]` entries matching the workoutId), re-render current day, restart timer tick if running.
+- `'history'`: invalidate `historyDetails[workoutId]` and the week cache, re-open the detail view so the user sees the new duration.
+
+One handler (`promptAdjustDuration`), two click-delegator hooks (workoutContainer + historyBody).
+
+**5. Validation: 0-600 minutes.**
+
+Non-numeric, negative, and absurd (>10 hours) values are rejected with a toast before touching the DB. Upper bound is ~10 hours, which is far beyond any real session but catches typos.
+
+**How to apply:**
+
+- Small write-once helpers like this work well as a single `renderX` HTML builder + a single `promptX` handler + two click routes (today + history). Keep the surface small — don't build a modal for a 1-field prompt when `prompt()` is adequate.
+- Whenever editing "current state" data on-device, patch the in-memory structure before (or instead of) a full reload. A full `hydrate()` is correct but expensive; in-place patch + `buildDay` is the right pattern for small mutations.
+
+## 2026-04-21 — PostgREST FK ambiguity fix + reactivate `performed_at` fix + discard typo (v2.2.3)
+
+Three v2.2.2 regressions, debugged systematically via superpowers:systematic-debugging.
+
+**1. PostgREST FK ambiguity — root cause of "couldn't load week" and "swap not working."**
+
+v2.2.1's migration added `sets.prescribed_exercise_id` as a second FK from `sets` to `exercises`. Any PostgREST embed `sets(*, exercises(...))` now errors `PGRST201: More than one relationship was found for 'sets' and 'exercises'`. This broke four queries simultaneously:
+- `fetchWeekSummary` (user-visible: "couldn't load week" on the History modal)
+- `_fetchRecentExercisePerformance` (coach context's recent-performance block silently empty)
+- `runExport` (date-range export failed)
+- Edge Function's `fetchRecentWorkouts` (explains "swap not working" — swap mode shares this query; the server-side fetch erroring before the Anthropic call made the entire swap flow return 500 from the user's perspective)
+
+Fix: disambiguate each embed as `exercises!exercise_id(name, equipment, muscle_group, weight_mode)` — explicitly follow the actual-performed FK. The `!exercise_id` hint is backward-compatible with pre-v2.2.1 installs (ignored when only one FK exists, so the fix is safe to ship without a schema dependency).
+
+**Lesson:** when a migration adds a second FK from A → B, grep every `.select('*, B(...)')` in the codebase. PostgREST won't warn; it just fails. This was missed because I wrote the migration and the UI changes in separate commits without re-running the History view.
+
+**2. Reactivate did nothing visible.**
+
+My v2.2.2 `reactivateWorkout` updated `performed_on` (calendar date) but not `performed_at` (timestamp). Hydrate queries today's workouts by `performed_at`:
+```js
+.gte('performed_at', bounds.start.toISOString())
+.lt('performed_at', bounds.end.toISOString())
+```
+So a reactivated workout had `performed_on = today` but `performed_at = yesterday's_timestamp` — hydrate's filter excluded it, `todayPlanStates` stayed empty, `inProgressKey` was null, and [app.js:143-144](js/app.js#L143-L144)'s fallback opened the session-start modal. User saw the modal pop up instead of landing on their reactivated session.
+
+Fix: add `performed_at: new Date().toISOString()` to the UPDATE payload alongside `performed_on`. The two need to move together for reactivation.
+
+**Lesson:** `performed_at` and `performed_on` capture the same conceptual truth at different granularities. Treat them as coupled — never update one without the other when moving a workout's date.
+
+**3. Discard typo: `renderHistory()` vs `renderHistoryWeek()`.**
+
+My v2.2.2 `onDiscardWorkout` called a function that doesn't exist, throwing `ReferenceError: renderHistory is not defined` after the DB delete succeeded. User saw "couldn't discard session" toast; the delete had actually landed but the UI didn't reflect it without a hard reload. Fix: rename to `renderHistoryWeek()`.
+
+**Lesson:** syntax-check a file doesn't catch function name references across files in a plain-script (no module) architecture — only runtime calls do. Invoking the discard flow once locally before shipping would have caught this.
+
 ## 2026-04-21 — Session lifecycle recovery + swap regression fix (v2.2.2)
 
 v2.2.2 addresses a long-standing edge case (accidentally-started session that midnight-traps into history) and cleans up a regression I introduced in v2.2.1 that broke the v2.0.29 Swap invariant.
