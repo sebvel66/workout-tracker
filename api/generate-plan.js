@@ -36,6 +36,46 @@ const MAX_TRAINING_DAYS = 6;
 const MIN_HISTORY_WEEKS = 1;
 const MAX_HISTORY_WEEKS = 12;
 
+// Swap mode — budget + prompt are separate from plan generation because the
+// task is narrower (one exercise, one JSON object) and we want it fast.
+// Cached system prompt + library block give a warm-path ~8-12s response.
+const SWAP_MAX_TOKENS = 500;
+const SWAP_HISTORY_WEEKS = 2;  // enough for weight calibration on the movement
+
+const SWAP_SYSTEM_PROMPT = `You are a strength and hypertrophy coach. The client wants to replace one exercise in their plan. Suggest a single alternative that:
+1. Targets the same primary muscle group and movement pattern
+2. Uses equipment available in the client's exercise library (provided in the user message)
+3. Is not already programmed for the same day
+4. Has an appropriate weight prescription based on the client's recent history with similar movements
+
+If the client provided a reason for the swap, factor it in:
+- "different gym" or "equipment unavailable" → pick an exercise using different equipment
+- "knee pain" or injury-related → pick a joint-friendly alternative
+- "want variety" → pick something the client hasn't done recently
+- No reason given → pick the best general alternative
+
+Return ONLY valid JSON matching this exact structure, no other text (no markdown fences, no preamble, no explanation):
+{
+  "name": "Chest-Supported Machine Row",
+  "note": "Replaces Cable Row — similar horizontal pull, machine-based. Starting at 100 based on prior row history.",
+  "rest": 120,
+  "sets": [
+    {"weight": 100, "reps_target": 12, "reps_range": "10-12", "repeat": 3}
+  ]
+}
+
+RULES:
+- "name" must be an exact, verbatim name from the AVAILABLE EXERCISES list. Preserve capitalization.
+- Weight must respect the exercise's weight_mode (per_side = per-hand/per-leg, total = bar/stack load, bodyweight = added load only, none = 0). The AVAILABLE EXERCISES list includes weight_mode for every entry.
+- Round weights to realistic gym increments: 2.5-5 lbs for dumbbells / plated barbells, 5-10 lbs for cables / machines. Never decimals like 67.5 for a dumbbell.
+- "rest" is an INTEGER in seconds (e.g., 120 for 2 min). Never a string.
+- Omit a "unit" field — the app defaults to lbs.
+- Use the "repeat": N shorthand when all sets are identical (single set object with repeat: N). Use separate set objects only when sets differ.
+- "note" explains why this replacement was chosen and how the weight was derived. Hard cap 20 words.
+- Return exactly ONE exercise. Do not offer options, do not hedge, do not list alternatives.
+- Do not suggest an exercise that is already programmed on the same day (list provided in the user message).
+`;
+
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -78,6 +118,14 @@ export default async function handler(req, res) {
     // Vercel's Node runtime auto-parses JSON request bodies when the
     // Content-Type header is application/json.
     const rawInputs = (req.body && typeof req.body === 'object') ? req.body : {};
+
+    // Early dispatch: swap mode is a different workflow with its own
+    // prompt, budget, and validation. Separate path keeps the happy
+    // path (plan generation) untouched.
+    if (rawInputs.mode === 'swap') {
+      return await handleSwap(res, userId, rawInputs);
+    }
+
     const userInputs = {
       startDate: typeof rawInputs.start_date === 'string' ? rawInputs.start_date.slice(0, 10) : null,
       targetDuration: Number.isFinite(rawInputs.target_duration) ? rawInputs.target_duration : null,
@@ -551,6 +599,222 @@ function formatExerciseLibrary(exercises) {
     out += `- ${e.name} | ${e.equipment || '-'} | ${e.muscle_group || '-'} | ${e.movement_pattern || '-'} | weight_mode=${e.weight_mode || 'total'}\n`;
   }
   return out + '\n';
+}
+
+// ---- Swap mode ----
+// Separate workflow from plan generation: single-exercise replacement with
+// its own system prompt, 500-token budget, and validation. Shares
+// fetchExerciseLibrary + fetchRecentWorkouts with the main path but builds
+// a narrower user message.
+async function handleSwap(res, userId, rawInputs) {
+  const exercise = rawInputs.exercise;
+  if (!exercise || typeof exercise !== 'object' || !exercise.name) {
+    return jsonError(res, 400, 'Missing exercise to replace');
+  }
+  const reason = typeof rawInputs.reason === 'string' ? rawInputs.reason.trim().slice(0, 200) : '';
+  const dayName = typeof rawInputs.day_name === 'string' ? rawInputs.day_name.slice(0, 120) : '';
+
+  const t0 = Date.now();
+  const [activePlan, history, exercises] = await Promise.all([
+    fetchActivePlan(userId),
+    fetchRecentWorkouts(userId, SWAP_HISTORY_WEEKS),
+    fetchExerciseLibrary(userId),
+  ]);
+  console.log('[generate-plan:swap] data fetch:', Date.now() - t0, 'ms');
+
+  const libraryNames = new Set(exercises.map(e => e.name));
+
+  // Compute other exercises on the same day so Claude avoids duplicates.
+  // Match on day name rather than day_index — plan days can be re-ordered
+  // or renamed, and the frontend knows the current day by label.
+  let otherToday = [];
+  if (activePlan && activePlan.data && Array.isArray(activePlan.data.days)) {
+    for (const d of activePlan.data.days) {
+      if (d.name === dayName && Array.isArray(d.exercises)) {
+        otherToday = d.exercises
+          .map(e => e && e.name)
+          .filter(n => n && n !== exercise.name);
+        break;
+      }
+    }
+  }
+
+  const movementHistory = summarizeMovementHistory(history, exercise.movement_pattern, exercise.muscle_group);
+
+  const t1 = Date.now();
+  const userText = buildSwapUserMessage({ exercise, reason, dayName, otherToday, movementHistory });
+  const userContent = [
+    // Library block is cached (same 1h TTL pattern as plan generation).
+    // Multiple swaps within an hour reuse this cache entry as long as the
+    // library hasn't changed.
+    { type: 'text', text: formatExerciseLibrary(exercises), cache_control: { type: 'ephemeral', ttl: '1h' } },
+    { type: 'text', text: userText },
+  ];
+  console.log('[generate-plan:swap] prompt build:', Date.now() - t1, 'ms');
+
+  const t2 = Date.now();
+  const claudeAbort = new AbortController();
+  const claudeTimeout = setTimeout(() => claudeAbort.abort(), 55000);
+  let claudeRes;
+  try {
+    claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        max_tokens: SWAP_MAX_TOKENS,
+        temperature: TEMPERATURE,
+        system: [{
+          type: 'text',
+          text: SWAP_SYSTEM_PROMPT,
+          cache_control: { type: 'ephemeral', ttl: '1h' },
+        }],
+        messages: [{ role: 'user', content: userContent }],
+      }),
+      signal: claudeAbort.signal,
+    });
+  } catch (err) {
+    clearTimeout(claudeTimeout);
+    if (err && err.name === 'AbortError') {
+      console.error('[generate-plan:swap] claude call: TIMEOUT after', Date.now() - t2, 'ms');
+      return jsonError(res, 504, 'AI service timed out. Try again — cache should be warm on the next call.');
+    }
+    throw err;
+  }
+  clearTimeout(claudeTimeout);
+
+  if (!claudeRes.ok) {
+    const errBody = await claudeRes.text();
+    console.error('[generate-plan:swap] Claude API error', claudeRes.status, errBody);
+    return jsonError(res, 502, 'AI service unavailable', { detail: errBody });
+  }
+
+  const claudeData = await claudeRes.json();
+  console.log('[generate-plan:swap] claude call:', Date.now() - t2, 'ms · usage:', JSON.stringify(claudeData.usage || {}));
+
+  if (claudeData.stop_reason === 'max_tokens') {
+    return jsonError(res, 422, 'Response truncated (max_tokens hit). Try again.', { raw: claudeData });
+  }
+
+  const rawText = claudeData.content && claudeData.content[0] && claudeData.content[0].text;
+  if (!rawText) return jsonError(res, 422, 'No text in swap response', { raw: claudeData });
+
+  let replacement;
+  try {
+    replacement = JSON.parse(stripJsonFences(rawText));
+  } catch {
+    return jsonError(res, 422, 'Swap response was not valid JSON', { raw: rawText });
+  }
+
+  const validationError = validateSwapReplacement(replacement, libraryNames, exercise.name, otherToday);
+  if (validationError) {
+    return jsonError(res, 422, 'Swap validation failed: ' + validationError, { raw: rawText });
+  }
+
+  // Expand repeat: N shorthand into N identical set objects so the client
+  // receives the canonical fully-expanded shape — matches plan-generation
+  // output and keeps the client-side contract uniform.
+  expandSetRepeatsForOneExercise(replacement);
+
+  return res.status(200).json({
+    replacement,
+    replaced: exercise.name,
+    reason: reason || null,
+    model: MODEL,
+    usage: claudeData.usage || null,
+    generated_at: new Date().toISOString(),
+  });
+}
+
+function buildSwapUserMessage({ exercise, reason, dayName, otherToday, movementHistory }) {
+  let out = 'EXERCISE TO REPLACE\n';
+  out += `Name: ${exercise.name}\n`;
+  if (exercise.muscle_group) out += `Muscle group: ${exercise.muscle_group}\n`;
+  if (exercise.movement_pattern) out += `Movement pattern: ${exercise.movement_pattern}\n`;
+  if (exercise.equipment) out += `Equipment: ${exercise.equipment}\n`;
+  if (exercise.weight_mode) out += `Weight mode: ${exercise.weight_mode}\n`;
+  if (Array.isArray(exercise.sets) && exercise.sets.length) {
+    const setStrs = exercise.sets.map(s => {
+      const w = s.weight != null ? s.weight : '?';
+      const r = s.reps_target != null ? s.reps_target : (s.reps_range || '?');
+      return `${w}×${r}`;
+    });
+    out += `Current prescription: ${setStrs.join(', ')}\n`;
+  }
+  out += '\n';
+
+  if (reason) out += `REASON FOR SWAP\n${reason}\n\n`;
+
+  if (dayName) out += `CURRENT DAY\n${dayName}\n\n`;
+
+  if (otherToday.length) {
+    out += 'OTHER EXERCISES ON THIS DAY (do NOT suggest any of these)\n';
+    for (const n of otherToday) out += `- ${n}\n`;
+    out += '\n';
+  }
+
+  if (movementHistory) {
+    out += 'RECENT HISTORY FOR THIS MOVEMENT PATTERN (use for weight calibration)\n';
+    out += movementHistory + '\n\n';
+  }
+
+  out += 'Return ONLY the JSON object for the replacement exercise. No preamble, no markdown fences, no trailing text.\n';
+  return out;
+}
+
+// Summarize recent sets for exercises matching the target's movement_pattern
+// (fallback: muscle_group). Used for weight calibration on the replacement.
+function summarizeMovementHistory(workouts, movementPattern, muscleGroup) {
+  const byName = {};
+  for (const w of workouts) {
+    for (const s of (w.sets || [])) {
+      if (!s.done) continue;
+      const ex = s.exercises;
+      if (!ex) continue;
+      const matchesPattern = movementPattern && ex.movement_pattern === movementPattern;
+      const matchesMuscle = !movementPattern && muscleGroup && ex.muscle_group === muscleGroup;
+      if (!matchesPattern && !matchesMuscle) continue;
+      if (!byName[ex.name]) byName[ex.name] = [];
+      const w_ = s.weight != null ? s.weight : '?';
+      const r_ = s.reps != null ? s.reps : '?';
+      byName[ex.name].push(`${w_}×${r_}`);
+    }
+  }
+  const lines = [];
+  for (const name of Object.keys(byName)) {
+    // Keep the tail (most recent sets). 9 is enough for ~3 sessions of 3 sets.
+    const recent = byName[name].slice(-9);
+    lines.push(`${name}: ${recent.join(', ')}`);
+  }
+  return lines.join('\n');
+}
+
+function validateSwapReplacement(r, libraryNames, replacedName, otherToday) {
+  if (!r || typeof r !== 'object') return 'replacement is not an object';
+  if (!r.name || typeof r.name !== 'string') return 'missing name';
+  if (!libraryNames.has(r.name)) return `name "${r.name}" is not in the exercise library`;
+  if (r.name === replacedName) return `replacement matches the replaced exercise`;
+  if (otherToday.indexOf(r.name) !== -1) return `replacement "${r.name}" is already programmed on this day`;
+  if (!Number.isFinite(r.rest)) return 'rest must be an integer (seconds)';
+  if (!Array.isArray(r.sets) || !r.sets.length) return 'missing or empty sets';
+  return null;
+}
+
+function expandSetRepeatsForOneExercise(ex) {
+  if (!ex || !Array.isArray(ex.sets)) return;
+  const expanded = [];
+  for (const set of ex.sets) {
+    const raw = typeof set.repeat === 'number' ? set.repeat : parseInt(set.repeat, 10);
+    const n = Math.min(10, Math.max(1, Number.isFinite(raw) ? raw : 1));
+    const clean = { ...set };
+    delete clean.repeat;
+    for (let i = 0; i < n; i++) expanded.push({ ...clean });
+  }
+  ex.sets = expanded;
 }
 
 // ---- Response parsing / validation ----

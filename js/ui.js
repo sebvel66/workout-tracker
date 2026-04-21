@@ -313,7 +313,8 @@ function buildDay(di) {
     var weightMode = weightModeForName(ex.name);
 
     h += '<div class="exercise-card' + cc + '">';
-    h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + escapeHtml(ex.name) + '</div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(ex.name) + '">view recent</button></div><div class="exercise-status ' + sc + '">' + stat + '</div></div>';
+    var swapBtn = readOnly ? '' : '<button class="card-swap" data-swap-di="' + di + '" data-swap-ei="' + ei + '" aria-label="Swap exercise" type="button">⇄</button>';
+    h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + escapeHtml(ex.name) + '</div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(ex.name) + '">view recent</button></div><div class="exercise-status ' + sc + '">' + stat + '</div>' + swapBtn + '</div>';
     if (ex.note) h += '<div class="exercise-note">' + escapeHtml(ex.note) + '</div>';
     h += '<div class="sets-container">';
 
@@ -1976,6 +1977,247 @@ async function onDeletePlan(planId) {
   }
 }
 
+// ---- AI exercise swap ----
+// Single-exercise replacement against the active plan. Modal cycles through
+// three sub-views (input / loading / review) via swapState.view, same
+// pattern as the Generate flow.
+var swapState = null;               // { di, ei, snapshot, view, replacement?, reason }
+var swapAbortController = null;
+
+function openSwapModal(di, ei) {
+  if (!plan || !plan.days || !plan.days[di]) return;
+  var ex = plan.days[di].exercises[ei];
+  if (!ex) return;
+  var meta = exerciseLibraryByName ? exerciseLibraryByName[normName(ex.name)] : null;
+  swapState = {
+    di: di,
+    ei: ei,
+    // originalExercise holds a deep clone of the plan slot, used to revert
+    // the in-memory mutation if the Supabase update fails in acceptSwap.
+    originalExercise: JSON.parse(JSON.stringify(ex)),
+    snapshot: {
+      name: ex.name,
+      sets: Array.isArray(ex.sets) ? ex.sets.slice() : [],
+      muscle_group: meta ? (meta.muscle_group || null) : null,
+      movement_pattern: meta ? (meta.movement_pattern || null) : null,
+      equipment: meta ? (meta.equipment || null) : null,
+      weight_mode: meta ? (meta.weight_mode || 'total') : 'total',
+    },
+    dayName: plan.days[di].name || ('Day ' + (di + 1)),
+    view: 'input',
+    replacement: null,
+    reason: '',
+  };
+  document.getElementById('swapExerciseOverlay').classList.add('show');
+  renderSwapModal();
+}
+
+function closeSwapModal() {
+  if (swapAbortController) {
+    try { swapAbortController.abort(); } catch(e) { /* already aborted */ }
+    swapAbortController = null;
+  }
+  document.getElementById('swapExerciseOverlay').classList.remove('show');
+  swapState = null;
+}
+
+function renderSwapModal() {
+  if (!swapState) return;
+  var body = document.getElementById('swapExerciseBody');
+  var title = document.getElementById('swapExerciseTitle');
+  if (swapState.view === 'input') {
+    title.textContent = 'Replace exercise';
+    renderSwapInput(body);
+  } else if (swapState.view === 'loading') {
+    title.textContent = 'Finding replacement…';
+    renderSwapLoading(body);
+  } else if (swapState.view === 'review') {
+    title.textContent = 'Review replacement';
+    renderSwapReview(body);
+  }
+}
+
+function renderSwapInput(body) {
+  var snap = swapState.snapshot;
+  var h = '<div class="generate-inputs">';
+  h += '<div class="generate-form-row">';
+  h += '<span class="generate-form-label">Replacing</span>';
+  h += '<div class="swap-review-name">' + escapeHtml(snap.name) + '</div>';
+  if (snap.movement_pattern || snap.equipment) {
+    var bits = [];
+    if (snap.movement_pattern) bits.push(snap.movement_pattern);
+    if (snap.equipment) bits.push(snap.equipment);
+    h += '<span class="swap-review-meta">' + escapeHtml(bits.join(' · ')) + '</span>';
+  }
+  h += '</div>';
+  h += '<label class="generate-form-row">';
+  h += '<span class="generate-form-label">Why? (optional)</span>';
+  h += '<input type="text" id="swapReasonInput" class="generate-form-input" placeholder="e.g., different gym, knee pain, variety" value="' + escapeAttr(swapState.reason || '') + '">';
+  h += '<span class="generate-form-hint">Claude factors in the reason when choosing a replacement and setting the weight.</span>';
+  h += '</label>';
+  h += '<div class="generate-inputs-actions">';
+  h += '<button type="button" class="generate-btn-cancel" id="btnSwapCancel">Cancel</button>';
+  h += '<button type="button" class="generate-btn-accept" id="btnSwapSubmit">Find replacement</button>';
+  h += '</div>';
+  h += '</div>';
+  body.innerHTML = h;
+}
+
+function renderSwapLoading(body) {
+  body.innerHTML =
+    '<div class="generate-loading">' +
+      '<div class="generate-spinner"></div>' +
+      '<div class="generate-status">Finding replacement…</div>' +
+      '<div class="generate-status-sub">Usually 8-15 seconds. Analyzing movement pattern and recent history.</div>' +
+      '<button type="button" class="generate-btn-cancel" id="btnSwapAbort" style="margin-top:20px;min-width:120px;padding:10px 16px;border-radius:10px;font-family:Outfit,sans-serif;font-size:14px;font-weight:600;cursor:pointer;">Cancel</button>' +
+    '</div>';
+}
+
+function renderSwapReview(body) {
+  var r = swapState.replacement || {};
+  var h = '<div class="swap-review">';
+  h += '<div><span class="swap-replacing-label">Replacing</span><div class="swap-review-name" style="opacity:0.7;text-decoration:line-through;">' +
+       escapeHtml(swapState.snapshot.name) + '</div></div>';
+  h += '<div><span class="swap-replacing-label">With</span><div class="swap-review-name">' + escapeHtml(r.name || '') + '</div>';
+  var meta = exerciseLibraryByName ? exerciseLibraryByName[normName(r.name)] : null;
+  if (meta && (meta.movement_pattern || meta.equipment)) {
+    var bits = [];
+    if (meta.movement_pattern) bits.push(meta.movement_pattern);
+    if (meta.equipment) bits.push(meta.equipment);
+    h += '<span class="swap-review-meta">' + escapeHtml(bits.join(' · ')) + '</span>';
+  }
+  h += '</div>';
+  // Sets rendered in the same shape as fmtP output: weight × reps_target, and repeat count.
+  if (Array.isArray(r.sets) && r.sets.length) {
+    var setStrs = r.sets.map(function(s) {
+      var w = s.weight != null ? s.weight : '?';
+      var rp = s.reps_target != null ? s.reps_target : (s.reps_range || '?');
+      return w + ' × ' + rp;
+    });
+    h += '<div class="swap-review-sets">' + escapeHtml(setStrs.join('   ·   ')) + '</div>';
+  }
+  if (r.rest) {
+    h += '<div class="swap-review-meta">Rest: ' + Math.round(r.rest) + 's</div>';
+  }
+  if (r.note) h += '<div class="swap-review-note">' + escapeHtml(r.note) + '</div>';
+  h += '<div class="swap-actions">';
+  h += '<button type="button" class="swap-btn-cancel" id="btnSwapCancel">Cancel</button>';
+  h += '<button type="button" class="swap-btn-retry" id="btnSwapRetry">Try again</button>';
+  h += '<button type="button" class="swap-btn-accept" id="btnSwapAccept">Accept</button>';
+  h += '</div>';
+  h += '</div>';
+  body.innerHTML = h;
+}
+
+async function submitSwapRequest() {
+  if (!swapState) return;
+  var reasonEl = document.getElementById('swapReasonInput');
+  if (reasonEl) swapState.reason = (reasonEl.value || '').trim();
+  await fireSwapFetch();
+}
+
+async function retrySwapRequest() {
+  if (!swapState) return;
+  await fireSwapFetch();
+}
+
+async function fireSwapFetch() {
+  if (!swapState) return;
+  swapState.view = 'loading';
+  swapState.replacement = null;
+  renderSwapModal();
+  if (swapAbortController) {
+    try { swapAbortController.abort(); } catch(e) {}
+  }
+  swapAbortController = new AbortController();
+  try {
+    var sessionRes = await sb.auth.getSession();
+    var token = sessionRes.data && sessionRes.data.session && sessionRes.data.session.access_token;
+    if (!token) throw new Error('Not signed in');
+
+    var exercise = {
+      name: swapState.snapshot.name,
+      muscle_group: swapState.snapshot.muscle_group,
+      movement_pattern: swapState.snapshot.movement_pattern,
+      equipment: swapState.snapshot.equipment,
+      weight_mode: swapState.snapshot.weight_mode,
+      sets: swapState.snapshot.sets,
+    };
+    var payload = {
+      mode: 'swap',
+      exercise: exercise,
+      reason: swapState.reason || '',
+      day_name: swapState.dayName,
+    };
+    var res = await fetch('/api/generate-plan', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: swapAbortController.signal,
+    });
+    var body = await res.json().catch(function() { return null; });
+    if (res.status !== 200 || !body || !body.replacement) {
+      var msg = (body && body.error) || ('HTTP ' + res.status);
+      swapState.view = 'input';
+      renderSwapModal();
+      showToast('Swap failed: ' + msg, null);
+      return;
+    }
+    swapState.replacement = body.replacement;
+    swapState.view = 'review';
+    renderSwapModal();
+  } catch(err) {
+    if (err && err.name === 'AbortError') return;
+    console.error('fireSwapFetch error:', err);
+    if (swapState) { swapState.view = 'input'; renderSwapModal(); }
+    showToast('Swap failed: ' + (err.message || 'network error'), null);
+  } finally {
+    swapAbortController = null;
+  }
+}
+
+async function acceptSwap() {
+  if (!swapState || !swapState.replacement) return;
+  var di = swapState.di, ei = swapState.ei;
+  if (!plan || !plan.days || !plan.days[di] || !plan.days[di].exercises[ei]) {
+    showToast('Exercise no longer in plan', null);
+    closeSwapModal();
+    return;
+  }
+  var repl = swapState.replacement;
+  var oldName = swapState.snapshot.name;
+  // Mutate the plan blob in place at the same exercise_order slot. Logged
+  // sets on the old exercise remain attached to their set rows (which reference
+  // exercise_id directly, not the plan blob) — they become historical for the
+  // old exercise on this one workout. Future set-done taps will use the
+  // replacement's exercise_id via ensureExerciseId → resolveLibraryRow.
+  plan.days[di].exercises[ei] = {
+    name: repl.name,
+    note: repl.note || '',
+    rest: repl.rest,
+    sets: Array.isArray(repl.sets) ? repl.sets.slice() : [],
+  };
+
+  var acceptBtn = document.getElementById('btnSwapAccept');
+  if (acceptBtn) { acceptBtn.disabled = true; acceptBtn.textContent = 'Saving…'; }
+  try {
+    var up = await sb.from('plans').update({ data: plan }).eq('id', activePlanId);
+    if (up.error) throw up.error;
+    planCache[activePlanId] = plan;
+    closeSwapModal();
+    buildTabs();
+    buildDay(currentDay);
+    showToast('Replaced ' + oldName + ' → ' + repl.name, null);
+  } catch(err) {
+    console.error('acceptSwap error:', err);
+    // Revert in-memory mutation to the exact original so UI doesn't drift
+    // from DB. originalExercise is a deep clone captured at modal-open time.
+    plan.days[di].exercises[ei] = swapState.originalExercise;
+    showToast("Couldn't save swap: " + (err.message || 'unknown error'), null);
+    if (acceptBtn) { acceptBtn.disabled = false; acceptBtn.textContent = 'Accept'; }
+  }
+}
+
 // ---- Templates: save / manage / use ----
 // saveTemplateContext drives the modal. It carries both potential scopes
 // (plan + day) when available, plus the active selection. The modal's
@@ -2791,6 +3033,21 @@ document.getElementById('startPathImportLink').addEventListener('click', functio
   document.getElementById('fileInput').click();
 });
 
+// Swap modal wiring. The swap button on each plan exercise card uses the
+// standard workoutContainer click delegator below (see early-dispatch block).
+document.getElementById('btnSwapExerciseClose').addEventListener('click', closeSwapModal);
+document.getElementById('swapExerciseOverlay').addEventListener('click', function(e) {
+  if (e.target === this) closeSwapModal();
+});
+document.getElementById('swapExerciseBody').addEventListener('click', function(e) {
+  if (!e.target || !e.target.closest) return;
+  if (e.target.closest('#btnSwapSubmit')) { submitSwapRequest(); return; }
+  if (e.target.closest('#btnSwapRetry')) { retrySwapRequest(); return; }
+  if (e.target.closest('#btnSwapAccept')) { acceptSwap(); return; }
+  if (e.target.closest('#btnSwapCancel')) { closeSwapModal(); return; }
+  if (e.target.closest('#btnSwapAbort')) { closeSwapModal(); return; }
+});
+
 // Gym Profiles modal wiring.
 document.getElementById('btnGymProfilesClose').addEventListener('click', closeGymProfiles);
 document.getElementById('gymProfilesOverlay').addEventListener('click', function(e) {
@@ -3010,6 +3267,16 @@ document.getElementById('workoutContainer').addEventListener('click', function(e
     deleteExerciseCard(
       currentDay,
       parseInt(delCardBtnEarly.getAttribute('data-ei'), 10)
+    );
+    return;
+  }
+  // Swap icon on plan exercise cards. Only rendered in editable mode and
+  // never on ad-hoc / extras cards (see buildDay prescribed loop).
+  var swapBtnEarly = target.closest ? target.closest('.card-swap') : null;
+  if (swapBtnEarly) {
+    openSwapModal(
+      parseInt(swapBtnEarly.getAttribute('data-swap-di'), 10),
+      parseInt(swapBtnEarly.getAttribute('data-swap-ei'), 10)
     );
     return;
   }
