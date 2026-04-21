@@ -24,6 +24,11 @@ var APP_VERSION = 'v2.3.2';
 // unchanged — #emptyState stays visible per HTML default until auth
 // resolves. Full design: docs/superpowers/specs/2026-04-21-hydration-cache-design.md
 var __hydratedFromCache = false;
+function __removeRefreshingPill() {
+  var pill = document.getElementById('refreshingPill');
+  if (pill && pill.parentNode) pill.parentNode.removeChild(pill);
+  __hydratedFromCache = false;
+}
 (function paintFromCache() {
   var blob = readHydrationSnapshot();
   if (!blob) return;
@@ -77,11 +82,28 @@ async function hydrate() {
     if (!ures.data || !ures.data.user) return;
     userId = ures.data.user.id;
 
+    // If we painted from cache but the signed-in user doesn't match the
+    // cached user (e.g. sign-out + sign-in as a different account), drop
+    // the cache + pill and let the rest of hydrate render fresh.
+    if (__hydratedFromCache) {
+      var cachedBlob = readHydrationSnapshot();
+      if (!cachedBlob || cachedBlob.userId !== userId) {
+        clearHydrationSnapshot();
+        __removeRefreshingPill();
+      }
+    }
+
     var planRes = await sb.from('plans').select('*')
       .eq('user_id', userId).eq('is_active', true).maybeSingle();
     if (planRes.error) { showToast('Failed to load plan', null); return; }
     if (!planRes.data) {
       plan = null; activePlanId = null;
+      // If we painted from cache, the cached plan has been deleted on
+      // another device. Clear cache + pill, then show empty state.
+      if (__hydratedFromCache) {
+        clearHydrationSnapshot();
+        __removeRefreshingPill();
+      }
       document.getElementById('emptyState').style.display = 'block';
       document.getElementById('summaryBar').style.display = 'none';
       document.getElementById('planTitle').textContent = 'Workout Tracker';
@@ -188,6 +210,10 @@ async function hydrate() {
 
     buildTabs();
     buildDay(currentDay);
+
+    // Fresh server state is now rendered. Remove the refreshing pill if
+    // this was a warm boot from cache.
+    __removeRefreshingPill();
 
     // Snapshot the now-fresh state for next boot's paintFromCache.
     saveHydrationSnapshot();
