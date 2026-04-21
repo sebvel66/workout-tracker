@@ -304,7 +304,10 @@ async function fetchRecentWorkouts(userId, weeks) {
   const start = new Date();
   start.setDate(start.getDate() - weeks * 7);
   const startStr = start.toISOString().slice(0, 10);
-  const select = encodeURIComponent('*,sets(*,exercises(name,equipment,muscle_group,movement_pattern,weight_mode))');
+  // PostgREST FK disambiguation (v2.2.1+): sets has two FKs to exercises
+  // (exercise_id and prescribed_exercise_id). "!exercise_id" picks the
+  // actual-performed FK so the planner sees what the user actually did.
+  const select = encodeURIComponent('*,sets(*,exercises!exercise_id(name,equipment,muscle_group,movement_pattern,weight_mode))');
   const res = await sbFetch(
     `/workouts?user_id=eq.${userId}&performed_on=gte.${startStr}&order=performed_on.asc&select=${select}`
   );

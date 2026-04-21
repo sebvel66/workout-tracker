@@ -441,8 +441,13 @@ async function loadEarliestWorkoutDate() {
 // count) count toward volume but NOT toward completion ratios, so
 // completionRate measures plan adherence rather than effort.
 async function fetchWeekSummary(userId, weekStartDate, weekEndDate) {
+  // PostgREST FK disambiguation: sets now has TWO FKs to exercises
+  // (exercise_id = actual, prescribed_exercise_id = plan's ask, added in
+  // v2.2.1). "exercises!exercise_id" tells the planner to join via the
+  // exercise_id FK — what was actually performed. Without this hint, the
+  // query fails with PGRST201 ambiguous relationship.
   var wRes = await sb.from('workouts')
-    .select('*, sets(*, exercises(name, equipment, muscle_group, weight_mode))')
+    .select('*, sets(*, exercises!exercise_id(name, equipment, muscle_group, weight_mode))')
     .eq('user_id', userId)
     .gte('performed_on', weekStartDate)
     .lte('performed_on', weekEndDate)
@@ -1559,8 +1564,14 @@ async function reactivateWorkout(workoutId) {
   if (!userId || !workoutId) throw new Error('Missing context');
   var now = new Date().toISOString();
   var today = sessionTodayDateString();
+  // performed_at MUST be updated alongside performed_on — hydrate's
+  // today-workouts query filters on performed_at (timestamp), not
+  // performed_on (calendar date). Without this, a reactivated workout
+  // stays outside today's bounds; hydrate can't find it; the session-start
+  // modal opens (line 143-144 of app.js) because inProgressKey is null.
   var r = await sb.from('workouts').update({
     performed_on: today,
+    performed_at: now,
     started_at: now,
     ended_at: null,
     paused_ms: 0,
@@ -2088,7 +2099,7 @@ function _formatWeekStatusForCoach(weekSummary) {
 async function _fetchRecentExercisePerformance(uid, cutoffYmd) {
   // Two-step: fetch workouts in window (their sets joined), then client-side rollup.
   var res = await sb.from('workouts')
-    .select('performed_on, plan_id, sets(weight, reps, rpe, done, exercise_order, set_order, exercises(name, weight_mode))')
+    .select('performed_on, plan_id, sets(weight, reps, rpe, done, exercise_order, set_order, exercises!exercise_id(name, weight_mode))')
     .eq('user_id', uid)
     .gte('performed_on', cutoffYmd)
     .order('performed_on', { ascending: false });

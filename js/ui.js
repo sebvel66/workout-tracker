@@ -1192,7 +1192,7 @@ async function onDiscardWorkout(workoutId, completedCount, titleText) {
     document.getElementById('btnHistoryBack').style.display = 'none';
     document.getElementById('historyBackSpacer').style.display = 'block';
     await loadHistoryWeek(historyWeekStart);
-    renderHistory();
+    renderHistoryWeek();
   } catch(err) {
     console.error('onDiscardWorkout error:', err);
     showToast("Couldn't discard session: " + (err.message || 'unknown error'), null);
@@ -3142,7 +3142,7 @@ async function runExport() {
 
   try {
     var wRes = await sb.from('workouts')
-      .select('*, sets(*, exercises(name, equipment, muscle_group, weight_mode))')
+      .select('*, sets(*, exercises!exercise_id(name, equipment, muscle_group, weight_mode))')
       .eq('user_id', userId)
       .gte('performed_at', startDate.toISOString())
       .lt('performed_at', endDateExclusive.toISOString())
