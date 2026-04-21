@@ -99,6 +99,14 @@ function loadSystemPrompt() {
 
 // ---- Handler ----
 export default async function handler(req, res) {
+  // Warmup branch — keep a Fluid Compute instance hot. Doesn't touch Supabase
+  // or Anthropic; just answers 200. Note this only warms the Vercel side; the
+  // Anthropic prompt cache (1h ephemeral) is a separate system and the
+  // dominant latency driver on this endpoint.
+  if (req.url && req.url.indexOf('warmup=true') !== -1) {
+    return res.status(200).json({ status: 'warm' });
+  }
+
   if (req.method !== 'POST') return jsonError(res, 405, 'Method not allowed');
 
   const missingVars = [];

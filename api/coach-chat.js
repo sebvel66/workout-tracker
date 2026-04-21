@@ -1,0 +1,183 @@
+// api/coach-chat.js — Real-time coaching chat backed by Claude Haiku.
+//
+// Separate endpoint from /api/generate-plan because the workflow is
+// fundamentally different: smaller model (Haiku), shorter budget
+// (500 tokens), fully conversational (no structured-output validation),
+// and warmed via cron (interactive UX is more cold-start sensitive than
+// the once-a-week plan generation).
+//
+// Request shape (POST): { messages: [{ role, content }, ...] }
+//   Frontend pre-assembles the full messages array including a context
+//   setup pair at positions 0-1. The server only adds the system prompt
+//   and forwards to Claude. No Supabase queries on the hot path.
+//
+// Warmup: GET|POST with ?warmup=true returns { status: 'warm' } without
+// touching Anthropic. Cron hits this every 5 min to keep Fluid Compute
+// warm (see vercel.json).
+
+export const maxDuration = 30;  // Haiku @ 500 tokens lands well under this.
+
+const MODEL = 'claude-haiku-4-5-20251001';
+const MAX_TOKENS = 500;
+const TEMPERATURE = 0.4;
+
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+
+// System prompt is inline (not bundled via system-prompt.md) because this is
+// a short, workflow-specific prompt and bundling a second file just for this
+// would be overkill. Lives close to the code that uses it.
+const COACH_SYSTEM_PROMPT = `You are the client's strength and hypertrophy coach, available during training sessions for real-time guidance. You know their training history, current plan, injury profile, and what they've done so far today — this context is provided in the first message of each conversation.
+
+CLIENT PROFILE:
+- Male, 5'11", approximately 165-175 lbs
+- Intermediate lifter, hypertrophy-focused
+- Injuries: patellofemoral knee pain, lower back sensitivity on Bulgarian Split Squats (BSS), grip as limiter on heavy pulls (straps approved)
+
+RESPONSE STYLE:
+- Concise. 2-4 sentences for simple questions. Never more than a short paragraph unless the question genuinely requires depth.
+- Actionable. Every response should end with a clear recommendation the client can act on right now.
+- Direct. No hedging, no "it depends," no "consider maybe." Make the call, explain briefly.
+- Reference specific numbers from the provided context when relevant. "Your cable row was 120×12/12/11 last week at RPE 8" — not "based on your recent performance."
+- Use the client's exercise names exactly as they appear in the context.
+
+WHAT YOU CAN HELP WITH:
+- Mid-set decisions: "Should I drop weight?" "One more set or stop?"
+- Form cues: "What should I feel on RDLs?" "How wide should my grip be on pull-ups?"
+- Exercise substitutions: "Cable machine is taken, what instead?"
+- Session planning: "I have 20 minutes left, what should I prioritize?"
+- Recovery questions: "My knee feels off, should I skip squats?"
+- Progression questions: "Am I ready to go up on bench?"
+- Fatigue management: "RPE is high today, should I reduce volume?"
+
+WHAT YOU SHOULD NOT DO:
+- Generate full workout plans (tell them to use the plan generator).
+- Give medical advice beyond "stop if it hurts, consult a professional if it persists."
+- Write long essays — the client is at the gym between sets, reading on a phone.
+- Offer multiple options — make the decision, explain briefly.
+- Contradict the progression rules below.
+
+PROGRESSION RULES (from the client's coaching agreement):
+- Standardize before progressing: all prescribed sets must hit target reps at the prescribed weight before advancing. Example: cable row needs 3×12 flat before weight goes up.
+- Weight jumps: 5 lbs max on compounds, 2.5-5 lbs on isolations.
+- If RPE is consistently 9+ across all sets, hold weight and consolidate rather than progressing.
+- Grip-dependent exercises (RDLs, heavy rows) should use straps if grip is limiting — grip is trained separately via dead hangs.
+- The client tends to drop end-of-session accessories. If they ask about skipping, acknowledge the pattern but make a clear recommendation.`;
+
+export default async function handler(req, res) {
+  // Warmup branch — keep a Fluid Compute instance hot without touching Anthropic.
+  // Accept GET or POST for convenience; cron hits via GET.
+  if (req.url && req.url.indexOf('warmup=true') !== -1) {
+    return res.status(200).json({ status: 'warm' });
+  }
+
+  if (req.method !== 'POST') return jsonError(res, 405, 'Method not allowed');
+
+  const missingVars = [];
+  if (!SUPABASE_URL) missingVars.push('SUPABASE_URL');
+  if (!SUPABASE_ANON_KEY) missingVars.push('SUPABASE_ANON_KEY');
+  if (!ANTHROPIC_API_KEY) missingVars.push('ANTHROPIC_API_KEY');
+  if (missingVars.length) {
+    return jsonError(res, 500, 'Server misconfigured — missing: ' + missingVars.join(', '));
+  }
+
+  try {
+    const userId = await verifyUser(req.headers.authorization);
+    if (!userId) return jsonError(res, 401, 'Authentication required');
+
+    const body = (req.body && typeof req.body === 'object') ? req.body : {};
+    const messages = Array.isArray(body.messages) ? body.messages : null;
+    if (!messages || !messages.length) {
+      return jsonError(res, 400, 'Empty messages array');
+    }
+    // Sanity cap — prevents a runaway client from shoving a huge history.
+    // Frontend trims at 20 Q/A + 2 context = 22 total; 40 is a generous ceiling.
+    if (messages.length > 40) {
+      return jsonError(res, 400, 'Too many messages (max 40)');
+    }
+
+    // Validate each message has role + content. Fail fast with a clear error.
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i];
+      if (!m || typeof m !== 'object') return jsonError(res, 400, `Message ${i} is not an object`);
+      if (m.role !== 'user' && m.role !== 'assistant') return jsonError(res, 400, `Message ${i} has invalid role`);
+      if (typeof m.content !== 'string' || !m.content) return jsonError(res, 400, `Message ${i} has empty content`);
+    }
+
+    const t0 = Date.now();
+    // Client-initiated timeout. Coach chat should never take more than ~8s
+    // (Haiku + 500 tokens is typically 1-2s); 25s gives slack for slow days
+    // while staying under maxDuration.
+    const claudeAbort = new AbortController();
+    const claudeTimeout = setTimeout(() => claudeAbort.abort(), 25000);
+    let claudeRes;
+    try {
+      claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: MODEL,
+          max_tokens: MAX_TOKENS,
+          temperature: TEMPERATURE,
+          system: [{
+            type: 'text',
+            text: COACH_SYSTEM_PROMPT,
+            // Cache the system prompt for an hour. System prompt rarely
+            // changes; repeated chat messages hit cache and cut input cost.
+            cache_control: { type: 'ephemeral', ttl: '1h' },
+          }],
+          messages: messages,
+        }),
+        signal: claudeAbort.signal,
+      });
+    } catch (err) {
+      clearTimeout(claudeTimeout);
+      if (err && err.name === 'AbortError') {
+        console.error('[coach-chat] TIMEOUT after', Date.now() - t0, 'ms');
+        return jsonError(res, 504, 'Coach timed out. Try again.');
+      }
+      throw err;
+    }
+    clearTimeout(claudeTimeout);
+
+    if (!claudeRes.ok) {
+      const errBody = await claudeRes.text();
+      console.error('[coach-chat] Claude API error', claudeRes.status, errBody);
+      return jsonError(res, 502, 'Coach is temporarily unavailable', { detail: errBody });
+    }
+
+    const claudeData = await claudeRes.json();
+    console.log('[coach-chat] elapsed:', Date.now() - t0, 'ms · usage:', JSON.stringify(claudeData.usage || {}));
+
+    const text = claudeData.content && claudeData.content[0] && claudeData.content[0].text;
+    if (!text) return jsonError(res, 422, 'No text in coach response', { raw: claudeData });
+
+    return res.status(200).json({
+      reply: text,
+      model: MODEL,
+      usage: claudeData.usage || null,
+    });
+  } catch (err) {
+    console.error('[coach-chat] error:', err);
+    return jsonError(res, 500, err.message || 'Internal server error');
+  }
+}
+
+function jsonError(res, status, message, extra) {
+  return res.status(status).json({ error: message, ...(extra || {}) });
+}
+
+async function verifyUser(authHeader) {
+  if (!authHeader || !authHeader.toLowerCase().startsWith('bearer ')) return null;
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: authHeader },
+  });
+  if (!res.ok) return null;
+  const data = await res.json();
+  return data && data.id ? data.id : null;
+}

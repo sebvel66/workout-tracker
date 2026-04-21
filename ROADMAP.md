@@ -23,12 +23,16 @@ First v2.1 bundle. Three features as one minor-version bump.
 - **AI exercise swap.** Small ⇄ icon on plan exercise cards (editable mode only) opens a modal that finds an AI-suggested replacement for one exercise via `POST /api/generate-plan { mode: "swap", ... }`. Server early-dispatches to `handleSwap` with its own inline system prompt (1h cache, 500 max tokens, ~8-15s warm). Optional reason input ("different gym", "knee pain", etc.) factors into selection. On Accept, mutates `plan.days[di].exercises[ei]` and writes `plans.data`. Already-logged sets stay attached to their original `exercise_id` in the sets table.
 - **View Recent enhancements.** Exercise-level notes now surface below RPE in the View Recent modal (muted italic). Gym location tag gets an "@" prefix for clarity. Both lines render only when data exists — no empty placeholders.
 
-## AI / Coaching (v2.2+)
+### Shipped — v2.2.0 (2026-04-20)
+
+- **Coach Chat.** Real-time AI coaching via floating chat button. Haiku 4.5 on a new endpoint at [api/coach-chat.js](api/coach-chat.js); ~1-2s warm response. Four-layer context (system prompt / semi-static per-session / live per-message / ephemeral history). Plan prescription inline in live context so standardization comparisons land in one line. Cron warmup at 5-min cadence for `/api/coach-chat?warmup=true` and 10-min for `/api/generate-plan?warmup=true` (reverses the prior cron-warmup deferral from v2.0.26; see DECISIONS.md 2026-04-20 v2.2.0 entry). Chat history intentionally ephemeral for v1 — persistence is a candidate follow-up.
+
+## AI / Coaching (v2.3+)
 
 Next-tier AI features not yet built. Order is rough priority.
 
+- **Persistent chat history.** Store coach messages in a new `coach_messages` table so past conversations survive reloads and the plan generator can reference coaching advice across sessions. ~15 min of code on each side plus schema. Revisit if ephemeral feels wrong in practice.
 - **Replan-remainder mode.** User generates Wed evening after completing Days 1-3; Edge Function detects completed days this week and generates only the remaining 2 days. Scope hinted at in the Part 2 spec but deferred for MVP. Would require: a new API mode field, detection of completed days in the request handler, and a prompt addition describing "replan" context.
-- **Chat-based mid-week coaching.** Ask the coach questions outside the plan-generation flow ("should I deload?", "why is my bench stalled?", "can I swap squat for leg press today?"). Requires: a chat UI, message history persistence, streaming response handling (since latency matters more in chat than in weekly plan generation). Significant scope — likely v2.2 or later.
 - **Automatic deload detection.** AI proactively suggests a deload without the user requesting a plan. Triggered by: RPE trending up for 3+ weeks, session completion rate dropping, pain notes in session data. Could surface as a banner in the tracker: *"Your RPE has climbed for 4 weeks — consider a deload this week. Generate a deload plan?"*
 - **Regenerate with feedback.** On the review screen, a "Regenerate with adjustments" input ("less quad volume this week, my knee is bothering me") that appends to the prompt and re-calls the API. Simpler than full chat but still mid-week-adjustable. The first-generation flow already has a `notes` field; regenerate-with-feedback is the same mechanism on the review screen.
 - **Side-by-side progress photo comparison with AI commentary.** Layer 3 of the photo feature. Chronological grid view with AI-generated observations on visible changes ("delts have filled in since March, quads slightly leaner"). Requires: a batch-photo-analysis Edge Function, UI for the grid + callouts.

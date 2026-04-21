@@ -1419,6 +1419,7 @@ async function createAdHocSession() {
     focusTab('ah_' + res.data.id);
     buildTabs();
     buildDay(currentDay);
+    refreshCoachForNewSession();
   } catch(err) {
     console.error('createAdHocSession error:', err);
     showToast("Couldn't start ad-hoc session: " + err.message, null);
@@ -1501,6 +1502,9 @@ async function startSession(di) {
   }
   buildTabs();
   buildDay(di);
+  // Coach: fresh session = fresh context + cleared chat. Non-blocking —
+  // buildCoachContext runs in the background; the session starts immediately.
+  refreshCoachForNewSession();
 }
 
 async function completeSession() {
@@ -1518,6 +1522,9 @@ async function completeSession() {
   stopTimerTick();
   buildDay(currentDay);
   invalidateHistoryCache();
+  // Coach: session data just landed. Rebuild context so the just-completed
+  // workout is reflected, and clear chat so next session starts clean.
+  refreshCoachForNewSession();
 }
 
 // Un-complete a session — primarily for accidental "Complete Session" taps,
@@ -1604,6 +1611,8 @@ async function savePlanAsActive(newPlan) {
   document.getElementById('planTitle').textContent = plan.title || 'Workout Tracker';
   document.getElementById('planWeek').textContent = planWeekLabel(plan) || plan.week || '';
   buildTabs(); buildDay(0);
+  // Coach: new active plan → old chat + context are stale. Refresh both.
+  refreshCoachForNewSession();
   return r2.data;
 }
 
@@ -1635,6 +1644,7 @@ async function activateExistingPlan(planId) {
   document.getElementById('planTitle').textContent = plan.title || 'Workout Tracker';
   document.getElementById('planWeek').textContent = planWeekLabel(plan) || plan.week || '';
   buildTabs(); buildDay(0);
+  refreshCoachForNewSession();
   return r2.data;
 }
 
@@ -1791,10 +1801,373 @@ async function createAdHocFromTemplate(template, dayIndex) {
       showToast('Loaded template. ' + skipped + ' exercise' + (skipped === 1 ? '' : 's') +
                 ' skipped (not in your library)', null);
     }
+    refreshCoachForNewSession();
   } catch(err) {
     console.error('createAdHocFromTemplate error:', err);
     showToast("Couldn't start template session: " + (err.message || 'unknown error'), null);
   }
+}
+
+// ---- Coach Chat: context builders ----
+// coachContext is the semi-static context sent with every coach chat message.
+// Built on session start / complete / plan import / chat-open-with-empty.
+// Lives in memory for the session — not persisted across reloads (intentional:
+// cheap to rebuild from Supabase, and a stale context would hurt coaching).
+var coachContext = '';
+
+// Target: keep total under ~1500 tokens. These caps enforce the budget even
+// on users with big libraries or long histories.
+var COACH_CONTEXT_MAX_EXERCISES_RECENT = 18;
+var COACH_CONTEXT_RECENT_DAYS = 14;
+var COACH_CONTEXT_MAX_NOTES = 6;
+
+async function buildCoachContext() {
+  if (!userId) { coachContext = ''; return; }
+
+  var nowStr = sessionTodayDateString();
+  var weekStart = weekStartForLocalDate(new Date(nowStr + 'T00:00:00'));
+  var weekEnd = addDaysToDateString(weekStart, 6);
+  var recentCutoff = addDaysToDateString(nowStr, -COACH_CONTEXT_RECENT_DAYS);
+
+  try {
+    // Three parallel fetches. Plan comes from in-memory (hydrate loads it);
+    // no DB round-trip needed for Layer 1 of semi-static context.
+    var results = await Promise.all([
+      fetchWeekSummary(userId, weekStart, weekEnd).catch(function(e) {
+        console.warn('buildCoachContext week summary failed:', e); return null;
+      }),
+      _fetchRecentExercisePerformance(userId, recentCutoff).catch(function(e) {
+        console.warn('buildCoachContext recent perf failed:', e); return [];
+      }),
+      _fetchRecentSessionNotes(userId, recentCutoff).catch(function(e) {
+        console.warn('buildCoachContext notes failed:', e); return [];
+      }),
+    ]);
+    var weekSummary = results[0];
+    var recentPerf = results[1];
+    var recentNotes = results[2];
+
+    var parts = [];
+    var planBlock = _formatPlanForCoach(plan);
+    if (planBlock) parts.push(planBlock);
+    var weekBlock = _formatWeekStatusForCoach(weekSummary);
+    if (weekBlock) parts.push(weekBlock);
+    var perfBlock = _formatRecentPerfForCoach(recentPerf);
+    if (perfBlock) parts.push(perfBlock);
+    var notesBlock = _formatRecentNotesForCoach(recentNotes);
+    if (notesBlock) parts.push(notesBlock);
+
+    coachContext = parts.filter(Boolean).join('\n\n');
+  } catch(err) {
+    console.error('buildCoachContext error:', err);
+    coachContext = '';
+  }
+}
+
+function _formatPlanForCoach(planBlob) {
+  if (!planBlob || !Array.isArray(planBlob.days) || !planBlob.days.length) return '';
+  var out = 'CURRENT PLAN: ' + (planBlob.title || 'Untitled');
+  var weekLabel = planWeekLabel(planBlob) || planBlob.week;
+  if (weekLabel) out += ' — ' + weekLabel;
+  out += '\n';
+  for (var i = 0; i < planBlob.days.length; i++) {
+    var d = planBlob.days[i];
+    if (!d) continue;
+    var exs = Array.isArray(d.exercises) ? d.exercises : [];
+    // Skip empty days (active-recovery stubs from older plan blobs). They
+    // inflate the day count and add noise for the coach without any data.
+    if (!exs.length) continue;
+    // Compact format: "Day 1 — Back Width: Pull-ups 3×12, Cable Row 3×12 @120"
+    var exStrs = exs.map(function(ex) {
+      if (!ex || !ex.name) return '';
+      var sets = Array.isArray(ex.sets) ? ex.sets : [];
+      var count = sets.length;
+      // Use the first set's reps/weight as the representative prescription;
+      // same-set exercises (the common case) get compact one-line form.
+      var first = sets[0] || {};
+      var repsTarget = first.reps_target || first.reps_range || '?';
+      var weight = first.weight != null ? first.weight : '';
+      var weightStr = weight !== '' ? ' @' + weight : '';
+      return ex.name + ' ' + count + '×' + repsTarget + weightStr;
+    }).filter(Boolean);
+    // Plan day names already start with "Day N — ..." in most cases (Claude
+    // emits them that way). Avoid double-prefixing — use the name as-is if
+    // it already starts with "Day", else prepend.
+    var rawName = d.name || '';
+    var dayLabel = /^day\s+\d/i.test(rawName) ? rawName : ('Day ' + (i + 1) + ' — ' + rawName);
+    out += '  ' + dayLabel + ': ' + exStrs.join(', ') + '\n';
+  }
+  return out.trim();
+}
+
+function _formatWeekStatusForCoach(weekSummary) {
+  if (!weekSummary) return '';
+  // Prefer a count computed from the in-memory plan that excludes empty /
+  // active-recovery days — matches what the coach sees in _formatPlanForCoach.
+  // Falls back to weekSummary.daysPlanned if plan isn't in memory.
+  var trainablePlanned = null;
+  if (plan && Array.isArray(plan.days)) {
+    trainablePlanned = 0;
+    for (var pi = 0; pi < plan.days.length; pi++) {
+      var pd = plan.days[pi];
+      if (pd && Array.isArray(pd.exercises) && pd.exercises.length) trainablePlanned++;
+    }
+  }
+  var total = trainablePlanned != null
+    ? trainablePlanned
+    : (weekSummary.daysPlanned != null ? weekSummary.daysPlanned : '?');
+  var done = weekSummary.daysTrained || 0;
+  var out = 'THIS WEEK: ' + done + '/' + total + ' days trained';
+  var workouts = Array.isArray(weekSummary.workouts) ? weekSummary.workouts : [];
+  if (workouts.length) {
+    var labels = workouts.map(function(w) {
+      // fetchWeekSummary returns `date` (YYYY-MM-DD), not performedOn. Slice
+      // to "MM-DD" for terse in-prompt dates. `dayName` is pre-formatted and
+      // already carries the "Day N — " prefix when applicable.
+      var perf = w.date ? String(w.date).slice(5) : '';
+      var label = w.dayName || 'workout';
+      return label + (perf ? ' (' + perf + ')' : '');
+    });
+    out += ' — ' + labels.join(', ');
+  }
+  return out;
+}
+
+// Query sets done in the last N days; roll up per exercise into a compact
+// one-line summary per exercise for the coach prompt.
+async function _fetchRecentExercisePerformance(uid, cutoffYmd) {
+  // Two-step: fetch workouts in window (their sets joined), then client-side rollup.
+  var res = await sb.from('workouts')
+    .select('performed_on, plan_id, sets(weight, reps, rpe, done, exercise_order, set_order, exercises(name, weight_mode))')
+    .eq('user_id', uid)
+    .gte('performed_on', cutoffYmd)
+    .order('performed_on', { ascending: false });
+  if (res.error) throw res.error;
+  return res.data || [];
+}
+
+function _formatRecentPerfForCoach(workouts) {
+  if (!Array.isArray(workouts) || !workouts.length) return '';
+  // For each exercise name: collect the most recent <=3 workouts where the user
+  // did that exercise, format as "Exercise: W×R/R/R (Apr 14), 60×10/10/10 (Apr 8)".
+  var perExercise = {};  // name → array of per-workout summary strings (most recent first)
+  for (var i = 0; i < workouts.length; i++) {
+    var w = workouts[i];
+    var dateShort = w.performed_on ? w.performed_on.slice(5) : '';
+    var byOrder = {};
+    var sets = Array.isArray(w.sets) ? w.sets : [];
+    for (var j = 0; j < sets.length; j++) {
+      var s = sets[j];
+      if (!s || !s.done) continue;
+      var ex = s.exercises;
+      if (!ex || !ex.name) continue;
+      var key = ex.name;
+      if (!byOrder[key]) byOrder[key] = { name: ex.name, mode: ex.weight_mode || 'total', sets: [] };
+      byOrder[key].sets.push({ w: s.weight, r: s.reps, rpe: s.rpe, order: s.set_order });
+    }
+    var keys = Object.keys(byOrder);
+    for (var k = 0; k < keys.length; k++) {
+      var entry = byOrder[keys[k]];
+      entry.sets.sort(function(a, b) { return a.order - b.order; });
+      var setStrs = entry.sets.map(function(st) {
+        var wtStr = st.w != null ? String(st.w) : '?';
+        var rStr = st.r != null ? String(st.r) : '?';
+        return wtStr + '×' + rStr;
+      });
+      var rpes = entry.sets.map(function(st) { return st.rpe; }).filter(function(v) { return v != null; });
+      var rpeTag = '';
+      if (rpes.length) {
+        var avg = Math.round(rpes.reduce(function(a, b) { return a + b; }, 0) / rpes.length * 10) / 10;
+        rpeTag = ' RPE ' + avg;
+      }
+      var line = setStrs.join('/') + rpeTag + ' (' + dateShort + ')';
+      if (!perExercise[entry.name]) perExercise[entry.name] = [];
+      if (perExercise[entry.name].length < 3) perExercise[entry.name].push(line);
+    }
+  }
+  var names = Object.keys(perExercise);
+  if (!names.length) return '';
+  // Rank by most-recently-trained — entries with later first workout sort first.
+  // Cheap proxy: rely on workouts iteration order (already desc by performed_on).
+  names = names.slice(0, COACH_CONTEXT_MAX_EXERCISES_RECENT);
+  var out = 'RECENT PERFORMANCE (last ' + COACH_CONTEXT_RECENT_DAYS + 'd):';
+  for (var n = 0; n < names.length; n++) {
+    out += '\n  ' + names[n] + ': ' + perExercise[names[n]].join(', ');
+  }
+  return out;
+}
+
+async function _fetchRecentSessionNotes(uid, cutoffYmd) {
+  var res = await sb.from('workouts')
+    .select('performed_on, notes')
+    .eq('user_id', uid)
+    .gte('performed_on', cutoffYmd)
+    .not('notes', 'is', null)
+    .order('performed_on', { ascending: false })
+    .limit(COACH_CONTEXT_MAX_NOTES);
+  if (res.error) throw res.error;
+  return (res.data || []).filter(function(r) { return r.notes && String(r.notes).trim(); });
+}
+
+function _formatRecentNotesForCoach(notes) {
+  if (!Array.isArray(notes) || !notes.length) return '';
+  var out = 'RECENT SESSION NOTES:';
+  for (var i = 0; i < notes.length; i++) {
+    var n = notes[i];
+    var dateShort = n.performed_on ? n.performed_on.slice(5) : '';
+    var body = String(n.notes || '').trim().replace(/\s+/g, ' ').slice(0, 140);
+    out += '\n  "' + body + '" (' + dateShort + ')';
+  }
+  return out;
+}
+
+// Lifecycle hook: rebuild coachContext and clear chat history. Called from
+// session start / complete, ad-hoc start (incl. template-based), and plan
+// save (import + AI-accept). Sign-out path calls resetCoachForSignOut instead.
+// Non-blocking — kicks off buildCoachContext without awaiting so the calling
+// flow (start session etc.) doesn't wait on the context fetch.
+function refreshCoachForNewSession() {
+  if (typeof clearChatHistory === 'function') clearChatHistory();
+  if (typeof buildCoachContext === 'function') {
+    buildCoachContext().catch(function(err) {
+      console.error('coach context rebuild failed:', err);
+    });
+  }
+}
+
+// Sign-out: dump context + chat. Avoids leaking the prior user's context
+// to a subsequent signed-in user in the same tab.
+function resetCoachForSignOut() {
+  coachContext = '';
+  if (typeof clearChatHistory === 'function') clearChatHistory();
+}
+
+// Read-only snapshot of the current session for the coach. Runs on every
+// chat-message send — must be synchronous, no queries.
+function getLiveContext() {
+  // No session state at all: short fallback per spec.
+  var st = todayState;
+  if (!st || !st.workoutId) {
+    var planTitle = plan ? (plan.title || 'Untitled') : null;
+    var weekLabel = plan ? (planWeekLabel(plan) || plan.week || '') : '';
+    if (planTitle) {
+      return 'NO ACTIVE SESSION. Current plan: ' + planTitle + (weekLabel ? ' — ' + weekLabel : '') + '.';
+    }
+    return 'NO ACTIVE SESSION. No active plan.';
+  }
+
+  var lines = [];
+  // Header: day name + elapsed + location.
+  var dayName;
+  if (st.isAdHoc) {
+    dayName = st.title || 'Ad-hoc session';
+  } else if (plan && plan.days && typeof st.dayIndex === 'number' && plan.days[st.dayIndex]) {
+    dayName = plan.days[st.dayIndex].name || ('Day ' + (st.dayIndex + 1));
+  } else {
+    dayName = 'Day ' + ((st.dayIndex || 0) + 1);
+  }
+  lines.push('CURRENT SESSION: ' + dayName);
+
+  var metaBits = [];
+  if (st.startedAt) {
+    var elapsedMin = Math.max(0, Math.round(sessionElapsedMs(st) / 60000));
+    metaBits.push('Started ' + elapsedMin + ' min ago');
+  }
+  if (st.locationId && locationById && locationById[st.locationId]) {
+    metaBits.push('Location: ' + locationById[st.locationId].name);
+  }
+  if (metaBits.length) lines.push(metaBits.join(' · '));
+
+  // Prescribed exercises (if plan-day). Each line includes the plan
+  // prescription inline so the coach can compare actuals against target
+  // without cross-referencing the separate plan block in coachContext.
+  var planDay = (!st.isAdHoc && plan && plan.days && plan.days[st.dayIndex]) ? plan.days[st.dayIndex] : null;
+  var currentMarked = false;
+  if (planDay && Array.isArray(planDay.exercises)) {
+    lines.push('');
+    for (var i = 0; i < planDay.exercises.length; i++) {
+      var ex = planDay.exercises[i];
+      var exState = (st.exercises && st.exercises['ex_' + i]) || { sets: [] };
+      var planSets = Array.isArray(ex.sets) ? ex.sets : [];
+      var totalSets = planSets.length;
+      // Compact prescription: "3×12 @120" (first set is representative since
+      // same-weight sets are the common case). If sets vary, show the top
+      // set's weight / target reps — the coach gets the magnitude.
+      var firstSet = planSets[0] || {};
+      var prescWt = firstSet.weight != null ? firstSet.weight : '';
+      var prescReps = firstSet.reps_target || firstSet.reps_range || '?';
+      var prescStr = totalSets + '×' + prescReps + (prescWt !== '' ? ' @' + prescWt : '');
+
+      var doneCount = 0;
+      var logged = [];
+      for (var si = 0; si < totalSets; si++) {
+        var sl = (exState.sets && exState.sets[si]) || {};
+        if (sl.done) {
+          doneCount++;
+          var wt = sl.weight != null ? sl.weight : '?';
+          var r = sl.reps != null ? sl.reps : '?';
+          logged.push(wt + '×' + r);
+        }
+      }
+      var line = '  ' + ex.name + ' [plan: ' + prescStr + ']: ' +
+                 (logged.length ? logged.join(', ') + ' — ' : '') +
+                 doneCount + '/' + totalSets + ' done';
+      if (exState.rpe != null) line += ' — RPE ' + exState.rpe;
+      if (!currentMarked && doneCount < totalSets) {
+        line += ' ← CURRENT';
+        currentMarked = true;
+      }
+      if (exState.note) line += ' — note: "' + String(exState.note).slice(0, 80) + '"';
+      lines.push(line);
+    }
+  }
+
+  // Added / ad-hoc exercises (extras).
+  if (st.exercises) {
+    var extraKeys = Object.keys(st.exercises).filter(function(k) {
+      var ei = parseInt(k.slice(3), 10);
+      // On plan days: extras are keys past planDay.exercises.length. On ad-hoc: all are extras.
+      if (st.isAdHoc) return true;
+      return planDay ? ei >= planDay.exercises.length : true;
+    });
+    extraKeys.sort(function(a, b) { return parseInt(a.slice(3), 10) - parseInt(b.slice(3), 10); });
+    if (extraKeys.length) {
+      if (planDay) lines.push('');  // visual separator
+      for (var xi = 0; xi < extraKeys.length; xi++) {
+        var xek = extraKeys[xi];
+        var xState = st.exercises[xek] || { sets: [] };
+        var xMeta = xState.exerciseMeta || {};
+        var xName = xMeta.name || 'Exercise';
+        var xSets = Array.isArray(xState.sets) ? xState.sets : [];
+        var xDone = 0, xLogged = [];
+        for (var xsi = 0; xsi < xSets.length; xsi++) {
+          var xsl = xSets[xsi] || {};
+          if (xsl.done) {
+            xDone++;
+            var xw = xsl.weight != null ? xsl.weight : '?';
+            var xr = xsl.reps != null ? xsl.reps : '?';
+            xLogged.push(xw + '×' + xr);
+          }
+        }
+        var xLine = '  [Ad-hoc] ' + xName + ': ' + (xLogged.length ? xLogged.join(', ') + ' — ' : '') +
+                    xDone + '/' + xSets.length + ' sets done';
+        if (xState.rpe != null) xLine += ' — RPE ' + xState.rpe;
+        if (!currentMarked && xDone < xSets.length) {
+          xLine += ' ← CURRENT';
+          currentMarked = true;
+        }
+        lines.push(xLine);
+      }
+    }
+  }
+
+  // Session-level notes (if user has typed any).
+  if (st.notes && String(st.notes).trim()) {
+    lines.push('');
+    lines.push('Session note: "' + String(st.notes).trim().slice(0, 200) + '"');
+  }
+
+  return lines.join('\n');
 }
 
 function handleImport(event) {

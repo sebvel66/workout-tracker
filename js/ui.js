@@ -1987,6 +1987,256 @@ async function onDeletePlan(planId) {
   }
 }
 
+// ---- Coach Chat ----
+// Session-level chat panel. coachContext (data.js) + getLiveContext() (data.js)
+// are reassembled fresh on every send; only the Q/A history accumulates here.
+// chatHistory is ephemeral — cleared on sign-out, session start, session
+// complete. Not persisted to Supabase.
+var chatHistory = [];         // [{ role: 'user'|'assistant', content }]
+var chatPending = false;      // blocks double-sends + Enter-spam
+var chatHasUnread = false;    // drives the fab dot while panel is closed
+var chatAttempt = 0;          // 1 = first try, 2 = cold-start retry
+
+// Keep only the last 20 messages (10 Q/A pairs). Older entries drop off to
+// prevent token bloat on long conversations. Context pair is NOT stored
+// here — it's synthesized fresh from coachContext + getLiveContext() on
+// every send.
+var CHAT_HISTORY_MAX = 20;
+
+function openCoachChat() {
+  document.getElementById('coachOverlay').classList.add('show');
+  setCoachUnread(false);
+  renderCoachThread();
+  // Build context on first open if the lifecycle triggers haven't already
+  // populated it. Non-blocking — the thread renders immediately; the user
+  // types, and the send flow will wait for context if still building.
+  if (!coachContext && typeof buildCoachContext === 'function') {
+    buildCoachContext();
+  }
+  setTimeout(function() {
+    var input = document.getElementById('coachInput');
+    if (input) input.focus();
+  }, 100);
+}
+
+function closeCoachChat() {
+  document.getElementById('coachOverlay').classList.remove('show');
+}
+
+function clearChatHistory() {
+  chatHistory = [];
+  setCoachUnread(false);
+  // If the thread is currently in the DOM (panel was left open at session
+  // boundary), re-render so it reflects the cleared state.
+  if (document.getElementById('coachOverlay').classList.contains('show')) {
+    renderCoachThread();
+  }
+}
+
+function setCoachUnread(flag) {
+  chatHasUnread = !!flag;
+  var badge = document.getElementById('coachFabBadge');
+  if (badge) badge.classList.toggle('hidden', !flag);
+}
+
+function renderCoachThread() {
+  var thread = document.getElementById('coachThread');
+  if (!thread) return;
+  if (!chatHistory.length) {
+    thread.innerHTML =
+      '<div class="coach-msg empty-hint">' +
+      (todayState && todayState.workoutId
+        ? 'Ask about weight, RPE, form, substitutions, or whatever comes up mid-session.'
+        : 'Start a session for live coaching, or ask a general question. The coach knows your plan either way.') +
+      '</div>';
+    return;
+  }
+  var h = '';
+  for (var i = 0; i < chatHistory.length; i++) {
+    var m = chatHistory[i];
+    var cls = m.role === 'user' ? 'user' : 'coach';
+    h += '<div class="coach-msg ' + cls + '">' + escapeHtml(m.content) + '</div>';
+  }
+  thread.innerHTML = h;
+  thread.scrollTop = thread.scrollHeight;
+}
+
+function appendTypingIndicator() {
+  var thread = document.getElementById('coachThread');
+  if (!thread) return;
+  // Remove the empty-hint if present (first message of a session).
+  var hint = thread.querySelector('.coach-msg.empty-hint');
+  if (hint) hint.remove();
+  var el = document.createElement('div');
+  el.className = 'coach-typing';
+  el.id = 'coachTypingIndicator';
+  el.innerHTML = '<span></span><span></span><span></span>';
+  thread.appendChild(el);
+  if (chatAttempt === 2) {
+    var sub = document.createElement('div');
+    sub.className = 'coach-typing-sub';
+    sub.id = 'coachTypingSub';
+    sub.textContent = 'Warming up…';
+    thread.appendChild(sub);
+  }
+  thread.scrollTop = thread.scrollHeight;
+}
+
+function removeTypingIndicator() {
+  var el = document.getElementById('coachTypingIndicator');
+  if (el) el.remove();
+  var sub = document.getElementById('coachTypingSub');
+  if (sub) sub.remove();
+}
+
+function appendChatError(msg, retryCallback) {
+  var thread = document.getElementById('coachThread');
+  if (!thread) return;
+  var el = document.createElement('div');
+  el.className = 'coach-msg error';
+  var span = document.createElement('span');
+  span.textContent = msg;
+  el.appendChild(span);
+  if (retryCallback) {
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = 'Retry';
+    btn.addEventListener('click', function() {
+      el.remove();
+      retryCallback();
+    });
+    el.appendChild(btn);
+  }
+  thread.appendChild(el);
+  thread.scrollTop = thread.scrollHeight;
+}
+
+function appendUserMessage(content) {
+  var thread = document.getElementById('coachThread');
+  if (!thread) return;
+  // Clear any empty-hint on first message.
+  var hint = thread.querySelector('.coach-msg.empty-hint');
+  if (hint) hint.remove();
+  var el = document.createElement('div');
+  el.className = 'coach-msg user';
+  el.textContent = content;
+  thread.appendChild(el);
+  thread.scrollTop = thread.scrollHeight;
+}
+
+function appendCoachMessage(content) {
+  var thread = document.getElementById('coachThread');
+  if (!thread) return;
+  var el = document.createElement('div');
+  el.className = 'coach-msg coach';
+  el.textContent = content;
+  thread.appendChild(el);
+  thread.scrollTop = thread.scrollHeight;
+}
+
+async function sendCoachMessage() {
+  if (chatPending) return;
+  var input = document.getElementById('coachInput');
+  var text = (input.value || '').trim();
+  if (!text) return;
+
+  chatPending = true;
+  input.value = '';
+  input.style.height = '';
+  var sendBtn = document.getElementById('btnCoachSend');
+  if (sendBtn) sendBtn.disabled = true;
+
+  // Lazy-build context if the lifecycle hooks haven't run yet (e.g., user
+  // opens chat before a session starts). Awaited so the first message has
+  // proper context — Haiku without context is noticeably less useful.
+  if (!coachContext && typeof buildCoachContext === 'function') {
+    try { await buildCoachContext(); } catch(e) { /* continue with empty ctx */ }
+  }
+
+  appendUserMessage(text);
+  chatAttempt = 1;
+  appendTypingIndicator();
+
+  var userMsg = text;
+  var outcome = await attemptCoachCall(userMsg);
+  if (outcome.retry) {
+    chatAttempt = 2;
+    removeTypingIndicator();
+    appendTypingIndicator();
+    outcome = await attemptCoachCall(userMsg);
+  }
+  removeTypingIndicator();
+  chatAttempt = 0;
+
+  if (outcome.success) {
+    var reply = outcome.reply;
+    appendCoachMessage(reply);
+    chatHistory.push({ role: 'user', content: userMsg });
+    chatHistory.push({ role: 'assistant', content: reply });
+    if (chatHistory.length > CHAT_HISTORY_MAX) {
+      // Drop the two oldest entries (one Q/A pair). Keep length aligned on
+      // pair boundaries so context ordering stays user/assistant/user/...
+      chatHistory = chatHistory.slice(chatHistory.length - CHAT_HISTORY_MAX);
+    }
+    if (!document.getElementById('coachOverlay').classList.contains('show')) {
+      setCoachUnread(true);
+    }
+  } else {
+    appendChatError(outcome.error || 'Coach unavailable.', function() {
+      // Retry by putting the question back into the input and resending.
+      input.value = userMsg;
+      // Also re-focus for edit.
+      input.focus();
+    });
+  }
+
+  chatPending = false;
+  if (sendBtn) sendBtn.disabled = false;
+}
+
+// One POST to /api/coach-chat. Returns:
+//   { success: true, reply }                  on 200 with reply
+//   { retry: true, error }                    on 5xx / 504 / network error
+//   { success: false, error }                 on 4xx, 401, 200-without-reply
+// Never throws — caller handles display.
+async function attemptCoachCall(userMsg) {
+  try {
+    var sessionRes = await sb.auth.getSession();
+    var token = sessionRes.data && sessionRes.data.session && sessionRes.data.session.access_token;
+    if (!token) return { success: false, error: 'Session expired. Please sign in again.' };
+
+    // Assemble the messages array: context setup (first pair, fresh every
+    // call because getLiveContext changes) + chatHistory + new user message.
+    var liveCtx = (typeof getLiveContext === 'function') ? getLiveContext() : '';
+    var contextBody = 'COACHING CONTEXT:\n' + (coachContext || '(no context available yet)') +
+                      '\n\nCURRENT SESSION:\n' + (liveCtx || 'No active session.') +
+                      '\n\nPlease acknowledge you have this context.';
+    var messages = [
+      { role: 'user', content: contextBody },
+      { role: 'assistant', content: 'Ready to help with your session.' },
+    ];
+    for (var i = 0; i < chatHistory.length; i++) messages.push(chatHistory[i]);
+    messages.push({ role: 'user', content: userMsg });
+
+    var res = await fetch('/api/coach-chat', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: messages }),
+    });
+    var body = await res.json().catch(function() { return null; });
+
+    if (res.status === 200 && body && typeof body.reply === 'string' && body.reply) {
+      return { success: true, reply: body.reply };
+    }
+    var msg = (body && body.error) || ('HTTP ' + res.status);
+    if (res.status === 401) return { success: false, error: 'Session expired. Please sign in again.' };
+    if (res.status >= 500) return { retry: true, error: msg };
+    return { success: false, error: msg };
+  } catch(err) {
+    return { retry: true, error: err.message || 'Network error. Check your connection.' };
+  }
+}
+
 // ---- AI exercise swap ----
 // Single-exercise replacement against the active plan. Modal cycles through
 // three sub-views (input / loading / review) via swapState.view, same
@@ -3041,6 +3291,30 @@ document.getElementById('startPathBlank').addEventListener('click', function() {
 document.getElementById('startPathImportLink').addEventListener('click', function() {
   closeStartScreen();
   document.getElementById('fileInput').click();
+});
+
+// Coach chat wiring.
+document.getElementById('btnCoachOpen').addEventListener('click', openCoachChat);
+document.getElementById('btnCoachClose').addEventListener('click', closeCoachChat);
+document.getElementById('coachOverlay').addEventListener('click', function(e) {
+  if (e.target === this) closeCoachChat();
+});
+document.getElementById('coachInputForm').addEventListener('submit', function(e) {
+  e.preventDefault();
+  sendCoachMessage();
+});
+// Enter to send, Shift+Enter for newline. Auto-grow the textarea as the
+// user types so multi-line questions stay visible up to the CSS max-height.
+document.getElementById('coachInput').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendCoachMessage();
+  }
+});
+document.getElementById('coachInput').addEventListener('input', function(e) {
+  var el = e.target;
+  el.style.height = 'auto';
+  el.style.height = Math.min(120, el.scrollHeight) + 'px';
 });
 
 // Swap modal wiring. The swap button on each plan exercise card uses the

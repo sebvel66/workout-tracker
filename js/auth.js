@@ -159,6 +159,7 @@ function applySession(session) {
     photosProgress = [];
     photosLoaded = false;
     photosSignedUrls = {};
+    if (typeof resetCoachForSignOut === 'function') resetCoachForSignOut();
     document.body.classList.add('unauthed');
   }
 }

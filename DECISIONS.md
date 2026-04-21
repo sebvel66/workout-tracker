@@ -2,6 +2,67 @@
 
 Running log of architecture/behavior decisions for the workout tracker. Newest first.
 
+## 2026-04-20 — Coach Chat: four-layer context, Haiku, separate endpoint, ephemeral history by default (v2.2.0)
+
+Real-time AI coaching during training sessions. Claude Haiku 4.5 on a new endpoint, with context assembled from four layers (static system prompt / semi-static per-session summary / live per-message session state / ephemeral chat history).
+
+**Design decisions worth recording:**
+
+**1. Separate endpoint, not another `mode` branch on `/api/generate-plan`.**
+
+Plan generation and coach chat share almost nothing at the Anthropic-call layer: different model (Haiku vs Sonnet), different budget (500 vs 16000 tokens), different prompt shape (conversational vs structured JSON), different response contract (freeform text vs validated plan), different timeout budget (25s vs 55s), different warmup cadence (5 min vs 10 min). A new file at [api/coach-chat.js](api/coach-chat.js) keeps each endpoint focused and testable; swap mode stays on `/api/generate-plan` because it shares the plan-generation library + history context.
+
+**2. Four-layer context, one layer per mutation cadence.**
+
+- **Layer 1 (static):** system prompt — hardcoded in the endpoint. Never changes at runtime.
+- **Layer 2 (semi-static):** `coachContext` built once per session-lifecycle boundary via `buildCoachContext()`. Three Supabase queries in parallel (week status, recent performance, recent notes) + in-memory plan blob. ~650 tokens typical, hard-capped under 1500.
+- **Layer 3 (live):** `getLiveContext()` runs on every message — purely in-memory read of `todayState` / `plan` / `locationById`. Zero queries.
+- **Layer 4 (conversation):** `chatHistory` accumulates Q/A pairs only. Context setup pair is synthesized fresh on every send because Layer 3 changes per message.
+
+The split lets us amortize expensive work (DB queries) across many messages while keeping latency-sensitive work (live state) on the hot path with zero round-trips.
+
+**3. Plan prescription lives inline in the live context, not just in semi-static.**
+
+First draft had plan prescriptions only in Layer 2 (the cached plan block). Haiku has to cross-reference *"what was prescribed for Day 2 Cable Row"* against *"what I've actually done this session"* — two separate prompt sections, different phrasing, high cross-reference cost. Fix: inline the prescription next to each exercise's actuals in `getLiveContext()`. Format: `"DB Incline Bench Press (30°) [plan: 4×12 @45]: 45×12, 45×12, 45×12, 45×5 — 4/4 done"`. The coach now sees prescription and actuals in one place, enabling one-shot standardization calls ("first three hit target, fourth missed — hold next week").
+
+**4. Chat history is ephemeral by default.**
+
+`chatHistory` is an in-memory JS array, trimmed to the last 20 messages. Cleared on session start, session complete, plan save (active-plan change), and sign-out. **Not persisted to Supabase.** Rationale:
+
+- The questions the coach answers are situation-specific ("should I drop weight on set 3?"). Answers have no value a week later.
+- Persistence adds schema + RLS + load-history step + token bloat when feeding old transcripts back into the context. Cost is real, benefit is marginal.
+- Cross-user privacy is simpler: if browser tab closes, conversation is gone. No cleanup migration needed when a user signs out on a shared device.
+
+Persistence is a **valid follow-up** if practice shows otherwise. The schema would be `coach_messages (id, user_id, workout_id nullable, role, content, created_at)` with the standard `own_X` RLS policy; load-on-chat-open would add ~100-300ms; the plan generator could then reference cross-session coaching. That's v2.2.1+ work — don't build it speculatively.
+
+**5. Cron warmup on the chat endpoint; added for plan generation too.**
+
+The prior DECISIONS.md entry deferred cron warmup for `/api/generate-plan` because the dominant latency driver was the Anthropic prompt cache miss, not Vercel cold start, and Fluid Compute already reduces function-instance churn. v2.2.0 reverses that decision for two reasons:
+
+- **Coach chat is interactive.** Back-and-forth UX makes even a 500-1500ms Vercel cold start noticeable. A 5-min cron on `/api/coach-chat?warmup=true` keeps an instance hot; cost is 288 daily invocations (trivial on Hobby).
+- **Generate-plan benefits are smaller but free.** Same mechanism, 10-min cadence (halves the cron invocations since weekly plan gen doesn't need tight warmup). Won't fix the Anthropic cache miss case (still ~10-15s on first call of the hour), but shaves the Vercel cold-start slice.
+
+Both endpoints have a `warmup=true` early-return branch that doesn't touch Anthropic. Warm pings cost one Vercel invocation + ~200ms; never touch real tokens.
+
+**6. Live context inline prescription format: `[plan: N×R @W]` next to each exercise.**
+
+Chose brackets rather than parenthesis or separate line. Readable at a glance, parses cleanly by Haiku (tested — no confusion with exercise notes in parentheses), and fits the existing one-line-per-exercise convention.
+
+**7. Non-streaming response.**
+
+Haiku at 500 tokens lands in ~1-2s warm. Streaming would cut time-to-first-byte by maybe 300-500ms but adds real complexity (Vercel Node streaming pattern, SSE forwarding, frontend chunk parsing). Fallback path chosen per the spec; revisit if user reports the non-streamed UX feeling laggy in practice.
+
+**8. Auto-retry mirrors the v2.0.26 plan-generation pattern.**
+
+On network / 5xx / 504: retry once silently, typing indicator swaps from `…` to *"Warming up…"*. 4xx and 200-without-reply pass through immediately to an inline error message in the thread (not a toast — preserves chat context). Same design lineage, applied to a new endpoint.
+
+**How to apply:**
+
+- Any future AI feature that's *interactive* (multi-turn, short-response) belongs on its own endpoint with Haiku + cron warmup. Bulk / one-shot AI features (plan generation, exercise swap, image analysis) stay on `/api/generate-plan` with Sonnet + the Anthropic prompt cache carrying latency savings.
+- If a piece of data needs to be referenced by the AI on every message, inline it in the live context rather than relying on cross-section lookup from the cached prefix. Token cost is small; cross-reference cost to the model is bigger.
+- Ephemeral-by-default is a reasonable MVP stance for conversational AI features. Persistence is orthogonal and can be layered in later without touching the hot path.
+- When a prior decision is reversed (like the cron-warmup deferral), note it explicitly in the new entry so the history is legible. Don't silently change course.
+
 ## 2026-04-20 — Plan templates: same plans table with `is_template` flag; fourth card in start-session modal (v2.1.0)
 
 Templates are reusable workout blueprints. They're modeled as a new row in the existing `plans` table (rather than a new table) gated by `is_template = true` + `is_active = false`. A template can be a whole plan (many days) or a single day (one-entry `days` array); the same consumer code handles both.
