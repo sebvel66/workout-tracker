@@ -20,6 +20,7 @@ var EXERCISE_ALIASES = {
   'cable face pull':                         'face pull',
   'cable rope overhead triceps extension':   'overhead tricep extension (cable)',
   'cable tricep pushdown':                   'tricep pushdown',
+  'cable wood chop':                         'woodchop',
   'cable woodchop':                          'woodchop',
   'db bench press':                          'dumbbell bench press',
   'db flat bench press':                     'dumbbell bench press',
