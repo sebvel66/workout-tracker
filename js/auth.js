@@ -137,6 +137,7 @@ function applySession(session) {
     hydrate();
   } else {
     hydratedForUser = null;
+    clearHydrationSnapshot();
     stopTimerTick();
     sessionTodayStart = null;
     authPendingEmail = '';

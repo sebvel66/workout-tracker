@@ -2012,6 +2012,8 @@ async function savePlanAsActive(newPlan) {
   buildTabs(); buildDay(0);
   // Coach: new active plan → old chat + context are stale. Refresh both.
   refreshCoachForNewSession();
+  // Persist the now-active plan so next boot paints it, not the old one.
+  saveHydrationSnapshot();
   return r2.data;
 }
 
@@ -2049,6 +2051,8 @@ async function activateExistingPlan(planId) {
   document.getElementById('planWeek').textContent = planWeekLabel(plan) || plan.week || '';
   buildTabs(); buildDay(0);
   refreshCoachForNewSession();
+  // Persist the re-activated plan so next boot paints it.
+  saveHydrationSnapshot();
   return r2.data;
 }
 
