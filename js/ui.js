@@ -91,6 +91,74 @@ function fmtDuration(ms) {
   return h > 0 ? (h + 'h ' + pad2(m) + 'm') : (m + 'm');
 }
 
+// Drag-to-reorder init. Called after buildDay / buildAdHocDay replaces the
+// workoutContainer innerHTML. Attaches SortableJS instances to the two sort
+// zones (plan + extras on plan days) or the single ad-hoc zone. Separate
+// groups prevent cross-zone drops. Filters skip interactive children so
+// tapping an input / button / set row doesn't trigger a drag. Long-press
+// delay + delayOnTouchOnly means a normal tap never starts reorder.
+function initSortableZones(di, isAdHoc) {
+  if (typeof Sortable === 'undefined') return;
+
+  var LONG_PRESS_MS = 400;
+  var ANIM_MS = 150;
+  var DRAG_FILTER = 'input, textarea, button, select, .set-row, .exercise-note, .exercise-note-input, .sub-row, .rpe-row';
+
+  if (isAdHoc) {
+    var adhocEl = document.querySelector('#workoutContainer [data-sort-zone="adhoc"]');
+    if (adhocEl) {
+      Sortable.create(adhocEl, {
+        group: 'exercise-adhoc-session',
+        filter: DRAG_FILTER,
+        preventOnFilter: false,
+        delay: LONG_PRESS_MS,
+        delayOnTouchOnly: true,
+        animation: ANIM_MS,
+        onEnd: function(evt) {
+          if (evt.oldIndex === evt.newIndex) return;
+          reorderAdHocExtras(evt.oldIndex, evt.newIndex);
+        },
+      });
+    }
+    return;
+  }
+
+  var planEl = document.querySelector('#workoutContainer [data-sort-zone="plan"]');
+  if (planEl) {
+    Sortable.create(planEl, {
+      group: 'exercise-plan-zone',
+      filter: DRAG_FILTER,
+      preventOnFilter: false,
+      delay: LONG_PRESS_MS,
+      delayOnTouchOnly: true,
+      animation: ANIM_MS,
+      onEnd: function(evt) {
+        if (evt.oldIndex === evt.newIndex) return;
+        reorderPlanExercises(di, evt.oldIndex, evt.newIndex);
+      },
+    });
+  }
+
+  var extrasEl = document.querySelector('#workoutContainer [data-sort-zone="extras"]');
+  if (extrasEl) {
+    var planLen = parseInt(extrasEl.getAttribute('data-plan-len'), 10) || 0;
+    Sortable.create(extrasEl, {
+      group: 'exercise-extras-zone',
+      filter: DRAG_FILTER,
+      preventOnFilter: false,
+      delay: LONG_PRESS_MS,
+      delayOnTouchOnly: true,
+      animation: ANIM_MS,
+      onEnd: function(evt) {
+        if (evt.oldIndex === evt.newIndex) return;
+        // Extras positions are absolute exercise_order values; zone-local
+        // indices are offset by planLen.
+        reorderAdHocExtras(evt.oldIndex + planLen, evt.newIndex + planLen);
+      },
+    });
+  }
+}
+
 // Duration-edit affordance used wherever a session timer / duration is
 // rendered. Clicking prompts for a new duration in minutes and updates
 // started_at to back-compute the new span (paused_ms zeroed). workoutId
@@ -335,6 +403,12 @@ function buildDay(di) {
   h += renderSessionLocation(di, state, readOnly);
   h += renderSessionNotes(di, state, readOnly);
 
+  // v2.2.5 drag-to-reorder: prescribed plan exercises live inside a sort
+  // zone. Reorder within this zone mutates plan.days[di].exercises AND
+  // remaps the current workout's sets (see data.js reorderPlanExercises).
+  // Ad-hoc extras below live in a separate sort zone — they reorder among
+  // themselves only, no plan mutation.
+  h += '<div class="sort-zone" data-sort-zone="plan" data-di="' + di + '">';
   for (var ei = 0; ei < dayPlan.exercises.length; ei++) {
     var ex = dayPlan.exercises[ei];
     var ek = 'ex_' + ei;
@@ -427,7 +501,11 @@ function buildDay(di) {
     h += '</div>';
   }
 
-  // Render extras (ad-hoc exercises) after the prescribed loop.
+  h += '</div>';  // close plan sort-zone
+
+  // Render extras (ad-hoc exercises) after the prescribed loop. They sit
+  // in their own sort zone so reordering within them doesn't cross the
+  // divider into plan exercises.
   var planLen = dayPlan.exercises.length;
   var extraKeys = [];
   if (state && state.exercises) {
@@ -437,6 +515,7 @@ function buildDay(di) {
     extraKeys.sort(function(a, b) { return parseInt(a.slice(3), 10) - parseInt(b.slice(3), 10); });
   }
   if (extraKeys.length) h += '<div class="extras-divider">Added exercises</div>';
+  if (extraKeys.length) h += '<div class="sort-zone" data-sort-zone="extras" data-di="' + di + '" data-plan-len="' + planLen + '">';
   for (var xi = 0; xi < extraKeys.length; xi++) {
     var xek = extraKeys[xi];
     var xei = parseInt(xek.slice(3), 10);
@@ -474,6 +553,7 @@ function buildDay(di) {
     h += '<div style="padding:0 14px 14px"><textarea class="exercise-note-input" rows="1" placeholder="Notes" data-di="' + di + '" data-ei="' + xei + '"' + dis + '>' + escapeHtml(xState.note || '') + '</textarea></div>';
     h += '</div>';
   }
+  if (extraKeys.length) h += '</div>';  // close extras sort-zone
 
   if (mode === 'editable') {
     h += '<button class="add-exercise-btn" id="btnAddExercise" type="button">+ Add Exercise</button>';
@@ -481,6 +561,7 @@ function buildDay(di) {
 
   c.innerHTML = h;
   document.getElementById('setsComplete').textContent = cs;
+  if (mode === 'editable') initSortableZones(di, false);
   document.getElementById('setsTotal').textContent = ts;
   document.getElementById('dayProgress').textContent = ts > 0 ? Math.round((cs / ts) * 100) + '%' : '0%';
 
@@ -532,6 +613,9 @@ function buildAdHocDay(di) {
     return parseInt(a.slice(3), 10) - parseInt(b.slice(3), 10);
   });
 
+  // Ad-hoc session has a single sort zone — all exercises are ad-hoc.
+  // Reorder within remaps sets for the current workout only (no plan).
+  if (keys.length) h += '<div class="sort-zone" data-sort-zone="adhoc" data-di="' + di + '">';
   for (var xi = 0; xi < keys.length; xi++) {
     var ek = keys[xi];
     var ei = parseInt(ek.slice(3), 10);
@@ -568,6 +652,7 @@ function buildAdHocDay(di) {
     h += '<div style="padding:0 14px 14px"><textarea class="exercise-note-input" rows="1" placeholder="Notes" data-di="' + di + '" data-ei="' + ei + '"' + dis + '>' + escapeHtml(exState.note || '') + '</textarea></div>';
     h += '</div>';
   }
+  if (keys.length) h += '</div>';  // close ad-hoc sort-zone
 
   h += '<button class="add-exercise-btn" id="btnAddExercise" type="button">+ Add Exercise</button>';
   h += '<button class="delete-session-btn" id="btnDeleteAdHoc" type="button">Delete session</button>';
@@ -576,6 +661,7 @@ function buildAdHocDay(di) {
   document.getElementById('setsComplete').textContent = cs;
   document.getElementById('setsTotal').textContent = ts;
   document.getElementById('dayProgress').textContent = ts > 0 ? Math.round((cs / ts) * 100) + '%' : '0%';
+  initSortableZones(di, true);
 
   // Timer ticker for ad-hoc: running if started but not ended.
   if (todayState && todayState.isAdHoc && todayState.workoutId === state.workoutId

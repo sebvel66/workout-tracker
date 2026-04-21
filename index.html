@@ -1498,6 +1498,21 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
 }
 .session-btn.session-resume:active { background: var(--surface2); color: var(--text); }
 
+/* Drag-to-reorder exercise cards — SortableJS state classes. */
+.sort-zone { display: flex; flex-direction: column; }
+.sortable-ghost {
+  opacity: 0.25;
+}
+.sortable-chosen {
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  transform: scale(1.02);
+  z-index: 10;
+}
+.sortable-drag {
+  opacity: 0.95;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
 .duration-edit-btn {
   background: transparent; border: 1px solid var(--border);
   color: var(--text3); font-size: 13px; line-height: 1;
@@ -1823,6 +1838,7 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
 .export-format-option input { accent-color: var(--accent); }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
 </head>
 <body class="unauthed">
 

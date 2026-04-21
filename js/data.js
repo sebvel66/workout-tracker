@@ -1550,6 +1550,142 @@ async function discardWorkout(workoutId) {
   invalidateHistoryCache();
 }
 
+// ---- Drag-to-reorder: compute map + persist -----------------------------
+// Computes the exercise_order permutation for a single move. Keys are the
+// old positions that need updating; values are the new positions. Positions
+// outside the move's range aren't in the map (unchanged).
+function computeReorderMap(oldIndex, newIndex) {
+  var map = {};
+  if (oldIndex === newIndex) return map;
+  map[oldIndex] = newIndex;
+  if (newIndex > oldIndex) {
+    for (var i = oldIndex + 1; i <= newIndex; i++) map[i] = i - 1;
+  } else {
+    for (var j = newIndex; j < oldIndex; j++) map[j] = j + 1;
+  }
+  return map;
+}
+
+// Apply a reorder map to the in-memory state.exercises keys. Ex slots at
+// remapped positions get their new ex_<N> key; unchanged slots stay put.
+function remapStateExerciseKeys(state, mapping) {
+  if (!state || !state.exercises) return;
+  var newEx = {};
+  for (var ek in state.exercises) {
+    var idx = parseInt(ek.slice(3), 10);
+    var newIdx = (idx in mapping) ? mapping[idx] : idx;
+    newEx['ex_' + newIdx] = state.exercises[ek];
+  }
+  state.exercises = newEx;
+}
+
+// Persist an exercise_order remap for a single workout's sets. Two-phase to
+// avoid transient unique-index collisions on the partial index
+// (workout_id, exercise_id, exercise_order, set_order) WHERE done = true —
+// if we updated rows directly to their new positions, the intermediate
+// state could briefly duplicate keys and throw 23505. Phase 1 shifts all
+// affected rows into a temp range (+OFFSET); phase 2 brings them down to
+// their final positions. PostgREST doesn't support column arithmetic in
+// updates, so each phase issues one UPDATE per affected position.
+async function persistExerciseReorder(workoutId, mapping) {
+  if (!userId || !workoutId) return;
+  var keys = Object.keys(mapping).map(Number);
+  if (!keys.length) return;
+  var OFFSET = 10000;
+
+  var p1 = keys.map(function(oldPos) {
+    return sb.from('sets')
+      .update({ exercise_order: oldPos + OFFSET })
+      .eq('workout_id', workoutId)
+      .eq('exercise_order', oldPos);
+  });
+  var r1 = await Promise.all(p1);
+  for (var i = 0; i < r1.length; i++) if (r1[i].error) throw new Error(r1[i].error.message);
+
+  var p2 = keys.map(function(oldPos) {
+    return sb.from('sets')
+      .update({ exercise_order: mapping[oldPos] })
+      .eq('workout_id', workoutId)
+      .eq('exercise_order', oldPos + OFFSET);
+  });
+  var r2 = await Promise.all(p2);
+  for (var j = 0; j < r2.length; j++) if (r2[j].error) throw new Error(r2[j].error.message);
+}
+
+// Plan-level reorder. Mirrors Swap (v2.0.29) semantics: mutates the active
+// plan's day exercises, persists plans.data, then remaps the current
+// workout's sets so already-logged sets stay attached to their exercise.
+// Scope: rest of the week — future sessions on this plan day follow the
+// new order. Toast calls this out explicitly.
+async function reorderPlanExercises(di, oldIndex, newIndex) {
+  if (!plan || !plan.days || !plan.days[di]) return;
+  if (oldIndex === newIndex) return;
+  var exercises = plan.days[di].exercises;
+  if (!Array.isArray(exercises)) return;
+  if (oldIndex < 0 || oldIndex >= exercises.length) return;
+  if (newIndex < 0 || newIndex >= exercises.length) return;
+
+  // Snapshot for rollback if Supabase writes fail.
+  var originalCopy = JSON.parse(JSON.stringify(exercises));
+
+  var moved = exercises.splice(oldIndex, 1)[0];
+  exercises.splice(newIndex, 0, moved);
+
+  try {
+    var pr = await sb.from('plans').update({ data: plan }).eq('id', activePlanId);
+    if (pr.error) throw new Error(pr.error.message);
+    planCache[activePlanId] = plan;
+  } catch(err) {
+    // Revert in-memory so UI doesn't drift from DB.
+    plan.days[di].exercises = originalCopy;
+    console.error('reorderPlanExercises plan write error:', err);
+    showToast("Couldn't save reorder: " + (err.message || 'unknown error'), null);
+    buildDay(currentDay);
+    return;
+  }
+
+  var mapping = computeReorderMap(oldIndex, newIndex);
+  try {
+    if (todayState && todayState.workoutId && !todayState.isAdHoc) {
+      await persistExerciseReorder(todayState.workoutId, mapping);
+      remapStateExerciseKeys(todayState, mapping);
+    }
+  } catch(err) {
+    // Plan already wrote; sets may now be mis-attributed on this workout.
+    // Surface explicitly — we don't roll back the plan, the user's reorder
+    // intent stands and they can re-log affected sets if needed.
+    console.error('reorderPlanExercises set remap error:', err);
+    showToast('Plan reordered but set positions didn\'t save: ' + (err.message || 'unknown error'), null);
+  }
+
+  buildTabs();
+  buildDay(currentDay);
+  showToast('Reordered for the rest of the week. Plan updated.', null);
+}
+
+// Ad-hoc-zone reorder. Doesn't touch the plan (ad-hoc extras have no plan
+// representation). Just remaps exercise_order on sets + in-memory state
+// keys. Positions are absolute exercise_order values (include plan-length
+// offset when on a plan day). Scope: this session only.
+async function reorderAdHocExtras(oldIndex, newIndex) {
+  if (!todayState || !todayState.workoutId) return;
+  if (oldIndex === newIndex) return;
+
+  var mapping = computeReorderMap(oldIndex, newIndex);
+  try {
+    await persistExerciseReorder(todayState.workoutId, mapping);
+    remapStateExerciseKeys(todayState, mapping);
+  } catch(err) {
+    console.error('reorderAdHocExtras error:', err);
+    showToast("Couldn't save reorder: " + (err.message || 'unknown error'), null);
+    return;
+  }
+
+  buildTabs();
+  buildDay(currentDay);
+  showToast('Reordered — this session only.', null);
+}
+
 // "Bring to today": move a historical or orphaned workout to the current
 // date, resetting the timer so the user can actually do the session. Keeps
 // any logged sets attached to the workout row. Partial unique index on
