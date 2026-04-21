@@ -153,6 +153,15 @@ function clearHydrationSnapshot() {
   try { localStorage.removeItem(HYDRATION_CACHE_KEY); } catch (_) {}
 }
 
+// Snapshot on hide/unload. These fire reliably on iOS when the user
+// swipes the PWA away or switches apps, and on desktop tab close.
+document.addEventListener('visibilitychange', function() {
+  if (document.hidden) saveHydrationSnapshot();
+});
+window.addEventListener('beforeunload', function() {
+  saveHydrationSnapshot();
+});
+
 // ---- State helpers ----
 function _planForState(state) {
   if (state && state.planId && planCache[state.planId]) return planCache[state.planId];

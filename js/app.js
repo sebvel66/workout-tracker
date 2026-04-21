@@ -139,6 +139,9 @@ async function hydrate() {
     buildTabs();
     buildDay(currentDay);
 
+    // Snapshot the now-fresh state for next boot's paintFromCache.
+    saveHydrationSnapshot();
+
     // Auto-open the start modal when no session is in-progress. Completed
     // sessions do not block the modal.
     if (inProgressKey == null) {
