@@ -3,15 +3,5 @@
     "api/generate-plan.js": {
       "includeFiles": "system-prompt.md"
     }
-  },
-  "crons": [
-    {
-      "path": "/api/coach-chat?warmup=true",
-      "schedule": "*/5 * * * *"
-    },
-    {
-      "path": "/api/generate-plan?warmup=true",
-      "schedule": "*/10 * * * *"
-    }
-  ]
+  }
 }
