@@ -341,7 +341,12 @@ async function fetchExerciseLibrary(userId) {
   return await res.json();
 }
 
-async function fetchPhysiquePhotos(userId) {
+// progressLimit controls how many progress photos come back. Plan-gen
+// uses 1 (latest only — visual cue for programming, more would bloat the
+// prompt). Analyze mode uses more (up to ~4) so the prompt carries the
+// chronological sequence Claude needs for over-time comparison.
+async function fetchPhysiquePhotos(userId, progressLimit) {
+  if (!Number.isFinite(progressLimit) || progressLimit < 1) progressLimit = 1;
   const res = await sbFetch(
     `/physique_photos?user_id=eq.${userId}&order=taken_at.desc&select=id,storage_path,photo_type,taken_at,notes`
   );
@@ -356,7 +361,7 @@ async function fetchPhysiquePhotos(userId) {
       progress.push(r);
     }
   }
-  return { goal, progress: progress.slice(0, 1) };  // latest 1 progress in v1 — keep prompt lean
+  return { goal, progress: progress.slice(0, progressLimit) };
 }
 
 async function downloadPhotoAsBase64(storagePath) {
@@ -636,6 +641,11 @@ function formatExerciseLibrary(exercises) {
 // progressing / concerns / next_week sections. User can copy next_week
 // forward into plan-gen's notes field to chain analysis → plan.
 const ANALYZE_MAX_TOKENS = 1000;
+// Analyze mode pulls more progress photos than plan-gen so Claude can
+// compare them chronologically for over-time observations. 4 keeps token
+// cost bounded (~6-8K image tokens at this count) while giving a useful
+// sequence across a typical 4-week history window.
+const ANALYZE_PROGRESS_PHOTO_LIMIT = 4;
 
 async function handleAnalyze(res, userId, rawInputs) {
   const historyWeeks = clampInt(rawInputs.history_weeks, MIN_HISTORY_WEEKS, MAX_HISTORY_WEEKS, DEFAULT_HISTORY_WEEKS);
@@ -654,9 +664,11 @@ async function handleAnalyze(res, userId, rawInputs) {
     fetchActivePlan(userId),
     fetchRecentWorkouts(userId, historyWeeks),
     fetchExerciseLibrary(userId),
-    includePhotos ? fetchPhysiquePhotos(userId) : Promise.resolve({ goal: null, progress: [] }),
+    includePhotos
+      ? fetchPhysiquePhotos(userId, ANALYZE_PROGRESS_PHOTO_LIMIT)
+      : Promise.resolve({ goal: null, progress: [] }),
   ]);
-  console.log('[generate-plan:analyze] data fetch:', Date.now() - t0, 'ms', '· history_weeks:', historyWeeks, '· include_photos:', includePhotos);
+  console.log('[generate-plan:analyze] data fetch:', Date.now() - t0, 'ms', '· history_weeks:', historyWeeks, '· include_photos:', includePhotos, '· progress_photos:', (photos.progress || []).length);
 
   if (!history.length) {
     return jsonError(res, 400, 'No workout history found. Log at least one week of training before requesting an analysis.');
@@ -761,20 +773,39 @@ async function buildAnalyzeUserMessage({ activePlan, history, exercises, photos,
   dynText += '\nProduce the analysis per your instructions. Return ONLY the JSON object. No preamble, no markdown fences.\n';
   content.push({ type: 'text', text: dynText });
 
-  // Photos — same pattern as plan-gen. Analyze benefits from visual cues
-  // for physique-driven commentary when photos exist.
-  const latestProgress = photos && photos.progress && photos.progress.length ? photos.progress[0] : null;
-  const [goalImg, progressImg] = await Promise.all([
-    photos && photos.goal ? downloadPhotoAsBase64(photos.goal.storage_path) : Promise.resolve(null),
-    latestProgress ? downloadPhotoAsBase64(latestProgress.storage_path) : Promise.resolve(null),
-  ]);
+  // Photos — analyze mode includes multiple progress photos in chronological
+  // order (oldest → newest) so Claude can compare them to each other over
+  // time AND compare the latest to the goal. Fetch ordering from
+  // fetchPhysiquePhotos is DESC by taken_at (latest first) so we reverse
+  // for chronological display. Each progress photo is labeled with its
+  // date AND its sequence index so the prompt makes the ordering unambiguous.
+  const progressAll = (photos && Array.isArray(photos.progress)) ? photos.progress.slice() : [];
+  const progressChrono = progressAll.reverse();  // oldest first
+  const latestProgress = progressAll.length ? progressAll[progressAll.length - 1] : null;
+
+  const downloadPromises = [];
+  downloadPromises.push(photos && photos.goal ? downloadPhotoAsBase64(photos.goal.storage_path) : Promise.resolve(null));
+  for (const p of progressChrono) {
+    downloadPromises.push(downloadPhotoAsBase64(p.storage_path));
+  }
+  const downloaded = await Promise.all(downloadPromises);
+  const goalImg = downloaded[0];
+  const progressImgs = downloaded.slice(1);
+
   if (photos && photos.goal && goalImg) {
     content.push({ type: 'text', text: `GOAL PHYSIQUE photo (uploaded ${String(photos.goal.taken_at).slice(0, 10)}):` });
     content.push({ type: 'image', source: { type: 'base64', media_type: goalImg.mime, data: goalImg.base64 } });
   }
-  if (latestProgress && progressImg) {
-    content.push({ type: 'text', text: `CURRENT PROGRESS photo (${String(latestProgress.taken_at).slice(0, 10)}):` });
-    content.push({ type: 'image', source: { type: 'base64', media_type: progressImg.mime, data: progressImg.base64 } });
+  for (let i = 0; i < progressChrono.length; i++) {
+    const img = progressImgs[i];
+    if (!img) continue;
+    const p = progressChrono[i];
+    const isLatest = latestProgress && p.id === latestProgress.id;
+    const label = progressChrono.length === 1
+      ? `CURRENT PROGRESS photo (${String(p.taken_at).slice(0, 10)}):`
+      : `PROGRESS photo ${i + 1} of ${progressChrono.length}${isLatest ? ' (LATEST)' : ''} (${String(p.taken_at).slice(0, 10)}):`;
+    content.push({ type: 'text', text: label });
+    content.push({ type: 'image', source: { type: 'base64', media_type: img.mime, data: img.base64 } });
   }
 
   return content;

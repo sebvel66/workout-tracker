@@ -23,6 +23,10 @@ First v2.1 bundle. Three features as one minor-version bump.
 - **AI exercise swap.** Small ⇄ icon on plan exercise cards (editable mode only) opens a modal that finds an AI-suggested replacement for one exercise via `POST /api/generate-plan { mode: "swap", ... }`. Server early-dispatches to `handleSwap` with its own inline system prompt (1h cache, 500 max tokens, ~8-15s warm). Optional reason input ("different gym", "knee pain", etc.) factors into selection. On Accept, mutates `plan.days[di].exercises[ei]` and writes `plans.data`. Already-logged sets stay attached to their original `exercise_id` in the sets table.
 - **View Recent enhancements.** Exercise-level notes now surface below RPE in the View Recent modal (muted italic). Gym location tag gets an "@" prefix for clarity. Both lines render only when data exists — no empty placeholders.
 
+### Shipped — v2.3.1 (2026-04-21)
+
+- **Multi-photo comparison in analyze mode.** Analyze now fetches up to 4 progress photos (previously 1) and emits them chronologically with explicit date + sequence labels. Prompt requires two photo comparisons: latest-vs-goal (which muscle groups are close / which lag) and progress-over-time (what changed / what stagnated). Observations weave into the existing four sections. `fetchPhysiquePhotos` parameterized so plan-gen keeps its 1-photo default (no token bloat there).
+
 ### Shipped — v2.3.0 (2026-04-21)
 
 - **Training analysis split off from plan generation.** Plan-gen now returns structure only — `coaching_notes` removed from the contract and every "flag in coaching notes" directive stripped from the prompt. Expected 5-10s faster plan generation from dropped reasoning overhead. New `mode: 'analyze'` branch on `/api/generate-plan` produces a four-section structured written assessment (`trends` / `progressing` / `concerns` / `next_week`) on Sonnet with the same history window + photo context as plan-gen. ~15-25s warm per analyze call, ~$0.03.

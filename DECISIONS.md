@@ -2,6 +2,28 @@
 
 Running log of architecture/behavior decisions for the workout tracker. Newest first.
 
+## 2026-04-21 — Analyze mode: multi-photo comparison + explicit prompt guidance (v2.3.1)
+
+v2.3.0's analyze mode inherited plan-gen's "1 latest progress photo" limit and had a one-line photo directive. Two problems: over-time physique comparison was impossible (only one progress photo present) and the prompt didn't make the user's intent explicit (compare progress-to-progress AND progress-to-goal).
+
+**Changes:**
+
+1. **`fetchPhysiquePhotos(userId, progressLimit)`** parameterized. Plan-gen still calls with implicit 1 (no change). Analyze calls with 4 (`ANALYZE_PROGRESS_PHOTO_LIMIT`). 4 is enough for a typical 4-week history window to carry a chronological sequence; more would bloat the prompt with diminishing coaching value.
+2. **Chronological ordering in the prompt.** Supabase returns progress photos DESC by `taken_at` (latest first). In `buildAnalyzeUserMessage` we reverse to ASC (oldest first) before emitting — Claude reads the sequence as a timeline. Each is labeled `PROGRESS photo N of M (YYYY-MM-DD)` with the latest also tagged `(LATEST)` so Claude never has to guess which is most recent.
+3. **Explicit photo-analysis section in `system-prompt-analyze.md`.** Requires two comparisons when photos are present:
+   - **Latest-vs-goal:** which muscle groups are closest, which lag, steer `concerns` + `next_week` accordingly.
+   - **Progress-over-time:** compare the oldest → newest sequence; call out what visibly changed, what stagnated; tie observations to exercise selection data.
+   - **Single-progress-photo fallback:** explicitly note over-time comparison is unavailable; compare vs goal only.
+   - **No-photos fallback:** skip photo commentary entirely (matches existing v2.3.0 core rule).
+4. **Integration requirement.** Photo observations weave into the four existing sections (`progressing`, `concerns`, `next_week`) — no separate "physique" section. Keeps the written analysis feeling like one coherent coaching voice rather than two reports stapled together.
+
+**Why not just add more photos to plan-gen too?** Plan-gen's job is programming, not diagnostic commentary. One recent progress photo is enough visual cue to bias exercise selection. Adding more would cost ~1-2K tokens each per call for marginal coaching benefit. The analyze path is where photo-heavy depth is worth the token spend.
+
+**How to apply:**
+
+- When a prompt feature (like photo comparison) has meaningfully different value per mode, parameterize the data fetch rather than sharing a default. Explicit `progressLimit` beats magic numbers hidden in the function.
+- When sending sequential data to a multimodal model, label each element with its position AND the absolute reference point (date, sequence index, "LATEST" tag). Don't rely on the model to infer order from its position in the message array.
+
 ## 2026-04-21 — Split plan generation from training analysis; shared-core prompt architecture (v2.3.0)
 
 **Motivation:** the user wanted two things the existing plan-gen flow couldn't give them simultaneously — deep coaching commentary (the 60-word `coaching_notes` field was cramped) AND faster plan generation (embedded commentary costs 5-10s of Sonnet reasoning overhead per the MAJOR-BUGS 2026-04-20 lesson). Coach Chat wasn't the answer: it's on Haiku with a 14-day context window, built for *"should I drop weight right now?"* quick questions, not multi-week deep analysis.
