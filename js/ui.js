@@ -511,6 +511,17 @@ function openMenu() {
   if (row) {
     row.textContent = 'Weight unit (' + getWeightUnit() + ')';
   }
+
+  // Save-as-template row availability tracks the active plan. The modal
+  // itself handles day vs plan scope based on the currently-focused tab.
+  var hasActivePlan = !!(plan && plan.days && plan.days.length);
+  var saveRow = document.getElementById('menuSaveAsTemplate');
+  if (saveRow) {
+    saveRow.disabled = !hasActivePlan;
+    saveRow.style.opacity = hasActivePlan ? '' : '0.4';
+    saveRow.title = hasActivePlan ? '' : 'Requires an active plan';
+  }
+
   document.getElementById('menuOverlay').classList.add('show');
 }
 
@@ -712,6 +723,11 @@ function openStartScreen() {
   // Collapse the day-picker list on every re-open (fresh state each time).
   pickDayList.classList.add('hidden');
   pickDayList.innerHTML = '';
+  var templateList = document.getElementById('startPathTemplateList');
+  if (templateList) {
+    templateList.classList.add('hidden');
+    templateList.innerHTML = '';
+  }
 
   var hasPlan = !!(plan && plan.days && plan.days.length);
   if (hasPlan) {
@@ -1914,6 +1930,7 @@ function renderPlans() {
     h += '<div class="plans-row-actions">';
     h += '<button type="button" class="plans-btn activate" data-plan-id="' + escapeAttr(p.id) + '"' +
          (p.is_active ? ' disabled' : '') + '>Activate</button>';
+    h += '<button type="button" class="plans-btn template" data-plan-id="' + escapeAttr(p.id) + '">Template</button>';
     h += '<button type="button" class="plans-btn delete" data-plan-id="' + escapeAttr(p.id) + '"' +
          (p.workout_count > 0 ? ' disabled title="Has logged workouts"' : '') + '>Delete</button>';
     h += '</div>';
@@ -1957,6 +1974,313 @@ async function onDeletePlan(planId) {
     console.error('onDeletePlan error:', err);
     showToast("Couldn't delete plan: " + (err.message || 'unknown error'), null);
   }
+}
+
+// ---- Templates: save / manage / use ----
+// saveTemplateContext drives the modal. It carries both potential scopes
+// (plan + day) when available, plus the active selection. The modal's
+// scope picker flips `activeScope`; submit reads the corresponding blob.
+var saveTemplateContext = null;     // { planBlob, dayBlob, dayName, activeScope, canSaveDay }
+var templatesList = [];              // management-modal list
+var templatesLoading = false;
+var startScreenTemplatesList = [];   // start-screen picker list
+
+// Open the save-template modal. Caller supplies:
+//   planBlob   - full plan blob (required)
+//   dayBlob    - single-day blob (optional; enables the "Just [day]" scope)
+//   dayName    - label for the day scope button (required if dayBlob present)
+// If no dayBlob is supplied, the modal hides the scope picker entirely —
+// the Plans-modal row button uses this single-scope path.
+function openSaveTemplate(planBlob, dayBlob, dayName) {
+  if (!planBlob || !Array.isArray(planBlob.days) || !planBlob.days.length) {
+    showToast('Nothing to save as template', null);
+    return;
+  }
+  var canSaveDay = !!(dayBlob && Array.isArray(dayBlob.days) && dayBlob.days.length === 1);
+  saveTemplateContext = {
+    planBlob: planBlob,
+    dayBlob: canSaveDay ? dayBlob : null,
+    dayName: dayName || '',
+    activeScope: 'plan',
+    canSaveDay: canSaveDay,
+  };
+
+  var scopeRow = document.getElementById('saveTemplateScopeRow');
+  var planBtn = document.getElementById('saveTemplateScopePlan');
+  var dayBtn = document.getElementById('saveTemplateScopeDay');
+  var dayCount = planBlob.days.length;
+  planBtn.textContent = 'Whole plan (' + dayCount + ' day' + (dayCount === 1 ? '' : 's') + ')';
+  if (canSaveDay) {
+    dayBtn.textContent = 'Just "' + (dayName || 'this day') + '"';
+    dayBtn.disabled = false;
+    scopeRow.style.display = '';
+  } else {
+    // No day context (e.g., Plans-modal historical save, or ad-hoc focus).
+    // Hide the scope picker entirely; save is implicitly "whole plan".
+    scopeRow.style.display = 'none';
+  }
+  planBtn.classList.add('active');
+  dayBtn.classList.remove('active');
+
+  applySaveTemplateDefaults();
+
+  document.getElementById('saveTemplateOverlay').classList.add('show');
+  var input = document.getElementById('saveTemplateNameInput');
+  setTimeout(function() { input.focus(); input.select(); }, 0);
+}
+
+function applySaveTemplateDefaults() {
+  if (!saveTemplateContext) return;
+  var ctx = saveTemplateContext;
+  var defaultName, hint;
+  if (ctx.activeScope === 'day' && ctx.canSaveDay) {
+    defaultName = ctx.dayName || '';
+    hint = 'Single-day template. Use it later as a starting point for an ad-hoc session.';
+  } else {
+    defaultName = ctx.planBlob.title || '';
+    var n = ctx.planBlob.days.length;
+    hint = n + '-day template. All days, exercises, and set prescriptions are preserved.';
+  }
+  document.getElementById('saveTemplateNameInput').value = defaultName;
+  document.getElementById('saveTemplateHint').textContent = hint;
+}
+
+function setSaveTemplateScope(scope) {
+  if (!saveTemplateContext) return;
+  if (scope === 'day' && !saveTemplateContext.canSaveDay) return;
+  saveTemplateContext.activeScope = scope;
+  document.getElementById('saveTemplateScopePlan').classList.toggle('active', scope === 'plan');
+  document.getElementById('saveTemplateScopeDay').classList.toggle('active', scope === 'day');
+  applySaveTemplateDefaults();
+  var input = document.getElementById('saveTemplateNameInput');
+  setTimeout(function() { input.focus(); input.select(); }, 0);
+}
+
+function closeSaveTemplate() {
+  document.getElementById('saveTemplateOverlay').classList.remove('show');
+  saveTemplateContext = null;
+}
+
+async function submitSaveTemplate() {
+  if (!saveTemplateContext) return;
+  var input = document.getElementById('saveTemplateNameInput');
+  var name = (input.value || '').trim();
+  if (!name) { showToast('Template name required', null); input.focus(); return; }
+  var blob = (saveTemplateContext.activeScope === 'day' && saveTemplateContext.canSaveDay)
+    ? saveTemplateContext.dayBlob
+    : saveTemplateContext.planBlob;
+  var btn = document.getElementById('btnSaveTemplateSubmit');
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+  try {
+    await saveAsTemplate(name, blob);
+    closeSaveTemplate();
+    showToast('Template saved: ' + name, null);
+  } catch(err) {
+    console.error('submitSaveTemplate error:', err);
+    showToast("Couldn't save template: " + (err.message || 'unknown error'), null);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
+  }
+}
+
+// Single hamburger entry: "Save as template". If focused on a plan day,
+// the modal offers both scopes; otherwise it hides the day scope and
+// defaults to whole-plan save.
+function openSaveAsTemplateFromMenu() {
+  if (!plan || !Array.isArray(plan.days) || !plan.days.length) {
+    showToast('No active plan to save', null);
+    return;
+  }
+  var dayBlob = null;
+  var dayName = '';
+  if (typeof currentDay === 'number' && currentDay >= 0 && currentDay < plan.days.length) {
+    dayBlob = extractSingleDayPlan(plan, currentDay);
+    dayName = (plan.days[currentDay] && plan.days[currentDay].name) || ('Day ' + (currentDay + 1));
+  }
+  openSaveTemplate(plan, dayBlob, dayName);
+}
+
+// Plans-modal entry: save any plan row as a template (covers historical plans).
+// No day context on a non-active plan row, so this hits the single-scope path.
+async function savePlanRowAsTemplate(planRowId) {
+  var row = null;
+  for (var i = 0; i < plansList.length; i++) {
+    if (plansList[i].id === planRowId) { row = plansList[i]; break; }
+  }
+  if (!row) return;
+  try {
+    var r = await sb.from('plans').select('data, title').eq('id', planRowId).single();
+    if (r.error) throw r.error;
+    var blob = r.data.data || {};
+    if (!blob.days || !blob.days.length) { showToast('Plan has no days to save', null); return; }
+    if (!blob.title) blob.title = r.data.title || row.title || 'Template';
+    openSaveTemplate(blob, null, '');
+  } catch(err) {
+    console.error('savePlanRowAsTemplate error:', err);
+    showToast("Couldn't load plan: " + (err.message || 'unknown error'), null);
+  }
+}
+
+// ---- Templates management modal ----
+async function openTemplates() {
+  document.getElementById('templatesOverlay').classList.add('show');
+  await loadTemplatesIntoState();
+  renderTemplates();
+}
+
+function closeTemplates() {
+  document.getElementById('templatesOverlay').classList.remove('show');
+}
+
+async function loadTemplatesIntoState() {
+  templatesLoading = true;
+  renderTemplates();
+  try {
+    templatesList = await loadTemplates();
+  } catch(err) {
+    console.error('loadTemplatesIntoState error:', err);
+    showToast("Couldn't load templates", null);
+    templatesList = [];
+  } finally {
+    templatesLoading = false;
+  }
+}
+
+function renderTemplates() {
+  var body = document.getElementById('templatesBody');
+  if (!body) return;
+  if (templatesLoading) {
+    body.innerHTML = '<div class="history-empty">Loading…</div>';
+    return;
+  }
+  if (!templatesList.length) {
+    body.innerHTML = '<div class="history-empty">No templates saved yet.<br>Use the hamburger menu to save a plan or day as a template.</div>';
+    return;
+  }
+  var h = '<div class="plans-list">';
+  for (var i = 0; i < templatesList.length; i++) {
+    var t = templatesList[i];
+    var dayLabel = t.day_count + ' day' + (t.day_count === 1 ? '' : 's');
+    var dateLabel = 'Created ' + new Date(t.created_at).toLocaleDateString();
+    h += '<div class="plans-row">';
+    h += '<div class="plans-row-main">';
+    h += '<div class="plans-row-title">' + escapeHtml(t.template_name) + '</div>';
+    h += '<div class="plans-row-meta">' + dayLabel + ' · ' + escapeHtml(dateLabel) + '</div>';
+    h += '</div>';
+    h += '<div class="plans-row-actions">';
+    h += '<button type="button" class="plans-btn delete" data-template-id="' + escapeAttr(t.id) + '">Delete</button>';
+    h += '</div>';
+    h += '</div>';
+  }
+  h += '</div>';
+  body.innerHTML = h;
+}
+
+async function onDeleteTemplate(templateId) {
+  var t = null;
+  for (var i = 0; i < templatesList.length; i++) {
+    if (templatesList[i].id === templateId) { t = templatesList[i]; break; }
+  }
+  if (!t) return;
+  if (!confirm('Delete template "' + t.template_name + '"? This cannot be undone.')) return;
+  try {
+    await deleteTemplate(templateId);
+    await loadTemplatesIntoState();
+    renderTemplates();
+    showToast('Template deleted', null);
+  } catch(err) {
+    console.error('onDeleteTemplate error:', err);
+    showToast("Couldn't delete template: " + (err.message || 'unknown error'), null);
+  }
+}
+
+// ---- Start-screen template picker (4th card in the start-session modal) ----
+async function loadStartScreenTemplates() {
+  var list = document.getElementById('startPathTemplateList');
+  list.innerHTML = '<div class="start-template-empty">Loading…</div>';
+  try {
+    startScreenTemplatesList = await loadTemplates();
+  } catch(err) {
+    console.error('loadStartScreenTemplates error:', err);
+    startScreenTemplatesList = [];
+    showToast("Couldn't load templates", null);
+  }
+  renderStartScreenTemplates();
+}
+
+function renderStartScreenTemplates() {
+  var list = document.getElementById('startPathTemplateList');
+  list.innerHTML = '';
+  if (!startScreenTemplatesList.length) {
+    var empty = document.createElement('div');
+    empty.className = 'start-template-empty';
+    empty.textContent = 'No templates saved yet. Use the hamburger menu to save one.';
+    list.appendChild(empty);
+    return;
+  }
+  for (var i = 0; i < startScreenTemplatesList.length; i++) {
+    var t = startScreenTemplatesList[i];
+    var row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'start-day-row';
+    row.setAttribute('data-template-id', t.id);
+    row.innerHTML =
+      '<span>' + escapeHtml(t.template_name) + '</span>' +
+      '<span class="start-day-row-meta">' + t.day_count + ' day' + (t.day_count === 1 ? '' : 's') + '</span>';
+    list.appendChild(row);
+  }
+}
+
+function renderStartScreenTemplateDays(template, container) {
+  container.innerHTML = '';
+  var days = template.days || [];
+  for (var i = 0; i < days.length; i++) {
+    var d = days[i] || {};
+    var row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'start-day-row';
+    row.setAttribute('data-template-id', template.id);
+    row.setAttribute('data-day-index', String(i));
+    row.textContent = d.name || ('Day ' + (i + 1));
+    container.appendChild(row);
+  }
+}
+
+async function onPickStartScreenTemplate(templateId, dayIndexAttr) {
+  var t = null;
+  for (var i = 0; i < startScreenTemplatesList.length; i++) {
+    if (startScreenTemplatesList[i].id === templateId) { t = startScreenTemplatesList[i]; break; }
+  }
+  if (!t) return;
+
+  // Explicit day pick (multi-day template, user tapped a specific day).
+  if (dayIndexAttr != null) {
+    var di = parseInt(dayIndexAttr, 10);
+    closeStartScreen();
+    await createAdHocFromTemplate(t, isNaN(di) ? 0 : di);
+    return;
+  }
+
+  // Single-day templates skip the day-sub-list.
+  if (t.day_count === 1) {
+    closeStartScreen();
+    await createAdHocFromTemplate(t, 0);
+    return;
+  }
+
+  // Multi-day templates expand to show day sub-list inline. Toggle if already open.
+  var list = document.getElementById('startPathTemplateList');
+  var row = list.querySelector('.start-day-row[data-template-id="' + templateId + '"]:not([data-day-index])');
+  if (!row) return;
+  var sibling = row.nextElementSibling;
+  if (sibling && sibling.classList && sibling.classList.contains('start-template-days')) {
+    sibling.remove();
+    return;
+  }
+  var container = document.createElement('div');
+  container.className = 'start-template-days';
+  renderStartScreenTemplateDays(t, container);
+  row.parentNode.insertBefore(container, row.nextSibling);
 }
 
 // ---- Toast ----
@@ -2327,6 +2651,47 @@ document.getElementById('menuPlans').addEventListener('click', function() {
   closeMenu();
   openPlans();
 });
+document.getElementById('menuTemplates').addEventListener('click', function() {
+  closeMenu();
+  openTemplates();
+});
+document.getElementById('menuSaveAsTemplate').addEventListener('click', function() {
+  if (this.disabled) return;
+  closeMenu();
+  openSaveAsTemplateFromMenu();
+});
+
+// Templates management modal.
+document.getElementById('btnTemplatesClose').addEventListener('click', closeTemplates);
+document.getElementById('templatesOverlay').addEventListener('click', function(e) {
+  if (e.target === this) closeTemplates();
+});
+document.getElementById('templatesBody').addEventListener('click', function(e) {
+  if (!e.target || !e.target.closest) return;
+  var btn = e.target.closest('.plans-btn.delete');
+  if (!btn || btn.disabled) return;
+  var tid = btn.getAttribute('data-template-id');
+  if (tid) onDeleteTemplate(tid);
+});
+
+// Save-template modal (used for plan, day, and historical-plan saves).
+document.getElementById('btnSaveTemplateClose').addEventListener('click', closeSaveTemplate);
+document.getElementById('btnSaveTemplateCancel').addEventListener('click', closeSaveTemplate);
+document.getElementById('btnSaveTemplateSubmit').addEventListener('click', submitSaveTemplate);
+document.getElementById('saveTemplateOverlay').addEventListener('click', function(e) {
+  if (e.target === this) closeSaveTemplate();
+});
+document.getElementById('saveTemplateNameInput').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') { e.preventDefault(); submitSaveTemplate(); }
+});
+document.getElementById('saveTemplateScopePlan').addEventListener('click', function() {
+  setSaveTemplateScope('plan');
+});
+document.getElementById('saveTemplateScopeDay').addEventListener('click', function() {
+  if (this.disabled) return;
+  setSaveTemplateScope('day');
+});
+
 document.getElementById('btnPlansClose').addEventListener('click', closePlans);
 document.getElementById('plansOverlay').addEventListener('click', function(e) {
   if (e.target === this) closePlans();
@@ -2338,6 +2703,7 @@ document.getElementById('plansBody').addEventListener('click', function(e) {
   var planId = btn.getAttribute('data-plan-id');
   if (!planId) return;
   if (btn.classList.contains('activate')) onActivatePlan(planId);
+  else if (btn.classList.contains('template')) savePlanRowAsTemplate(planId);
   else if (btn.classList.contains('delete')) onDeletePlan(planId);
 });
 document.getElementById('btnGenerateClose').addEventListener('click', closeGenerate);
@@ -2397,6 +2763,24 @@ document.getElementById('startPathPickDayList').addEventListener('click', functi
   focusTab(di);
   buildTabs();
   buildDay(di);
+});
+document.getElementById('startPathTemplate').addEventListener('click', async function() {
+  var list = document.getElementById('startPathTemplateList');
+  if (list.classList.contains('hidden')) {
+    list.classList.remove('hidden');
+    await loadStartScreenTemplates();
+  } else {
+    list.classList.add('hidden');
+    list.innerHTML = '';
+  }
+});
+document.getElementById('startPathTemplateList').addEventListener('click', function(e) {
+  var row = e.target.closest('.start-day-row');
+  if (!row) return;
+  var tid = row.getAttribute('data-template-id');
+  if (!tid) return;
+  var dayIdx = row.getAttribute('data-day-index');
+  onPickStartScreenTemplate(tid, dayIdx);
 });
 document.getElementById('startPathBlank').addEventListener('click', function() {
   closeStartScreen();

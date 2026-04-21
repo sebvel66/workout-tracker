@@ -1638,6 +1638,165 @@ async function activateExistingPlan(planId) {
   return r2.data;
 }
 
+// ---- Templates ----
+// Templates are plans rows with is_template = true, is_active = false.
+// They're never activated directly — they're copied into ad-hoc sessions
+// via the Template card in the start-session modal.
+
+// Save a plan blob as a reusable template. Strips start_date / week since
+// templates have no calendar anchor. `sourcePlanBlob` is deep-cloned so
+// mutating the returned row's data in place can't leak back to the source.
+async function saveAsTemplate(templateName, sourcePlanBlob) {
+  if (!userId) throw new Error('Not signed in');
+  if (!templateName || !templateName.trim()) throw new Error('Template name required');
+  var blob = JSON.parse(JSON.stringify(sourcePlanBlob || {}));
+  delete blob.start_date;
+  delete blob.week;
+  var r = await sb.from('plans').insert({
+    user_id: userId,
+    title: blob.title || templateName,
+    week: null,
+    data: blob,
+    is_active: false,
+    is_template: true,
+    template_name: templateName.trim(),
+  }).select().single();
+  if (r.error) throw new Error(r.error.message);
+  return r.data;
+}
+
+// Extract one day from a multi-day plan blob into a single-day template blob.
+// Returned blob keeps the day's full exercise/set structure intact.
+function extractSingleDayPlan(sourcePlanBlob, dayIndex) {
+  var days = (sourcePlanBlob && Array.isArray(sourcePlanBlob.days)) ? sourcePlanBlob.days : [];
+  var day = days[dayIndex];
+  if (!day) throw new Error('Day not found at index ' + dayIndex);
+  return {
+    title: day.name || ('Day ' + (dayIndex + 1)),
+    days: [JSON.parse(JSON.stringify(day))],
+  };
+}
+
+// Fetch templates for the current user, newest first. Returns hydrated
+// summaries suitable for list rendering.
+async function loadTemplates() {
+  if (!userId) return [];
+  var r = await sb.from('plans')
+    .select('id, title, template_name, data, created_at')
+    .eq('user_id', userId)
+    .eq('is_template', true)
+    .order('created_at', { ascending: false });
+  if (r.error) throw r.error;
+  return (r.data || []).map(function(t) {
+    var days = (t.data && t.data.days) || [];
+    return {
+      id: t.id,
+      template_name: t.template_name || t.title || 'Untitled',
+      title: t.title || '',
+      data: t.data || {},
+      created_at: t.created_at,
+      day_count: days.length,
+      days: days,
+    };
+  });
+}
+
+async function deleteTemplate(templateId) {
+  if (!userId) throw new Error('Not signed in');
+  var r = await sb.from('plans').delete().eq('id', templateId);
+  if (r.error) throw new Error(r.error.message);
+}
+
+// Create a new ad-hoc workout pre-populated from a template day. Mirrors
+// createAdHocSession's insert + state-init, then loads the template's
+// exercises into the state with resolved library ids. plan_id stays null
+// — template-based sessions are still ad-hoc, not plan-based.
+async function createAdHocFromTemplate(template, dayIndex) {
+  if (!userId) return;
+  var days = (template && template.data && template.data.days) || [];
+  var idx = Number.isFinite(dayIndex) ? dayIndex : 0;
+  var day = days[idx];
+  if (!day) { showToast("Template day not found", null); return; }
+
+  var now = new Date().toISOString();
+  var dayName = day.name || ('Day ' + (idx + 1));
+  var title = template.day_count > 1
+    ? (template.template_name + ' — ' + dayName)
+    : template.template_name;
+
+  try {
+    var res = await sb.from('workouts').insert({
+      user_id: userId, plan_id: null, day_index: null,
+      performed_at: now, started_at: now,
+      performed_on: sessionTodayDateString(),
+      location_id: recentLocationId || null,
+      title: title,
+    }).select().single();
+    if (res.error) throw res.error;
+
+    // Build the exercises map. Resolve each template name to its library
+    // row so subsequent set-done taps write to the correct exercise_id.
+    // If resolution fails (template exercise not in user's library), skip
+    // the exercise with a console warning — user can re-add via picker.
+    var exercisesMap = {};
+    var exArr = Array.isArray(day.exercises) ? day.exercises : [];
+    var skipped = 0;
+    for (var i = 0, ei = 0; i < exArr.length; i++) {
+      var ex = exArr[i];
+      if (!ex || !ex.name) continue;
+      var libRow = resolveLibraryRow(ex.name);
+      if (!libRow) {
+        console.warn('createAdHocFromTemplate: no library match for', ex.name);
+        skipped++;
+        continue;
+      }
+      var sets = [];
+      var setsArr = Array.isArray(ex.sets) ? ex.sets : [];
+      for (var j = 0; j < setsArr.length; j++) {
+        var s = setsArr[j] || {};
+        sets.push({
+          weight: s.weight != null ? Number(s.weight) : null,
+          reps: s.reps_target != null ? Number(s.reps_target) : null,
+          done: false,
+          isExtra: true,  // marks ad-hoc sets so delete affordance renders
+        });
+      }
+      if (!sets.length) sets.push({ isExtra: true });
+      exercisesMap['ex_' + ei] = {
+        rpe: null,
+        note: ex.note || '',
+        sub: '',
+        sets: sets,
+        isExtra: false,  // per-card isExtra drives plan-day "added" badge; ignored for ad-hoc
+        exerciseId: libRow.id,
+        exerciseMeta: libRow,
+      };
+      exerciseIdCache[libRow.name] = libRow.id;
+      ei++;
+    }
+
+    var adState = {
+      workoutId: res.data.id, planId: null, dayIndex: null,
+      startedAt: now, endedAt: null,
+      title: title, isAdHoc: true,
+      notes: '', notesExpanded: false,
+      locationId: res.data.location_id || null,
+      exercises: exercisesMap,
+    };
+    todayAdHocs.push(adState);
+    focusTab('ah_' + res.data.id);
+    buildTabs();
+    buildDay(currentDay);
+    if (skipped > 0) {
+      showToast('Loaded template. ' + skipped + ' exercise' + (skipped === 1 ? '' : 's') +
+                ' skipped (not in your library)', null);
+    }
+  } catch(err) {
+    console.error('createAdHocFromTemplate error:', err);
+    showToast("Couldn't start template session: " + (err.message || 'unknown error'), null);
+  }
+}
+
 function handleImport(event) {
   var file = event.target.files[0]; if (!file) return;
   var reader = new FileReader();

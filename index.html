@@ -725,6 +725,22 @@ body.unauthed #emptyState { display: none !important; }
   -webkit-tap-highlight-color: transparent;
 }
 .start-day-row:active { background: var(--surface3); }
+.start-day-row-meta {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px; color: var(--text3); text-transform: uppercase;
+}
+.start-template-days {
+  display: flex; flex-direction: column; gap: 6px;
+  margin: 4px 0 4px 14px;
+  padding-left: 8px;
+  border-left: 2px solid var(--border);
+}
+.start-template-empty {
+  padding: 10px 14px;
+  font-size: 13px; color: var(--text2);
+  background: var(--surface); border: 1px dashed var(--border); border-radius: 10px;
+  text-align: center;
+}
 .start-empty-hint {
   padding: 8px 4px 0;
   font-size: 13px; color: var(--text2);
@@ -1048,6 +1064,20 @@ body.unauthed #emptyState { display: none !important; }
   font-size: 11px; color: var(--text3);
   margin-top: 2px;
 }
+.scope-picker {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
+}
+.scope-option {
+  padding: 10px 12px;
+  background: var(--surface2); color: var(--text2);
+  border: 1px solid var(--border); border-radius: 8px;
+  font-family: 'Outfit', sans-serif; font-size: 13px; font-weight: 500;
+  text-align: center;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.scope-option.active { background: var(--accent2); color: #000; border-color: var(--accent2); font-weight: 600; }
+.scope-option:disabled { opacity: 0.35; cursor: default; }
 .generate-form-row-inline {
   display: grid;
   grid-template-columns: auto 1fr;
@@ -1698,6 +1728,47 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
   </div>
 </div>
 
+<div class="modal-overlay" id="templatesOverlay">
+  <div class="history-modal">
+    <div class="history-header">
+      <div style="width:32px"></div>
+      <div class="history-title">Templates</div>
+      <button class="history-close" id="btnTemplatesClose" type="button">×</button>
+    </div>
+    <div class="history-body" id="templatesBody"></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="saveTemplateOverlay">
+  <div class="history-modal save-template-modal">
+    <div class="history-header">
+      <div style="width:32px"></div>
+      <div class="history-title">Save as template</div>
+      <button class="history-close" id="btnSaveTemplateClose" type="button">×</button>
+    </div>
+    <div class="history-body">
+      <div class="generate-inputs">
+        <div class="generate-form-row" id="saveTemplateScopeRow">
+          <span class="generate-form-label">What to save</span>
+          <div class="scope-picker">
+            <button type="button" class="scope-option active" data-scope="plan" id="saveTemplateScopePlan"></button>
+            <button type="button" class="scope-option" data-scope="day" id="saveTemplateScopeDay"></button>
+          </div>
+        </div>
+        <label class="generate-form-row">
+          <span class="generate-form-label">Template name</span>
+          <input type="text" id="saveTemplateNameInput" class="generate-form-input" placeholder="e.g., Saturday Arms, Travel DB-Only">
+          <span class="generate-form-hint" id="saveTemplateHint"></span>
+        </label>
+        <div class="generate-inputs-actions">
+          <button type="button" class="generate-btn-cancel" id="btnSaveTemplateCancel">Cancel</button>
+          <button type="button" class="generate-btn-accept" id="btnSaveTemplateSubmit">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="generateOverlay">
   <div class="history-modal">
     <div class="history-header">
@@ -1733,6 +1804,8 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
       <button class="menu-row" id="menuStartAnother" type="button">Start another workout</button>
       <button class="menu-row" id="menuGenerate" type="button">Generate next week's plan</button>
       <button class="menu-row" id="menuPlans" type="button">Plans</button>
+      <button class="menu-row" id="menuTemplates" type="button">Templates</button>
+      <button class="menu-row" id="menuSaveAsTemplate" type="button">Save as template</button>
       <button class="menu-row" id="menuImport" type="button">Import Plan</button>
       <button class="menu-row" id="menuExport" type="button">Export Data</button>
       <button class="menu-row" id="menuHistory" type="button">History</button>
@@ -1760,6 +1833,11 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
         <div class="start-card-title">Pick a different day</div>
       </button>
       <div class="start-daylist hidden" id="startPathPickDayList"></div>
+      <button class="start-card" id="startPathTemplate" type="button">
+        <div class="start-card-title">Use a template</div>
+        <div class="start-card-hint" id="startPathTemplateHint"></div>
+      </button>
+      <div class="start-daylist hidden" id="startPathTemplateList"></div>
       <button class="start-card" id="startPathBlank" type="button">
         <div class="start-card-title">Blank session</div>
       </button>
