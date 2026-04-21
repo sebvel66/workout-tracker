@@ -1175,42 +1175,22 @@ async function updateExerciseFanOut(di, ei) {
   if (!exState) return;
   var hasPersisted = exState.sets.some(function(s){ return s && s.setId; });
   if (!hasPersisted) return;
+  // Only fan out rpe + note. exercise_id / prescribed_exercise_id are
+  // deliberately NOT touched here — those are set at insert time by
+  // buildSetPayload, and structural changes (substitution flips) are
+  // handled in logSubstitute with a precise UPDATE that filters on the
+  // current exercise_id. A blanket fan-out here would clobber pre-swap
+  // sets that legitimately still belong to the old exercise_id after a
+  // plan-level swap (v2.0.29). The legacy substitution text column is
+  // left alone too; new writes null it via buildSetPayload.
   try {
     var patch = {
       rpe: exState.rpe != null ? exState.rpe : null,
       note: exState.note || null,
     };
-    // Plan-day prescribed exercises (not ad-hoc, not extras) participate in
-    // the structured-substitution scheme. Mid-session sub change retargets
-    // all already-persisted sets' exercise_id to the substitute (or reverts
-    // to the prescribed when cleared). Ad-hoc + extras never have a
-    // prescribed_exercise_id, so we skip those.
-    var isPrescribedOnPlan = !todayState.isAdHoc && !exState.isExtra
-      && plan && plan.days[di] && plan.days[di].exercises[ei];
-    if (isPrescribedOnPlan) {
-      var prescribedId = exerciseIdCache[normName(plan.days[di].exercises[ei].name)];
-      var actualId = (exState.subExercise && exState.subExercise.id)
-        ? exState.subExercise.id : prescribedId;
-      if (actualId) patch.exercise_id = actualId;
-      if (prescribedId) patch.prescribed_exercise_id = prescribedId;
-      // Clear any legacy free-text substitution on fan-out — structured
-      // substitution supersedes it for post-v2.2.1 rows.
-      patch.substitution = null;
-    }
     var r = await sb.from('sets').update(patch)
       .eq('workout_id', todayState.workoutId).eq('exercise_order', ei);
     if (r.error) throw r.error;
-    // Keep the in-memory set slots in sync with what we just wrote so a
-    // subsequent render or buildSetPayload reflects the new exercise_id.
-    if (isPrescribedOnPlan && patch.exercise_id) {
-      for (var si = 0; si < exState.sets.length; si++) {
-        var slot = exState.sets[si];
-        if (slot && slot.setId) {
-          slot.exerciseId = patch.exercise_id;
-          slot.prescribedExerciseId = patch.prescribed_exercise_id || null;
-        }
-      }
-    }
   } catch(err) {
     console.error('updateExerciseFanOut error:', err);
     showToast("Exercise details didn't save", function() { updateExerciseFanOut(di, ei); });
@@ -1327,16 +1307,67 @@ async function logNote(di, ei, n) {
 }
 
 // Structured substitution: accepts a library row (the substitute) or null
-// to clear. Writes to state.subExercise and fans out exercise_id +
-// prescribed_exercise_id to all already-persisted sets of this exercise.
-// Legacy free-text state.sub is cleared on new substitute/clear so the
-// two representations don't diverge.
+// to clear. Updates state and retargets already-persisted sets' exercise_id
+// from the old actual to the new actual — but ONLY sets that currently
+// match the pre-change exercise_id. This preserves any post-swap legacy
+// sets attached to a different exercise_id (v2.0.29 Swap invariant:
+// "already-logged sets on the replaced exercise are preserved").
 async function logSubstitute(di, ei, libRow) {
   if (viewModeFor(di) !== 'editable') return;
   var st = getOrInitToday(di);
   var exState = getOrInitExercise(st, ei);
+
+  // Capture pre-change state before mutating so we know what to filter on.
+  var prescribedId = null;
+  if (!st.isAdHoc && !exState.isExtra && plan && plan.days[di] && plan.days[di].exercises[ei]) {
+    prescribedId = exerciseIdCache[normName(plan.days[di].exercises[ei].name)] || null;
+  }
+  var oldActualId = (exState.subExercise && exState.subExercise.id) ? exState.subExercise.id : prescribedId;
+  var newActualId = libRow ? libRow.id : prescribedId;
+
   exState.subExercise = libRow || null;
   exState.sub = '';  // drop any legacy free-text — structured field is source of truth now
+
+  // Retarget persisted sets for this exercise_order ONLY where exercise_id
+  // currently matches the pre-change actual. Surgical update — leaves any
+  // sets attached to a different exercise_id (post-swap, pre-second-sub)
+  // alone so they stay attached to the exercise that was actually done.
+  if (st.workoutId && prescribedId && oldActualId && newActualId && oldActualId !== newActualId) {
+    var hasPersisted = exState.sets.some(function(s) { return s && s.setId; });
+    if (hasPersisted) {
+      try {
+        var r = await sb.from('sets').update({
+          exercise_id: newActualId,
+          prescribed_exercise_id: prescribedId,
+          substitution: null,
+        })
+          .eq('workout_id', st.workoutId)
+          .eq('exercise_order', ei)
+          .eq('exercise_id', oldActualId);
+        if (r.error) throw r.error;
+        // Sync in-memory slots that were just retargeted so a buildSetPayload
+        // call on those sets reads the correct id. Skip slots attached to a
+        // different exercise_id (the ones we didn't touch in the DB).
+        for (var si = 0; si < exState.sets.length; si++) {
+          var slot = exState.sets[si];
+          if (slot && slot.setId && slot.exerciseId === oldActualId) {
+            slot.exerciseId = newActualId;
+            slot.prescribedExerciseId = prescribedId;
+          }
+        }
+      } catch(err) {
+        console.error('logSubstitute retarget error:', err);
+        showToast("Substitution didn't save", function() { logSubstitute(di, ei, libRow); });
+        // Revert in-memory sub state on failure so UI reflects reality.
+        exState.subExercise = oldActualId === prescribedId ? null : (exerciseLibraryById && exerciseLibraryById[oldActualId]) || null;
+        buildDay(di);
+        return;
+      }
+    }
+  }
+
+  // rpe + note fan-out is still useful for cleanliness (clears any legacy
+  // non-null values that might linger). Always safe — only writes rpe + note.
   await updateExerciseFanOut(di, ei);
   buildDay(di);
 }
@@ -1497,6 +1528,52 @@ async function createAdHocSession() {
     console.error('createAdHocSession error:', err);
     showToast("Couldn't start ad-hoc session: " + err.message, null);
   }
+}
+
+// Delete a workout by id. Sets cascade via the workout_id FK. Used by the
+// history detail "Discard session" action (plan + ad-hoc) and the today
+// "Cancel session" action on 0-set in-progress plan days. Caller handles
+// the confirm prompt + post-delete cleanup (cache invalidation, re-render).
+async function discardWorkout(workoutId) {
+  if (!userId || !workoutId) throw new Error('Missing context');
+  var r = await sb.from('workouts').delete().eq('id', workoutId).eq('user_id', userId);
+  if (r.error) throw new Error(r.error.message);
+  // Best-effort in-memory cache cleanup — the modal + history view will
+  // re-render off fresh state, but drop the stale entries immediately so
+  // nothing flashes the deleted workout during the transition.
+  if (historyDetails && historyDetails[workoutId]) delete historyDetails[workoutId];
+  invalidateHistoryCache();
+}
+
+// "Bring to today": move a historical or orphaned workout to the current
+// date, resetting the timer so the user can actually do the session. Keeps
+// any logged sets attached to the workout row. Partial unique index on
+// (user_id, plan_id, day_index, performed_on) enforces "one per plan-day
+// per date" — collision returns 23505 and we surface a clear message.
+//
+// Caller guarantees the workout is eligible (plan_id matches activePlanId
+// or is null for ad-hoc). Timer fields reset to current moment so the
+// session's duration reflects actual work from the reactivation point
+// forward, not yesterday's accidental tap-then-pause.
+async function reactivateWorkout(workoutId) {
+  if (!userId || !workoutId) throw new Error('Missing context');
+  var now = new Date().toISOString();
+  var today = sessionTodayDateString();
+  var r = await sb.from('workouts').update({
+    performed_on: today,
+    started_at: now,
+    ended_at: null,
+    paused_ms: 0,
+  }).eq('id', workoutId).eq('user_id', userId).select().maybeSingle();
+  if (r.error) {
+    if (r.error.code === '23505') {
+      throw new Error("You already have this day started today. Complete or discard that one first.");
+    }
+    throw new Error(r.error.message);
+  }
+  if (historyDetails && historyDetails[workoutId]) delete historyDetails[workoutId];
+  invalidateHistoryCache();
+  return r.data;
 }
 
 // Delete the currently-focused ad-hoc session along with all its sets

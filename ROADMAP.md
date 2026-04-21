@@ -23,6 +23,12 @@ First v2.1 bundle. Three features as one minor-version bump.
 - **AI exercise swap.** Small ⇄ icon on plan exercise cards (editable mode only) opens a modal that finds an AI-suggested replacement for one exercise via `POST /api/generate-plan { mode: "swap", ... }`. Server early-dispatches to `handleSwap` with its own inline system prompt (1h cache, 500 max tokens, ~8-15s warm). Optional reason input ("different gym", "knee pain", etc.) factors into selection. On Accept, mutates `plan.days[di].exercises[ei]` and writes `plans.data`. Already-logged sets stay attached to their original `exercise_id` in the sets table.
 - **View Recent enhancements.** Exercise-level notes now surface below RPE in the View Recent modal (muted italic). Gym location tag gets an "@" prefix for clarity. Both lines render only when data exists — no empty placeholders.
 
+### Shipped — v2.2.2 (2026-04-21)
+
+- **Session lifecycle recovery.** History detail modal gains "Bring to today" (moves a past workout to today with timer reset, sets preserved) and "Discard session" (deletes the workout + cascades sets). Today's 0-set in-progress plan-day session gets a dashed "Cancel session" affordance under the session bar. Closes the midnight-trap bug where accidentally-started-and-paused sessions couldn't be recovered.
+- **Swap regression fix.** v2.2.1's `updateExerciseFanOut` was erasing pre-swap sets' exercise_id on any RPE/note tap. Reverted fan-out to rpe+note only; substitution retargeting moved into `logSubstitute` with a precise filter that only touches sets currently matching the pre-change actual.
+- **Toast × close button.** Explicit dismiss affordance on every toast. `stopPropagation` ensures × on a retry toast doesn't accidentally fire the retry callback.
+
 ### Shipped — v2.2.1 (2026-04-21)
 
 - **Structured per-session substitutions.** Free-text SUB field on plan exercise cards replaced with a library picker. `sets.exercise_id` now means "what actually happened"; new `sets.prescribed_exercise_id` column records the plan's ask. Substituted sets file under the substitute's history automatically; plan adherence and v2.2.2's AI substitution-pattern query become trivial. Scope callouts (toasts on both swap accept and substitute apply + warning in the swap review modal) make the plan-durable-vs-session-only distinction explicit. Weight-mode + display-name track the substitute. Legacy free-text values render read-only with a re-link affordance. AI weight/rep recommendation for substitutes → v2.2.2.

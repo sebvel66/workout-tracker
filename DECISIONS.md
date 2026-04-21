@@ -2,6 +2,43 @@
 
 Running log of architecture/behavior decisions for the workout tracker. Newest first.
 
+## 2026-04-21 — Session lifecycle recovery + swap regression fix (v2.2.2)
+
+v2.2.2 addresses a long-standing edge case (accidentally-started session that midnight-traps into history) and cleans up a regression I introduced in v2.2.1 that broke the v2.0.29 Swap invariant.
+
+**Design decisions worth recording:**
+
+**1. Two recovery affordances for the midnight-trap bug: Discard and Reactivate.**
+
+User taps Start on a future day by mistake, taps Complete Session to pause it (0 sets logged), midnight rolls — now the workout is `performed_on = yesterday` and read-only in history, cluttering the AI planner's context. Two shipped affordances:
+
+- **Discard session** (history detail modal, all workouts): deletes the workout row; sets cascade via FK. Confirm prompt includes completed-set count so the user doesn't nuke real training data without realizing.
+- **Bring to today** (history detail modal, conditional): `UPDATE workouts SET performed_on = today, started_at = now(), ended_at = NULL, paused_ms = 0 WHERE id = X`. Sets stay attached. Timer resets to now. Reactivate is gated on `plan_id` matching the currently-active plan (or ad-hoc with plan_id = NULL) — reactivating a session from a different plan would drop it into today but it wouldn't surface in today's view, leaving the user more confused.
+
+Edge-case handling: partial unique index on `(user_id, plan_id, day_index, performed_on)` throws 23505 if today already has a workout for this plan-day. Caught and surfaced as: *"You already have this day started today. Complete or discard that one first."*
+
+**2. Pre-midnight cancel for in-progress 0-set sessions.**
+
+Addresses the same accidental-start case before midnight rolls. A dashed *"Cancel session (no sets logged)"* button renders under the session bar whenever today's plan-day state has `startedAt != null && completed_sets === 0`. Safer than letting it drift into history + needing the reactivate path. Deletes the workout row, clears in-memory `todayState` / `todayPlanStates[di]`, re-renders the day as not-started.
+
+Intentionally hidden when any set is completed — at that point the user is training for real, and a blanket "cancel" button could be destructive. Users with real sets logged who still want to scrub use the history-detail Discard path (with its completed-set-count confirmation).
+
+**3. Swap regression fix: fan-out scope reduced; substitution retarget moved into `logSubstitute` with a precise filter.**
+
+v2.2.1's `updateExerciseFanOut` wrote `exercise_id` + `prescribed_exercise_id` to every set at `(workout_id, exercise_order=ei)` when RPE or note changed. In isolation this worked for substitution flips. But combined with a prior v2.0.29 Swap (plan blob mutated, new sets logged post-swap get new exercise_id while old sets stay attached to the pre-swap exercise_id — the documented "historical for the old exercise" invariant), a single RPE tap after swap would overwrite the old sets' `exercise_id` to the new one, erasing the old exercise's history on that workout.
+
+Fix:
+- `updateExerciseFanOut` reverted to pre-v2.2.1 behavior — only writes `rpe` and `note`. Never touches `exercise_id` / `prescribed_exercise_id`.
+- `logSubstitute` does its own precise UPDATE: `SET exercise_id = newActualId, prescribed_exercise_id = prescribedId WHERE workout_id = X AND exercise_order = ei AND exercise_id = oldActualId`. The `.eq('exercise_id', oldActualId)` filter is the key — only retargets sets that currently match the pre-change actual. Legacy post-swap sets attached to a different `exercise_id` stay untouched.
+
+On failure: reverts in-memory `state.subExercise` and re-renders so the UI matches the DB.
+
+**Lesson:** when adding structural writes to a fan-out helper, audit the assumption that "all rows matching the grouping key belong to the same conceptual thing." In this app that assumption breaks under v2.0.29 Swap, and the fix was to move structural writes into the handlers that understand the structural semantics (logSubstitute) rather than the generic fan-out.
+
+**4. Toast × close button.**
+
+Every toast (error + info) now renders a small × button. Click handler calls `e.stopPropagation()` before `dismissToast(id)` so a user tapping × on a retry toast doesn't accidentally fire the retry callback — the body remains tappable for the retry action. Addresses a UX gap where retry toasts and long info toasts felt undismissable-by-design; × makes the dismiss affordance discoverable without changing the tap-body-to-retry or auto-dismiss semantics.
+
 ## 2026-04-21 — Structured per-session substitutions: `exercise_id` = actual, new `prescribed_exercise_id` = plan's ask (v2.2.1)
 
 Replaces the v1 free-text `sets.substitution` column with a structured FK. The v1 design let users type "machine row" into a free-text SUB field; those sets were invisible in Machine Row's history (because `exercise_id` still pointed at Cable Row) and the AI couldn't reason about swap patterns. v2.2.1 fixes both at the schema + UX level.

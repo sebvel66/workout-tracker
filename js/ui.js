@@ -293,6 +293,24 @@ function buildDay(di) {
       h += '<div class="session-bar done resumable"><div class="session-duration">Session: ' + fmtDuration(sessionElapsedMs(todayState)) + '</div>' +
            '<button class="session-btn session-resume" id="btnResumeSession" type="button">Resume</button></div>';
     }
+    // Cancel affordance for accidentally-started sessions. Only shows when
+    // the session is started (or paused) AND no sets have been completed —
+    // safe to discard. The in-progress 0-set case is "tapped Start by
+    // accident"; the paused 0-set case is "tapped Start then Complete by
+    // accident" (becomes the historical orphan we're fixing).
+    if (todayState && todayState.workoutId && todayState.startedAt) {
+      var cancelableSets = 0;
+      if (todayState.exercises) {
+        for (var cek in todayState.exercises) {
+          var cArr = todayState.exercises[cek].sets || [];
+          for (var csi = 0; csi < cArr.length; csi++) if (cArr[csi] && cArr[csi].done) cancelableSets++;
+        }
+      }
+      if (cancelableSets === 0) {
+        h += '<button class="session-cancel-btn" id="btnCancelSession" type="button" data-workout-id="' +
+             escapeAttr(todayState.workoutId) + '">Cancel session (no sets logged)</button>';
+      }
+    }
   } else if (mode === 'historical' && state && state.startedAt && state.endedAt) {
     h += '<div class="session-bar done"><div class="session-duration">Session: ' + fmtDuration(sessionElapsedMs(state)) + '</div></div>';
   }
@@ -1156,6 +1174,73 @@ function fmtHistoryVolume(lbs) {
   return Math.round(v) + ' ' + unit;
 }
 
+// Discard a workout from the history detail view. Confirms with set count
+// so the user doesn't nuke real training data. Returns to the week view on
+// success so the discarded row stops appearing.
+async function onDiscardWorkout(workoutId, completedCount, titleText) {
+  var setWord = completedCount === 1 ? 'completed set' : 'completed sets';
+  var msg = completedCount > 0
+    ? 'Discard ' + titleText + ' and ' + completedCount + ' ' + setWord + '? This cannot be undone.'
+    : 'Discard ' + titleText + '? No sets were logged; this just removes the empty session.';
+  if (!confirm(msg)) return;
+  try {
+    await discardWorkout(workoutId);
+    showToast('Session discarded', null);
+    // Reset the history detail view back to the week list so the deleted
+    // row isn't left dangling. goBack semantics mirror the ← button.
+    historyView = 'week';
+    document.getElementById('btnHistoryBack').style.display = 'none';
+    document.getElementById('historyBackSpacer').style.display = 'block';
+    await loadHistoryWeek(historyWeekStart);
+    renderHistory();
+  } catch(err) {
+    console.error('onDiscardWorkout error:', err);
+    showToast("Couldn't discard session: " + (err.message || 'unknown error'), null);
+  }
+}
+
+// "Bring to today": move a historical workout to the current date and
+// reset its timer. Post-success, close the history modal entirely and
+// re-hydrate so today's view picks up the reactivated session.
+async function onReactivateWorkout(workoutId) {
+  if (!confirm('Move this session to today? The timer resets to now; any logged sets are kept.')) return;
+  try {
+    await reactivateWorkout(workoutId);
+    closeHistory();
+    showToast('Session brought to today', null);
+    // Re-hydrate to pick up the reactivated workout in todayPlanStates /
+    // todayAdHocs. Cheap compared to a full reload and keeps UI state clean.
+    await hydrate();
+  } catch(err) {
+    console.error('onReactivateWorkout error:', err);
+    showToast("Couldn't move session: " + (err.message || 'unknown error'), null);
+  }
+}
+
+// Cancel the currently-focused plan-day session. Triggered from the
+// dashed "Cancel session (no sets logged)" affordance under the session
+// bar. Only rendered when zero sets are done, but we double-check here
+// before destructive delete.
+async function onCancelTodaySession(workoutId) {
+  if (!workoutId || !todayState || todayState.workoutId !== workoutId) return;
+  if (!confirm('Cancel this session? No sets were logged; this removes the empty session so you can start fresh.')) return;
+  try {
+    await discardWorkout(workoutId);
+    // Clear in-memory state so the day-tab re-renders as not-started.
+    if (typeof currentDay === 'number' && todayPlanStates[currentDay]) {
+      delete todayPlanStates[currentDay];
+    }
+    todayState = null;
+    stopTimerTick();
+    buildTabs();
+    buildDay(currentDay);
+    showToast('Session canceled. Start fresh when ready.', null);
+  } catch(err) {
+    console.error('onCancelTodaySession error:', err);
+    showToast("Couldn't cancel session: " + (err.message || 'unknown error'), null);
+  }
+}
+
 async function openHistoryDetail(workoutId) {
   historyView = 'detail';
   document.getElementById('btnHistoryBack').style.display = 'block';
@@ -1263,6 +1348,26 @@ function renderHistoryDetail(detail) {
       h += renderHistoryExerciseCard(ei4, exState4, meta4.name, meta4.weight_mode || 'total', null);
     }
   }
+  // Lifecycle actions — discard + reactivate. Placed at the bottom of the
+  // detail so the session content is what the user sees first. Reactivate
+  // only offered when safe (ad-hoc, or plan-based on the currently-active
+  // plan — reactivating a different plan's session would land it in a
+  // state no today-view surfaces). See DECISIONS.md v2.2.2.
+  var canReactivate = isAdHoc || (workout.plan_id && workout.plan_id === activePlanId);
+  var completedCount = 0;
+  var totalSetCount = 0;
+  var stateExercises = state.exercises || {};
+  for (var sek in stateExercises) {
+    var sets = stateExercises[sek].sets || [];
+    totalSetCount += sets.length;
+    for (var sj = 0; sj < sets.length; sj++) if (sets[sj] && sets[sj].done) completedCount++;
+  }
+  h += '<div class="history-detail-actions">';
+  if (canReactivate) {
+    h += '<button type="button" class="history-action-btn reactivate" data-workout-id="' + escapeAttr(workout.id) + '">Bring to today</button>';
+  }
+  h += '<button type="button" class="history-action-btn discard" data-workout-id="' + escapeAttr(workout.id) + '" data-completed="' + completedCount + '" data-title="' + escapeAttr(titleText) + '">Discard session</button>';
+  h += '</div>';
   h += '</div>';
   body.innerHTML = h;
 }
@@ -2860,6 +2965,19 @@ function showToast(msg, retryFn) {
     var r = document.createElement('div'); r.className = 'toast-retry'; r.textContent = 'tap to retry';
     el.appendChild(r);
   }
+  // Explicit close affordance. stopPropagation so tapping × on a retry
+  // toast dismisses without firing the retry callback — the body remains
+  // tappable for the retry action itself.
+  var closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'toast-close';
+  closeBtn.setAttribute('aria-label', 'Dismiss');
+  closeBtn.textContent = '×';
+  closeBtn.addEventListener('click', function(e) {
+    e.stopPropagation();
+    dismissToast(id);
+  });
+  el.appendChild(closeBtn);
   el.addEventListener('click', function() {
     dismissToast(id);
     if (retryFn) retryFn();
@@ -3499,6 +3617,22 @@ document.getElementById('historyBody').addEventListener('click', function(e) {
   if (prev) { navigateHistoryWeek(-1); return; }
   var next = e.target.closest ? e.target.closest('#btnHistoryWeekNext') : null;
   if (next) { navigateHistoryWeek(1); return; }
+  // Reactivate / discard actions must be checked BEFORE the row-open handler
+  // since they're rendered inside the detail view which isn't a .history-row.
+  var reactivateBtn = e.target.closest ? e.target.closest('.history-action-btn.reactivate') : null;
+  if (reactivateBtn) {
+    var widR = reactivateBtn.getAttribute('data-workout-id');
+    if (widR) onReactivateWorkout(widR);
+    return;
+  }
+  var discardBtn = e.target.closest ? e.target.closest('.history-action-btn.discard') : null;
+  if (discardBtn) {
+    var widD = discardBtn.getAttribute('data-workout-id');
+    var completed = parseInt(discardBtn.getAttribute('data-completed'), 10) || 0;
+    var title = discardBtn.getAttribute('data-title') || 'this session';
+    if (widD) onDiscardWorkout(widD, completed, title);
+    return;
+  }
   var row = e.target.closest ? e.target.closest('.history-row') : null;
   if (row) {
     openHistoryDetail(row.getAttribute('data-workout-id'));
@@ -3693,6 +3827,12 @@ document.getElementById('workoutContainer').addEventListener('click', function(e
   if (resumeBtn) {
     if (resumeBtn.disabled) return;
     resumeSession();
+    return;
+  }
+  var cancelSessionBtn = target.closest ? target.closest('#btnCancelSession') : null;
+  if (cancelSessionBtn) {
+    if (cancelSessionBtn.disabled) return;
+    onCancelTodaySession(cancelSessionBtn.getAttribute('data-workout-id'));
     return;
   }
   // Set check
