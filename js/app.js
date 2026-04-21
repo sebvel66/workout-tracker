@@ -43,7 +43,14 @@ var __hydratedFromCache = false;
     document.getElementById('emptyState').style.display = 'none';
     document.getElementById('summaryBar').style.display = 'flex';
     document.getElementById('planTitle').textContent = blob.planTitle || 'Workout Tracker';
-    document.getElementById('planWeek').textContent = blob.planWeek || '';
+    var weekEl = document.getElementById('planWeek');
+    weekEl.textContent = blob.planWeek || '';
+    var pill = document.createElement('span');
+    pill.id = 'refreshingPill';
+    pill.className = 'refreshing-pill';
+    pill.textContent = 'Refreshing…';
+    weekEl.appendChild(pill);
+
     buildTabs();
     buildDay(currentDay);
 

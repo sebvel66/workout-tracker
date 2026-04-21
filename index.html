@@ -59,6 +59,22 @@ html, body {
 
 .header-title { font-size: 15px; font-weight: 600; letter-spacing: -0.3px; }
 .header-week { font-size: 12px; color: var(--text2); font-family: 'JetBrains Mono', monospace; }
+/* Optimistic-paint indicator: shown next to #planWeek when the tracker
+   was painted from the hydration cache and hydrate() hasn't yet swapped
+   in fresh server state. Removed on successful reconcile. */
+.refreshing-pill {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  vertical-align: 1px;
+  letter-spacing: 0.3px;
+}
 .header-actions { display: flex; gap: 8px; }
 
 .header-btn {
