@@ -2,6 +2,109 @@
 
 Running log of architecture/behavior decisions for the workout tracker. Newest first.
 
+## 2026-04-20 — Plan templates: same plans table with `is_template` flag; fourth card in start-session modal (v2.0.28)
+
+Templates are reusable workout blueprints. They're modeled as a new row in the existing `plans` table (rather than a new table) gated by `is_template = true` + `is_active = false`. A template can be a whole plan (many days) or a single day (one-entry `days` array); the same consumer code handles both.
+
+**Design decisions worth recording:**
+
+**1. Same table, flag column — not a separate `templates` table.**
+
+`plans` already has exactly the shape we need: `user_id`, `data jsonb`, `created_at`, RLS policy. Splitting templates into their own table would duplicate the schema + double the RLS surface + force consumers to union-query both tables for listings. The active-plan unique index (`plans_one_active_per_user WHERE is_active`) is unaffected since templates always have `is_active = false`. A partial index keyed to template rows (`plans_user_templates_recent ... WHERE is_template = true`) keeps the templates-list query fast without scanning active/historical plan rows.
+
+**2. Single "Save as template" hamburger entry with scope picker inside the modal.**
+
+First draft had two hamburger rows — "Save plan as template" and "Save day [N] as template" — but the pair felt redundant when reading the menu. Consolidated to one entry. The save modal has a segmented Whole plan / Just "[day name]" picker; the day option enables only when focused on a plan day, and hides entirely when launched from a context without day focus (e.g., Plans-modal row save). Clean for the user; simpler code (one entry point, one modal).
+
+**3. Template picker is a 4th card in the start-session modal, not a new entry point.**
+
+Per DECISIONS.md 2026-04-19 (Explicit session-start modal): *"Any feature that wants to insert a new session-start path should add a fourth card to the modal rather than introducing a new entry point."* Honored. Tapping the card expands an inline list of templates; single-day templates create the session immediately, multi-day templates expand inline to show day rows (same visual pattern as Pick a different day). Empty state ("no templates yet") points users at the hamburger.
+
+**4. Single-day and multi-day templates share the same wire format.**
+
+A single-day template is just a plan blob with `days: [oneDay]`. Same JSON shape, same code path. `loadTemplates` / `deleteTemplate` / `createAdHocFromTemplate` don't branch on day count — the difference shows up only in the picker UI (direct-create vs inline expansion).
+
+**5. Template-based sessions are ad-hoc — they do not create plan-day workouts.**
+
+When the user picks a template + day, `createAdHocFromTemplate` inserts a `workouts` row with `plan_id = NULL`. The template's exercises become pre-populated entries in the ad-hoc state with `exerciseId` resolved via `resolveLibraryRow`. Logging sets on this session writes to `sets` normally, linked to the ad-hoc workout. Templates are blueprints, not plans — we don't want templates consuming the "one active plan" slot or polluting the Weekly History browser with phantom plan days.
+
+**6. Name resolution happens at template-use time, not at save time.**
+
+Template JSON stores exercise names verbatim (same as plan JSON). `createAdHocFromTemplate` resolves each name via `resolveLibraryRow` when the user picks the template; exercises that don't resolve are skipped with a toast ("2 exercises skipped, not in your library"). Consequences:
+- Templates saved when an exercise existed survive if the exercise is later renamed, as long as an alias or hyphen variant still resolves.
+- Templates are portable across library shape changes (e.g., new seed exercises).
+- Plays nicely with the planned "Resolve plan exercise names at import time" ROADMAP item — templates get the same treatment if/when that lands.
+
+**7. Templates are read-only after creation.**
+
+No edit button in the templates modal. If the user wants a modified version, they use the template, tweak the session, and save a new template from the modified plan. Avoids all the churn of "does editing a template retroactively change sessions created from it" (answer: it doesn't, because each use creates an independent workout — but making this explicit via no-edit keeps the mental model clean).
+
+**How to apply:**
+
+- Any future "save a workout-structure-as-data" feature (e.g., mesocycles, preset warm-ups) should follow the same pattern: flag column on an existing table, not a new table; shared consumer code for both "large" and "small" variants; resolve names at use time, not save time.
+- Any new session-start path (e.g., "Resume from last week", "Copy yesterday") must land as another card in the start-session modal. Do not add new entry points elsewhere — that was settled in the 2026-04-19 flexible-session-start decision.
+- When a feature has two hamburger entries that are always paired or contextually redundant, merge them into one entry with the distinction inside the modal.
+
+## 2026-04-20 — AI exercise swap: separate workflow on the same endpoint (v2.0.29)
+
+Single-exercise replacement on a plan day. Reuses the existing `/api/generate-plan` endpoint with `mode: "swap"` — not a new endpoint.
+
+**Design decisions worth recording:**
+
+**1. Same endpoint, early-dispatch on `mode` field.**
+
+Adding a new endpoint (`/api/swap-exercise`) would duplicate env-var checks, JWT verification, timeout handling, and error envelope. Instead, `handler()` checks `rawInputs.mode === 'swap'` before the plan-generation branch and calls `handleSwap(res, userId, rawInputs)`. Each branch has its own system prompt, max_tokens budget, validation, and abort — but shares auth, query helpers (`fetchActivePlan`, `fetchRecentWorkouts`, `fetchExerciseLibrary`), and error-response shape. Cleaner than two endpoints.
+
+**2. Inline swap system prompt, not a new bundled file.**
+
+The main plan-generation prompt lives in `system-prompt.md` loaded at cold start via `fs.readFileSync`. For swap, I put the prompt inline as a JavaScript constant. Reasons:
+- ~40 lines, fundamentally different workflow — doesn't share content with the main prompt.
+- Bundling a second file via `vercel.json` `includeFiles` would add build complexity for minimal iteration benefit.
+- Swap prompt rarely changes; when it does, edit = commit = redeploy, same as `system-prompt.md`.
+- Separate `cache_control` breakpoint (1h TTL) on the swap prompt means it gets its own Anthropic cache entry, independent from the main prompt.
+
+If the swap prompt ever grows past ~100 lines or needs frequent iteration, promote it to a bundled file. Not justified now.
+
+**3. 500-token budget, 8-15s warm response target.**
+
+One exercise, one JSON object. Sonnet at ~70-90 tok/s produces 500 tokens in ~6-7s; plus prompt digestion and Anthropic queueing, warm total lands 8-12s. Cold (cache miss) 15-20s. This is fast enough that the frontend doesn't need the silent-retry pattern used for plan generation — the failure mode (504) is surfaceable cleanly and the user taps Try again.
+
+**4. Server gathers context; client sends minimal payload.**
+
+Frontend sends `{ mode, exercise, reason, day_name }`. Server derives:
+- Exercise library (for name validation + prompt block).
+- Active plan (for today's other exercises — "don't suggest duplicates").
+- Recent 2-week history filtered to the same movement_pattern (or muscle_group fallback) — for weight calibration on the replacement.
+
+Moving context derivation server-side means the client stays simple and we don't round-trip context data. The 2-week window is a deliberate narrow scope — more history would bloat the prompt without improving weight choices.
+
+**5. Strict replacement validation rejects off-library names + same-day duplicates.**
+
+`validateSwapReplacement` checks:
+- Name is non-empty, a string, and exists in the library (set lookup).
+- Name != replaced name (Claude shouldn't suggest the same exercise).
+- Name not already on this day (the user message says this explicitly, but belt + suspenders).
+- Rest is an integer (seconds, per the sets-are-ints rule).
+- Non-empty sets.
+
+Failures return 422 with a specific error so the frontend can show an actionable toast. This is what makes `Try again` work well — Claude gets a clean retry, not a silent garbage response.
+
+**6. Accept-swap mutates the active plan; logged sets on the replaced exercise remain intact.**
+
+On Accept, frontend mutates `plan.days[di].exercises[ei]` and writes `plans.data` to Supabase via a single `update` query. The mutation is in-memory first, Supabase-write second; on write failure, `originalExercise` (deep-cloned at modal-open) is restored so the UI never drifts from the DB.
+
+Already-logged sets on the replaced exercise stay attached to their original `exercise_id` in the `sets` table — the plan blob is metadata, the set rows reference the exercise table directly. Result: "historical for the old exercise on that one workout" is the correct and automatic outcome. No cleanup or migration needed. Future set-done taps on the replaced card resolve the new name via `ensureExerciseId` → `resolveLibraryRow`, same as any plan exercise.
+
+**7. Swap icon is only rendered on plan exercises in editable mode.**
+
+Render condition: `!readOnly` (editable mode) AND inside the prescribed exercise loop (not the extras / ad-hoc loop). Historical and template views don't show swap — you can't mutate a historical plan's exercise; template plans get regenerated wholesale. Ad-hoc sessions don't have a "plan exercise" to replace — add/remove via the picker instead.
+
+**How to apply:**
+
+- Any future per-item AI feature on an existing workflow (e.g., "suggest warm-up sets", "explain this prescription") should follow the same pattern: early-dispatch on a `mode` field, inline system prompt if <100 lines and workflow is distinct, separate `cache_control` breakpoint, minimal client payload + server-side context derivation, strict validation against the library, in-memory mutation with deep-clone revert on write failure.
+- The swap failure budget is tighter than plan generation (500 tokens at ~70-90 tok/s = seconds not minutes). If swap latency ever regresses past ~15s warm, check output token count first (same MAJOR-BUGS.md lesson applies: output tokens dominate latency, not input).
+- Template-based sessions inherit the *replaced* exercise semantics automatically — sets on a template-day session reference canonical `exercise_id` values, same as any ad-hoc session. No template-specific handling needed in swap.
+
 ## 2026-04-20 — User-controlled plan inputs (training days / history weeks / photos) + system prompt as single source of truth (v2.0.27)
 
 Before v2.0.27, day count (5), day placement (Sun-Thu), split structure (Upper/Lower), and history window (4 weeks verbatim+summary) were all baked as constants — some in the serverless function, some in the system prompt. Changing any of them meant editing code or prompt and redeploying. v2.0.27 makes each a per-call input.
