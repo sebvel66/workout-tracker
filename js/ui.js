@@ -91,6 +91,20 @@ function fmtDuration(ms) {
   return h > 0 ? (h + 'h ' + pad2(m) + 'm') : (m + 'm');
 }
 
+// Duration-edit affordance used wherever a session timer / duration is
+// rendered. Clicking prompts for a new duration in minutes and updates
+// started_at to back-compute the new span (paused_ms zeroed). workoutId
+// drives the DB update; ctx distinguishes today (in-memory refresh) from
+// history (detail re-fetch).
+function renderDurationEditBtn(workoutId, currentMs, endedAt, ctx) {
+  if (!workoutId) return '';
+  var mins = Math.max(0, Math.round((currentMs || 0) / 60000));
+  return '<button type="button" class="duration-edit-btn" data-workout-id="' +
+    escapeAttr(workoutId) + '" data-current-min="' + mins +
+    '" data-ended-at="' + escapeAttr(endedAt || '') +
+    '" data-ctx="' + escapeAttr(ctx) + '" aria-label="Edit duration">✎</button>';
+}
+
 // ---- Render helpers ----
 function renderSetRow(di, ei, si, sl, prescribedSet, weightMode, disabledAttr, prText, deletable) {
   var currentUnit = getWeightUnit();
@@ -288,9 +302,11 @@ function buildDay(di) {
       h += '<button class="session-btn session-start" id="btnStartSession">Start Session</button>';
     } else if (todayState.startedAt && !todayState.endedAt) {
       h += '<div class="session-bar"><div class="session-timer" id="sessionTimer">' + fmtElapsed(sessionElapsedMs(todayState)) + '</div>' +
+           renderDurationEditBtn(todayState.workoutId, sessionElapsedMs(todayState), null, 'today') +
            '<button class="session-btn session-complete" id="btnCompleteSession">Complete Session</button></div>';
     } else if (todayState.startedAt && todayState.endedAt) {
       h += '<div class="session-bar done resumable"><div class="session-duration">Session: ' + fmtDuration(sessionElapsedMs(todayState)) + '</div>' +
+           renderDurationEditBtn(todayState.workoutId, sessionElapsedMs(todayState), todayState.endedAt, 'today') +
            '<button class="session-btn session-resume" id="btnResumeSession" type="button">Resume</button></div>';
     }
     // Cancel affordance for accidentally-started sessions. Only shows when
@@ -312,7 +328,8 @@ function buildDay(di) {
       }
     }
   } else if (mode === 'historical' && state && state.startedAt && state.endedAt) {
-    h += '<div class="session-bar done"><div class="session-duration">Session: ' + fmtDuration(sessionElapsedMs(state)) + '</div></div>';
+    h += '<div class="session-bar done"><div class="session-duration">Session: ' + fmtDuration(sessionElapsedMs(state)) + '</div>' +
+         renderDurationEditBtn(state.workoutId, sessionElapsedMs(state), state.endedAt, 'today') + '</div>';
   }
 
   h += renderSessionLocation(di, state, readOnly);
@@ -499,9 +516,11 @@ function buildAdHocDay(di) {
   // so it starts on the running-timer state.
   if (state.startedAt && !state.endedAt) {
     h += '<div class="session-bar"><div class="session-timer" id="sessionTimer">' + fmtElapsed(sessionElapsedMs(state)) + '</div>' +
+         renderDurationEditBtn(state.workoutId, sessionElapsedMs(state), null, 'today') +
          '<button class="session-btn session-complete" id="btnCompleteSession">Complete Session</button></div>';
   } else if (state.startedAt && state.endedAt) {
     h += '<div class="session-bar done resumable"><div class="session-duration">Session: ' + fmtDuration(sessionElapsedMs(state)) + '</div>' +
+         renderDurationEditBtn(state.workoutId, sessionElapsedMs(state), state.endedAt, 'today') +
          '<button class="session-btn session-resume" id="btnResumeSession" type="button">Resume</button></div>';
   }
 
@@ -1217,6 +1236,72 @@ async function onReactivateWorkout(workoutId) {
   }
 }
 
+// Prompt the user for a new session duration in minutes, then update the
+// workout's started_at so sessionElapsedMs(state) = new minutes. paused_ms
+// is zeroed — a manual override collapses any accumulated pause accounting.
+// `ctx` chooses the refresh strategy: 'today' patches in-memory state + re-
+// renders; 'history' invalidates cache + re-opens the detail view.
+async function promptAdjustDuration(workoutId, currentMin, endedAtIso, ctx) {
+  if (!userId || !workoutId) return;
+  var input = prompt('Session duration (minutes):', String(currentMin || 0));
+  if (input == null) return;  // cancelled
+  var trimmed = String(input).trim();
+  if (!trimmed) return;
+  var minutes = parseInt(trimmed, 10);
+  if (!Number.isFinite(minutes) || minutes < 0 || minutes > 600) {
+    showToast('Duration must be 0-600 minutes', null);
+    return;
+  }
+  // Anchor: completed sessions use ended_at as the right edge; running
+  // sessions use "now" so the timer keeps ticking from the new base.
+  var basis = endedAtIso ? new Date(endedAtIso).getTime() : Date.now();
+  var newStartedAt = new Date(basis - minutes * 60000).toISOString();
+  try {
+    var r = await sb.from('workouts').update({
+      started_at: newStartedAt,
+      paused_ms: 0,
+    }).eq('id', workoutId).eq('user_id', userId);
+    if (r.error) throw new Error(r.error.message);
+    showToast('Duration updated to ' + minutes + ' min', null);
+
+    if (ctx === 'history') {
+      // Force re-fetch of this workout's detail so the new started_at is reflected.
+      if (historyDetails && historyDetails[workoutId]) delete historyDetails[workoutId];
+      invalidateHistoryCache();
+      await openHistoryDetail(workoutId);
+      return;
+    }
+    // Today context: patch any in-memory state that owns this workout. Covers
+    // the focused session and any non-focused plan-day / ad-hoc state that
+    // happens to share the id (shouldn't overlap but belt-and-suspenders).
+    if (todayState && todayState.workoutId === workoutId) {
+      todayState.startedAt = newStartedAt;
+      todayState.pausedMs = 0;
+    }
+    for (var k in todayPlanStates) {
+      if (todayPlanStates[k] && todayPlanStates[k].workoutId === workoutId) {
+        todayPlanStates[k].startedAt = newStartedAt;
+        todayPlanStates[k].pausedMs = 0;
+      }
+    }
+    for (var i = 0; i < todayAdHocs.length; i++) {
+      if (todayAdHocs[i] && todayAdHocs[i].workoutId === workoutId) {
+        todayAdHocs[i].startedAt = newStartedAt;
+        todayAdHocs[i].pausedMs = 0;
+      }
+    }
+    buildDay(currentDay);
+    // If the focused session is running, restart the timer tick so the
+    // displayed timer stays accurate from the new base.
+    if (todayState && todayState.workoutId === workoutId && !todayState.endedAt) {
+      startTimerTick();
+    }
+  } catch(err) {
+    console.error('promptAdjustDuration error:', err);
+    showToast("Couldn't update duration: " + (err.message || 'unknown error'), null);
+  }
+}
+
 // Cancel the currently-focused plan-day session. Triggered from the
 // dashed "Cancel session (no sets logged)" affordance under the session
 // bar. Only rendered when zero sets are done, but we double-check here
@@ -1297,7 +1382,8 @@ function renderHistoryDetail(detail) {
   h += '<div class="history-detail-meta">' + escapeHtml(dateText) + (isAdHoc ? ' · ad-hoc' : '') + escapeHtml(gymText) + '</div>';
   if (state.startedAt && state.endedAt) {
     var ms = sessionElapsedMs(state);
-    h += '<div class="session-bar done" style="margin-top:12px"><div class="session-duration">Session: ' + fmtDuration(ms) + '</div></div>';
+    h += '<div class="session-bar done" style="margin-top:12px"><div class="session-duration">Session: ' + fmtDuration(ms) + '</div>' +
+         renderDurationEditBtn(workout.id, ms, state.endedAt, 'history') + '</div>';
   }
   h += '</div>';
 
@@ -3617,6 +3703,15 @@ document.getElementById('historyBody').addEventListener('click', function(e) {
   if (prev) { navigateHistoryWeek(-1); return; }
   var next = e.target.closest ? e.target.closest('#btnHistoryWeekNext') : null;
   if (next) { navigateHistoryWeek(1); return; }
+  // Duration edit inside history detail — route to history context.
+  var durEditHist = e.target.closest ? e.target.closest('.duration-edit-btn') : null;
+  if (durEditHist) {
+    var histWid = durEditHist.getAttribute('data-workout-id');
+    var histMin = parseInt(durEditHist.getAttribute('data-current-min'), 10) || 0;
+    var histEndedAt = durEditHist.getAttribute('data-ended-at') || null;
+    promptAdjustDuration(histWid, histMin, histEndedAt, 'history');
+    return;
+  }
   // Reactivate / discard actions must be checked BEFORE the row-open handler
   // since they're rendered inside the detail view which isn't a .history-row.
   var reactivateBtn = e.target.closest ? e.target.closest('.history-action-btn.reactivate') : null;
@@ -3833,6 +3928,16 @@ document.getElementById('workoutContainer').addEventListener('click', function(e
   if (cancelSessionBtn) {
     if (cancelSessionBtn.disabled) return;
     onCancelTodaySession(cancelSessionBtn.getAttribute('data-workout-id'));
+    return;
+  }
+  // Manual duration edit on today/ad-hoc session bars.
+  var durEditBtn = target.closest ? target.closest('.duration-edit-btn') : null;
+  if (durEditBtn) {
+    if (durEditBtn.disabled) return;
+    var wid = durEditBtn.getAttribute('data-workout-id');
+    var curMin = parseInt(durEditBtn.getAttribute('data-current-min'), 10) || 0;
+    var endedAt = durEditBtn.getAttribute('data-ended-at') || null;
+    promptAdjustDuration(wid, curMin, endedAt, 'today');
     return;
   }
   // Set check

@@ -1498,6 +1498,15 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
 }
 .session-btn.session-resume:active { background: var(--surface2); color: var(--text); }
 
+.duration-edit-btn {
+  background: transparent; border: 1px solid var(--border);
+  color: var(--text3); font-size: 13px; line-height: 1;
+  width: 28px; height: 28px; border-radius: 6px;
+  padding: 0; margin-left: 8px; flex-shrink: 0;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.duration-edit-btn:active { color: var(--accent); border-color: var(--accent); background: rgba(74, 222, 128, 0.08); }
+
 .session-cancel-btn {
   display: block; width: 100%;
   margin: 8px 0 12px;
