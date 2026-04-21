@@ -2,6 +2,70 @@
 
 Running log of architecture/behavior decisions for the workout tracker. Newest first.
 
+## 2026-04-21 — Split plan generation from training analysis; shared-core prompt architecture (v2.3.0)
+
+**Motivation:** the user wanted two things the existing plan-gen flow couldn't give them simultaneously — deep coaching commentary (the 60-word `coaching_notes` field was cramped) AND faster plan generation (embedded commentary costs 5-10s of Sonnet reasoning overhead per the MAJOR-BUGS 2026-04-20 lesson). Coach Chat wasn't the answer: it's on Haiku with a 14-day context window, built for *"should I drop weight right now?"* quick questions, not multi-week deep analysis.
+
+**Solution:** split the single plan-gen call into two calls with distinct output contracts:
+- **Plan-gen:** structure only. Four-section `coaching_notes` removed. Faster (5-10s saved from dropped reasoning directives).
+- **Analyze:** Sonnet on same endpoint with `mode: 'analyze'`. Same rich context (4+ week history, photos, plan) but output is a four-section written assessment. ~500-800 tokens, ~15-25s warm.
+
+**Design decisions worth recording:**
+
+**1. Shared-core prompt architecture, three bundled files.**
+
+Prior state: one monolithic `system-prompt.md` with CLIENT PROFILE + COACHING PHILOSOPHY + USER INPUTS + OUTPUT FORMAT all in one string. Splitting would either duplicate 80+ lines of coaching philosophy (maintenance burden) or embed conditional logic in the prompt (reasoning tax).
+
+Chosen: three files bundled via `vercel.json` `includeFiles: "system-prompt-*.md"` glob.
+- `system-prompt-core.md` — CLIENT PROFILE + COACHING PHILOSOPHY + EXERCISE LIBRARY rules. Shared between modes. Single source of truth for client context.
+- `system-prompt-plan.md` — plan-specific suffix: USER INPUTS as programming constraints, plan JSON OUTPUT FORMAT, plan HARD CONSTRAINTS.
+- `system-prompt-analyze.md` — analyze-specific suffix: USER INPUTS as analysis focus, four-section JSON OUTPUT FORMAT, analyze guidance.
+
+Cold start:
+```js
+const PROMPT_CORE = loadPromptPiece('system-prompt-core.md');
+const PROMPT_PLAN_SUFFIX = loadPromptPiece('system-prompt-plan.md');
+const PROMPT_ANALYZE_SUFFIX = loadPromptPiece('system-prompt-analyze.md');
+const SYSTEM_PROMPT_PLAN = PROMPT_CORE + '\n\n' + PROMPT_PLAN_SUFFIX;
+const SYSTEM_PROMPT_ANALYZE = PROMPT_CORE + '\n\n' + PROMPT_ANALYZE_SUFFIX;
+```
+
+Each final string gets its own `cache_control` with 1h TTL. Two independent Anthropic cache entries. Core edits automatically propagate to both modes at next deploy.
+
+**2. `coaching_notes` field removed entirely.**
+
+Not kept as a truncated vestige — fully dropped from the plan output contract. `validatePlan` no longer checks it. Every "in coaching_notes" / "flag in coaching notes" / "reference in coaching notes" directive stripped from the plan prompt (~40 lines cut). The MAJOR-BUGS 2026-04-20 lesson stands: instruction text in prompts incurs real reasoning cost even when the output constraint is modest. Dropping the directives is the bigger latency win than just capping the output shorter.
+
+**3. Input conflict audit (per user's explicit request — lesson from v2.0.27).**
+
+When moving a hardcoded value to an input, audit ALL downstream references. Same when splitting a prompt into modes — every prompt section needs to be checked against EACH mode's inputs for contradiction.
+
+Audit findings actioned:
+- Plan mode: all prior v2.0.27/v2.1.0 scoping intact. `Training days` → plan structure; `Target session duration` → per-day target; `Notes from client` → programming constraints. Coaching-notes-tied directives removed per (2) above.
+- Analyze mode: accepts only `history_weeks` + `notes` + `include_photos`. The frontend strips `training_days` / `target_duration` / `start_date` from the analyze payload client-side so they never reach the analyze prompt. Result: the analyze prompt never has to say *"ignore these forward-looking fields"* — they simply aren't in the user message. Removes the whole conflict surface.
+- **Notes semantics deliberately differ between modes.** Plan: programming constraints, respect verbatim ("dumbbells only this week" → no other equipment). Analyze: analysis focus / questions, address directly ("why is my bench stalled?" → answer in `concerns` or `next_week`). Each suffix prompt redefines the Notes field for its mode; no ambiguity.
+
+**4. Analyze output shape: structured JSON, four sections.**
+
+Alternatives considered: free-form prose (more expressive, harder to render/copy); nested objects per section (more structure, more fragile parse). Landed on flat JSON with four string fields: `trends` (1-2 sentences), `progressing` (2-3 sentences), `concerns` (2-4 sentences), `next_week` (3-5 sentences, actionable). Flat shape renders cleanly in the UI (one section = one labeled card) and lets the "Use for next plan" button reformat deterministically as labeled prose.
+
+**5. Analyze → plan chaining via a "Use for next plan" button.**
+
+One-click flow: analyze review has a button that takes the four-section output, prefixes each section with its label (`TRENDS: ... / PROGRESSING: ... / CONCERNS: ... / NEXT WEEK FOCUS: ...`), joins with double newlines, stuffs the result into the plan-gen `notes` textarea, and switches the view back to the inputs form with all other inputs preserved. User reviews, tweaks, clicks Generate Plan. Plan-gen's notes field already carries the "free-form context" semantic; the analysis slots in naturally as coaching guidance.
+
+This is the user's original insight: analysis is richer when separated, AND more useful when it can feed back into plan-gen. Manual copy/paste works; the button just eliminates one step.
+
+**6. Haiku ruled out for analyze mode despite being on the shelf.**
+
+Coach Chat on Haiku with 14-day context is the right tool for interactive in-session questions. For multi-week deep analysis, it's underpowered on two dimensions: model capability (Haiku vs Sonnet) AND context window (2 vs 4+ weeks). Using Sonnet + configurable history window for analyze means the same model that writes a well-reasoned plan also writes a well-reasoned analysis. Cost tradeoff is acceptable: ~$0.03/analyze call, user-triggered ~weekly.
+
+**How to apply:**
+
+- When splitting an AI workflow into multiple modes, prefer shared-core prompts over conditional-logic prompts. Conditional logic is reasoning tax; shared files with mode-specific suffixes are maintenance-friendly.
+- Always strip irrelevant inputs upstream of the prompt rather than telling the model to ignore them. The MAJOR-BUGS lesson applies: don't tell the model what NOT to reason about; just don't give it the information.
+- When the same field name means different things in different modes (Notes = constraints vs Notes = questions), redefine it explicitly in each mode's suffix. Don't rely on the model to figure out "which flavor of Notes is this."
+- When you remove a field from an output contract, grep the entire prompt for directives that reference it — leftover "in <removed field>" phrases dangle and cost reasoning.
+
 ## 2026-04-21 — First-paint completion dots via eager `daysWithHistory` map (v2.2.6)
 
 **Bug:** `●` next to each plan day in the dropdown was missing on hard reload for any day the user hadn't selected yet. Showed up only after selection. The user correctly noticed it looked like a "hydration rendering bug."

@@ -1072,6 +1072,25 @@ body.unauthed #emptyState { display: none !important; }
 }
 .generate-btn-accept:active, .generate-btn-cancel:active { opacity: 0.85; }
 .generate-btn-accept:disabled { opacity: 0.5; cursor: default; }
+.generate-btn-secondary {
+  background: transparent; color: var(--accent);
+  border: 1px solid var(--accent);
+}
+.generate-btn-secondary:active { opacity: 0.85; background: rgba(74, 222, 128, 0.08); }
+
+/* Analyze review — four-section written assessment */
+.analyze-section { margin: 12px 0; }
+.analyze-section-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+.analyze-section-text {
+  font-size: 14px; line-height: 1.5; color: var(--text);
+  padding: 8px 10px;
+  background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
+  white-space: pre-wrap; word-wrap: break-word;
+}
 .generate-inputs {
   padding: 16px;
   display: flex; flex-direction: column; gap: 14px;

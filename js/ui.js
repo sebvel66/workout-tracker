@@ -43,8 +43,10 @@ var photosViewerId = null;          // id of the photo currently in the viewer
 // 'loading' (spinner while the Edge Function runs, ~30-60s), and
 // 'review' (accept/cancel the returned plan).
 var generateView = 'inputs';        // 'inputs' | 'loading' | 'review'
+var generateMode = 'plan';          // 'plan' | 'analyze' — set at submit time
 var generatedPlan = null;           // the full plan JSON returned by /api/generate-plan
-var generatedMeta = null;           // { model, usage, generated_at }
+var generatedAnalysis = null;       // the analysis object from mode=analyze
+var generatedMeta = null;           // { model, usage, generated_at, elapsed_s }
 var generatedInputs = null;         // { start_date, target_duration, notes } from the form
 var generateStartedAt = 0;          // ms timestamp when the API call started
 var generateInFlight = false;       // prevents double-fire of the generate button
@@ -1832,19 +1834,21 @@ function openGenerate() {
   // Fresh open: show the inputs form. The fetch only fires when the
   // user submits via submitGenerateInputs().
   generateView = 'inputs';
+  generateMode = 'plan';
   generatedPlan = null;
+  generatedAnalysis = null;
   generatedMeta = null;
   generatedInputs = null;
   document.getElementById('generateOverlay').classList.add('show');
   renderGenerate();
 }
 
-async function submitGenerateInputs() {
-  // Collect form values. start_date / target_duration / notes are optional —
-  // empty/invalid pass through as null so the Edge Function falls back to
-  // defaults. training_days and history_weeks always emit a clamped value so
-  // the server never has to guess what the user meant. The server also
-  // clamps as defense in depth.
+// submitGenerateInputs dispatches on `mode` ('plan' | 'analyze'). v2.3.0
+// splits the old one-call flow into two: plan-gen returns structured plan
+// JSON only; analyze returns a four-section written assessment. The user
+// can chain them via the "Use for next plan" button on the analyze review.
+async function submitGenerateInputs(mode) {
+  mode = mode || 'plan';
   var startEl = document.getElementById('genFormStartDate');
   var durEl = document.getElementById('genFormDuration');
   var daysEl = document.getElementById('genFormTrainingDays');
@@ -1859,6 +1863,10 @@ async function submitGenerateInputs() {
   var historyWeeks = clampFormInt(weeksEl && weeksEl.value, 1, 12, 4);
   var includePhotos = !!(photosEl && photosEl.checked);
 
+  // Stash the full input set locally for display state. Payload to server
+  // differs by mode below — analyze strips the forward-looking fields so
+  // they don't leak into the analyze prompt's reasoning (per the v2.3.0
+  // audit: inputs should not conflict with the system prompt).
   generatedInputs = {
     start_date: startDate,
     target_duration: targetDuration,
@@ -1868,19 +1876,35 @@ async function submitGenerateInputs() {
     notes: notes,
   };
 
-  // Now fire the fetch. State transition: inputs → loading → review/error.
-  // Retry semantics: the serverless function can be cold on the first call
-  // of the hour (Anthropic prompt cache miss: ~35-45s vs ~22-30s warm).
-  // Slow-response days can tip past the server's 55s abort. A single silent
-  // retry hits the warm cache and almost always succeeds. Retry only on
-  // network errors / 5xx / 504 timeout — 4xx (no plan, auth, validation)
-  // won't fix themselves on retry.
+  var payload;
+  if (mode === 'analyze') {
+    payload = {
+      mode: 'analyze',
+      history_weeks: historyWeeks,
+      include_photos: includePhotos,
+      notes: notes,
+    };
+  } else {
+    payload = {
+      start_date: startDate,
+      target_duration: targetDuration,
+      training_days: trainingDays,
+      history_weeks: historyWeeks,
+      include_photos: includePhotos,
+      notes: notes,
+    };
+  }
+
   if (generateInFlight) return;
   generateInFlight = true;
+  generateMode = mode;
   generateView = 'loading';
   generateStartedAt = Date.now();
   generateAttempt = 1;
   generateAbortController = new AbortController();
+  // Reset prior output so the review dispatcher renders the right mode.
+  generatedPlan = null;
+  generatedAnalysis = null;
   renderGenerate();
 
   try {
@@ -1888,23 +1912,27 @@ async function submitGenerateInputs() {
     var token = sessionRes.data && sessionRes.data.session && sessionRes.data.session.access_token;
     if (!token) throw new Error('Not signed in');
 
-    var result = await attemptGeneratePlan(token, generateAbortController.signal);
+    var result = await attemptGenerate(token, generateAbortController.signal, payload, mode);
     if (result.retry) {
-      console.log('[generate] attempt 1 failed (' + result.error + ') — retrying with warm instance');
+      console.log('[generate:' + mode + '] attempt 1 failed (' + result.error + ') — retrying with warm instance');
       generateAttempt = 2;
       renderGenerate();
-      result = await attemptGeneratePlan(token, generateAbortController.signal);
+      result = await attemptGenerate(token, generateAbortController.signal, payload, mode);
     }
 
     if (!result.success) {
       var msg = result.error || 'unknown error';
       closeGenerate();
-      showToast('Plan generation failed: ' + msg, null);
+      showToast((mode === 'analyze' ? 'Analysis' : 'Plan generation') + ' failed: ' + msg, null);
       return;
     }
 
     var body = result.body;
-    generatedPlan = body.plan;
+    if (mode === 'analyze') {
+      generatedAnalysis = body.analysis;
+    } else {
+      generatedPlan = body.plan;
+    }
     generatedMeta = {
       model: body.model || 'unknown',
       weeks_analyzed: body.weeks_analyzed,
@@ -1915,24 +1943,20 @@ async function submitGenerateInputs() {
     renderGenerate();
   } catch(err) {
     if (err && err.name === 'AbortError') {
-      // User canceled — the close/cleanup already ran from cancelGenerate.
       return;
     }
     console.error('submitGenerateInputs error:', err);
     closeGenerate();
-    showToast('Plan generation failed: ' + (err.message || 'network error'), null);
+    showToast((mode === 'analyze' ? 'Analysis' : 'Plan generation') + ' failed: ' + (err.message || 'network error'), null);
   } finally {
     generateInFlight = false;
     generateAbortController = null;
   }
 }
 
-// Single POST to /api/generate-plan. Returns one of:
-//   { success: true, body }            on 200 with a plan
-//   { retry: true, error }             on 5xx / 504 / network error (caller may retry once)
-//   { success: false, error }          on 4xx, or 200 without a plan body
-// Re-throws AbortError so the caller's outer catch preserves user-cancel semantics.
-async function attemptGeneratePlan(token, signal) {
+// Unified fetch for plan + analyze modes. Picks the body key to validate
+// against by mode so the retry/success/failure classification matches.
+async function attemptGenerate(token, signal, payload, mode) {
   try {
     var res = await fetch('/api/generate-plan', {
       method: 'POST',
@@ -1940,18 +1964,21 @@ async function attemptGeneratePlan(token, signal) {
         Authorization: 'Bearer ' + token,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(generatedInputs),
+      body: JSON.stringify(payload),
       signal: signal,
     });
     var body = await res.json().catch(function() { return null; });
 
-    if (res.status === 200 && body && body.plan) {
-      return { success: true, body: body };
+    var successful;
+    if (mode === 'analyze') {
+      successful = res.status === 200 && body && body.analysis && typeof body.analysis === 'object';
+    } else {
+      successful = res.status === 200 && body && body.plan;
     }
+    if (successful) return { success: true, body: body };
+
     var msg = (body && body.error) || ('HTTP ' + res.status);
-    if (res.status >= 500) {
-      return { retry: true, error: msg };
-    }
+    if (res.status >= 500) return { retry: true, error: msg };
     return { success: false, error: msg };
   } catch(err) {
     if (err && err.name === 'AbortError') throw err;
@@ -1978,6 +2005,7 @@ function closeGenerate() {
   }
   document.getElementById('generateOverlay').classList.remove('show');
   generatedPlan = null;
+  generatedAnalysis = null;
   generatedMeta = null;
 }
 
@@ -1985,13 +2013,13 @@ function renderGenerate() {
   var title = document.getElementById('generateTitle');
   var body = document.getElementById('generateBody');
   if (generateView === 'inputs') {
-    title.textContent = 'Generate next week';
+    title.textContent = 'Analyze or generate plan';
     renderGenerateInputs(body);
   } else if (generateView === 'loading') {
-    title.textContent = 'Generating…';
+    title.textContent = generateMode === 'analyze' ? 'Analyzing…' : 'Generating plan…';
     renderGenerateLoading(body);
   } else if (generateView === 'review') {
-    title.textContent = 'Review plan';
+    title.textContent = generateMode === 'analyze' ? 'Training analysis' : 'Review plan';
     renderGenerateReview(body);
   }
 }
@@ -2043,7 +2071,8 @@ function renderGenerateInputs(body) {
 
   h += '<div class="generate-inputs-actions">';
   h += '<button type="button" class="generate-btn-cancel" id="btnGenerateInputCancel">Cancel</button>';
-  h += '<button type="button" class="generate-btn-accept" id="btnGenerateInputSubmit">Generate</button>';
+  h += '<button type="button" class="generate-btn-secondary" id="btnGenerateInputAnalyze">Analyze</button>';
+  h += '<button type="button" class="generate-btn-accept" id="btnGenerateInputSubmit">Generate Plan</button>';
   h += '</div>';
   h += '</div>';
   body.innerHTML = h;
@@ -2052,10 +2081,14 @@ function renderGenerateInputs(body) {
 function renderGenerateLoading(body) {
   var isRetry = generateAttempt === 2;
   var weeks = (generatedInputs && generatedInputs.history_weeks) || 4;
-  var status = isRetry ? 'Still generating — warming up the AI…' : 'Reviewing your training…';
+  var isAnalyze = generateMode === 'analyze';
+  var status = isRetry
+    ? 'Still running — warming up the AI…'
+    : (isAnalyze ? 'Analyzing your training…' : 'Building your plan…');
   var sub = isRetry
     ? 'First call after idle can be slow; retry lands on a warm cache'
-    : 'Analyzing ' + weeks + ' week' + (weeks === 1 ? '' : 's') + ' of data · usually 30-60 seconds';
+    : ('Reviewing ' + weeks + ' week' + (weeks === 1 ? '' : 's') + ' of data · usually ' +
+       (isAnalyze ? '15-30 seconds' : '30-60 seconds'));
   body.innerHTML =
     '<div class="generate-loading">' +
       '<div class="generate-spinner"></div>' +
@@ -2066,19 +2099,19 @@ function renderGenerateLoading(body) {
 }
 
 function renderGenerateReview(body) {
+  // Dispatch by mode. Analyze review shows the four-section written
+  // assessment + a "Use for next plan" button that carries the analysis
+  // forward into plan-gen's notes field. Plan review shows the structured
+  // plan for Accept — coaching_notes dropped in v2.3.0.
+  if (generateMode === 'analyze') {
+    renderAnalyzeReview(body);
+    return;
+  }
   if (!generatedPlan) { body.innerHTML = ''; return; }
   var p = generatedPlan;
-  var coaching = p.coaching_notes || '';
   var meta = generatedMeta || {};
 
   var h = '<div class="generate-review">';
-
-  if (coaching) {
-    h += '<div class="generate-coaching-card">';
-    h += '<div class="generate-coaching-label">Coach\'s notes</div>';
-    h += '<div class="generate-coaching-text">' + escapeHtml(coaching) + '</div>';
-    h += '</div>';
-  }
 
   h += '<div class="generate-meta">' +
     escapeHtml(p.title || 'New plan') +
@@ -2113,6 +2146,76 @@ function renderGenerateReview(body) {
   h += '</div>';
   h += '</div>';
   body.innerHTML = h;
+}
+
+// Render the four-section written analysis plus a "Use for next plan"
+// button that carries the analysis forward into plan-gen's notes field.
+function renderAnalyzeReview(body) {
+  if (!generatedAnalysis) { body.innerHTML = ''; return; }
+  var a = generatedAnalysis;
+  var meta = generatedMeta || {};
+  var h = '<div class="generate-review">';
+
+  h += '<div class="generate-meta">Analysis' +
+    (meta.weeks_analyzed ? ' · ' + meta.weeks_analyzed + ' week' + (meta.weeks_analyzed === 1 ? '' : 's') : '') +
+    (meta.model ? ' · ' + escapeHtml(meta.model) : '') +
+    (meta.elapsed_s ? ' · ' + meta.elapsed_s + 's' : '') +
+    '</div>';
+
+  var sections = [
+    { key: 'trends', label: 'TRENDS' },
+    { key: 'progressing', label: 'PROGRESSING' },
+    { key: 'concerns', label: 'CONCERNS' },
+    { key: 'next_week', label: 'NEXT WEEK' },
+  ];
+  for (var i = 0; i < sections.length; i++) {
+    var s = sections[i];
+    var val = a[s.key] || '';
+    if (!val) continue;
+    h += '<div class="analyze-section">';
+    h += '<div class="analyze-section-label">' + s.label + '</div>';
+    h += '<div class="analyze-section-text">' + escapeHtml(val) + '</div>';
+    h += '</div>';
+  }
+
+  h += '<div class="generate-actions">';
+  h += '<button class="generate-btn-cancel" id="btnGenerateCancel" type="button">Close</button>';
+  h += '<button class="generate-btn-accept" id="btnAnalyzeUseForPlan" type="button">Use for next plan</button>';
+  h += '</div>';
+  h += '</div>';
+  body.innerHTML = h;
+}
+
+// Carry the four-section analysis into plan-gen's notes field and return
+// the user to the inputs view with all their other inputs preserved. User
+// can then tweak and click Generate Plan to produce a plan informed by the
+// analysis. Each section is prefixed with a label so Claude parses them as
+// coaching guidance rather than random free-text.
+function useAnalysisForNextPlan() {
+  if (!generatedAnalysis) return;
+  var a = generatedAnalysis;
+  var bits = [];
+  if (a.trends) bits.push('TRENDS: ' + a.trends);
+  if (a.progressing) bits.push('PROGRESSING: ' + a.progressing);
+  if (a.concerns) bits.push('CONCERNS: ' + a.concerns);
+  if (a.next_week) bits.push('NEXT WEEK FOCUS: ' + a.next_week);
+  var carry = bits.join('\n\n');
+  // Switch back to the inputs view, re-render, then populate the textarea
+  // after DOM is ready. Existing inputs (training_days, duration, photos,
+  // etc.) are preserved via generatedInputs — the form reads values from
+  // the DOM only if the elements exist yet.
+  generatedAnalysis = null;
+  generateView = 'inputs';
+  renderGenerate();
+  setTimeout(function() {
+    var ta = document.getElementById('genFormNotes');
+    if (ta) {
+      ta.value = carry;
+      ta.focus();
+      ta.scrollTop = ta.scrollHeight;
+    }
+  }, 0);
+  showToast('Analysis carried forward. Review, then Generate Plan.', null);
 }
 
 function renderGenerateExercise(ex) {
@@ -3571,9 +3674,11 @@ document.getElementById('generateOverlay').addEventListener('click', function(e)
 });
 document.getElementById('generateBody').addEventListener('click', function(e) {
   if (!e.target || !e.target.closest) return;
-  if (e.target.closest('#btnGenerateInputSubmit')) { submitGenerateInputs(); return; }
+  if (e.target.closest('#btnGenerateInputSubmit')) { submitGenerateInputs('plan'); return; }
+  if (e.target.closest('#btnGenerateInputAnalyze')) { submitGenerateInputs('analyze'); return; }
   if (e.target.closest('#btnGenerateInputCancel')) { closeGenerate(); return; }
   if (e.target.closest('#btnGenerateAccept')) { onAcceptGeneratedPlan(); return; }
+  if (e.target.closest('#btnAnalyzeUseForPlan')) { useAnalysisForNextPlan(); return; }
   if (e.target.closest('#btnGenerateCancel')) { closeGenerate(); return; }
   if (e.target.closest('#btnGenerateAbort')) { cancelGenerate(); return; }
 });
