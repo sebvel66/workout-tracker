@@ -2,6 +2,30 @@
 
 Running log of architecture/behavior decisions for the workout tracker. Newest first.
 
+## 2026-04-21 — Core prompt audit: strip plan-mode input references that dangle in analyze mode (v2.3.2)
+
+v2.3.0 split the monolithic system prompt into shared `core.md` + mode-specific `plan.md` / `analyze.md` suffixes. An audit after v2.3.1 (at user request — "triple-check for conflicts, especially with user inputs") found four places in `core.md` that still referenced plan-only inputs (`Training days`, `Target session duration`). In analyze mode those inputs aren't in the user message, so the references dangled — Claude reads "Training days overrides it" with no Training days input present and spends reasoning tokens reconciling. The MAJOR-BUGS 2026-04-20 lesson applies: instruction text with no data behind it is pure reasoning cost.
+
+**Fix:** neutralize the four references in core. Plan suffix already covered every directive I removed, so plan-mode behavior is unchanged while analyze mode's prompt gets cleaner.
+
+| Location | Before | After |
+|---|---|---|
+| CLIENT PROFILE | Training days overrides + split-per-count guidance | Neutral: "established default; client's actual day count may differ for a given week" |
+| Execution rate | "(Do not reduce the day count — that's set by the Training days input...)" | Dropped parenthetical |
+| Proactive re-eval > Split structure | "Within the given Training days count... (Do not propose a different day count...)" | Neutral: "Is the current split still optimal?" |
+| Phase awareness | "reduce session duration (subject to Target session duration — never trim below)" | Dropped parenthetical |
+
+**Plan suffix coverage verified:**
+- Training-days adaptation → Plan USER INPUTS (split-per-count guidance moved to where the input is defined)
+- "Day count must match Training days" → Plan HARD CONSTRAINT
+- Target-duration override → Plan USER INPUTS override clause
+- Historical-preference override mechanism → Plan USER INPUTS priority rule
+
+**Rule that emerged:**
+When splitting a shared prompt into mode-specific suffixes, the shared core should reference ONLY inputs that appear in ALL modes' user messages. Any input-specific directive belongs in the suffix where the input is defined. If a rule absolutely needs to live in core, rephrase it neutrally (e.g., "split structure evaluation" rather than "within the Training days count"). Prompt-engineering hygiene that compounds with every mode added.
+
+**One-time cost:** first call after deploy is an Anthropic cache miss for the plan system prompt (core edited → cache invalidated). Warm thereafter.
+
 ## 2026-04-21 — Analyze mode: multi-photo comparison + explicit prompt guidance (v2.3.1)
 
 v2.3.0's analyze mode inherited plan-gen's "1 latest progress photo" limit and had a one-line photo directive. Two problems: over-time physique comparison was impossible (only one progress photo present) and the prompt didn't make the user's intent explicit (compare progress-to-progress AND progress-to-goal).
