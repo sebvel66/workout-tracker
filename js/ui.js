@@ -806,7 +806,7 @@ async function openExerciseHistory(exerciseName) {
 
   try {
     var res = await sb.from('sets')
-      .select('id, weight, reps, rpe, set_order, done, workout_id, workouts(performed_at, plan_id, day_index, title, location_id)')
+      .select('id, weight, reps, rpe, set_order, done, note, workout_id, workouts(performed_at, plan_id, day_index, title, location_id)')
       .eq('user_id', userId)
       .eq('exercise_id', row.id)
       .eq('done', true)
@@ -877,7 +877,8 @@ async function openExerciseHistory(exerciseName) {
         contextText = ' · ' + (sess.title || 'Ad-hoc');
       }
       if (sess.locationId && locationById[sess.locationId]) {
-        contextText += ' · ' + locationById[sess.locationId].name;
+        // "@" prefix distinguishes the gym tag from other context pieces at a glance.
+        contextText += ' · @ ' + locationById[sess.locationId].name;
       }
       sess.sets.sort(function(a, b) { return a.set_order - b.set_order; });
       var recentUnit = getWeightUnit();
@@ -892,10 +893,19 @@ async function openExerciseHistory(exerciseName) {
         var uniq = rpes.filter(function(v, idx, arr) { return arr.indexOf(v) === idx; });
         rpeText = 'RPE ' + (uniq.length === 1 ? uniq[0] : rpes.join(', '));
       }
+      // Per-exercise note: all sets in one exercise-on-workout carry the same
+      // note (buildSetPayload writes exState.note to every set). Pick the
+      // first non-empty note; suppress entirely if none.
+      var noteText = '';
+      for (var ni = 0; ni < sess.sets.length; ni++) {
+        var nv = sess.sets[ni] && sess.sets[ni].note;
+        if (nv && String(nv).trim()) { noteText = String(nv).trim(); break; }
+      }
       h += '<div class="ex-history-session">';
       h += '<div class="ex-history-session-date">' + escapeHtml(dateText + contextText) + '</div>';
       h += '<div class="ex-history-sets">' + escapeHtml(setStrs.join('  ·  ')) + '</div>';
       if (rpeText) h += '<div class="ex-history-rpe">' + escapeHtml(rpeText) + '</div>';
+      if (noteText) h += '<div class="ex-history-note">' + escapeHtml(noteText) + '</div>';
       h += '</div>';
     }
     body.innerHTML = h;
