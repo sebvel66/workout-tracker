@@ -97,6 +97,62 @@ var photosProgress = [];         // rows, newest first
 var photosLoaded = false;
 var photosSignedUrls = {};       // storage_path → { url, expiresAtMs }
 
+// ---- Hydration cache ----
+// localStorage-backed snapshot of the last-painted tracker state.
+// Painted synchronously on boot (see paintFromCache in app.js) before any
+// network call, then reconciled by hydrate(). Full design:
+// docs/superpowers/specs/2026-04-21-hydration-cache-design.md
+var HYDRATION_CACHE_KEY = 'wt.hydration.v1';
+var HYDRATION_SCHEMA_VERSION = 1;
+var HYDRATION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+function readHydrationSnapshot() {
+  try {
+    var raw = localStorage.getItem(HYDRATION_CACHE_KEY);
+    if (!raw) return null;
+    var blob = JSON.parse(raw);
+    if (!blob || blob.schemaVersion !== HYDRATION_SCHEMA_VERSION) return null;
+    if (!blob.userId || !blob.savedAt) return null;
+    var age = Date.now() - new Date(blob.savedAt).getTime();
+    if (!isFinite(age) || age > HYDRATION_MAX_AGE_MS) return null;
+    return blob;
+  } catch (_) {
+    return null;
+  }
+}
+
+function saveHydrationSnapshot() {
+  // Guard: only snapshot when hydrate has fully populated in-memory state
+  // for the current user. Prevents capturing half-loaded state from a
+  // visibilitychange that fires mid-hydrate or right after sign-out.
+  if (!userId || hydratedForUser !== userId) return;
+  if (!activePlanId || !plan) return;
+  try {
+    var blob = {
+      schemaVersion: HYDRATION_SCHEMA_VERSION,
+      userId: userId,
+      appVersion: (typeof APP_VERSION === 'string') ? APP_VERSION : null,
+      savedAt: new Date().toISOString(),
+      activePlanId: activePlanId,
+      plan: plan,
+      planTitle: plan.title || 'Workout Tracker',
+      planWeek: planWeekLabel(plan) || plan.week || '',
+      currentDay: currentDay,
+      daysWithHistory: daysWithHistory || {},
+      todayPlanStates: todayPlanStates || {},
+      todayAdHocs: todayAdHocs || []
+    };
+    localStorage.setItem(HYDRATION_CACHE_KEY, JSON.stringify(blob));
+  } catch (_) {
+    // Quota exceeded or serialization failure — not fatal. Cache just
+    // won't paint next boot; normal hydrate handles it.
+  }
+}
+
+function clearHydrationSnapshot() {
+  try { localStorage.removeItem(HYDRATION_CACHE_KEY); } catch (_) {}
+}
+
 // ---- State helpers ----
 function _planForState(state) {
   if (state && state.planId && planCache[state.planId]) return planCache[state.planId];
