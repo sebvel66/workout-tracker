@@ -2,6 +2,34 @@
 
 Running log of architecture/behavior decisions for the workout tracker. Newest first.
 
+## 2026-04-21 — First-paint completion dots via eager `daysWithHistory` map (v2.2.6)
+
+**Bug:** `●` next to each plan day in the dropdown was missing on hard reload for any day the user hadn't selected yet. Showed up only after selection. The user correctly noticed it looked like a "hydration rendering bug."
+
+**Actual root cause (diagnosed via superpowers:systematic-debugging):** not a timing issue. `buildTabs` runs after hydrate populates `todayPlanStates`. But the dot check `hasToday || historicalCache[i]` depends on `historicalCache`, which is lazy-loaded on tab selection (via `loadHistorical(di)`). On hard reload, only the currently-focused day has an entry. Every other plan day with historical workouts renders undotted because the lazy-load never fired for it.
+
+**Fix:** add a new tiny map `daysWithHistory = { [dayIndex]: true }`, populated once per hydrate with a single cheap query:
+```
+SELECT day_index FROM workouts WHERE user_id = X AND plan_id = activePlanId AND day_index IS NOT NULL
+```
+Returns a few ints (a user's plan typically has 3-7 days). `buildTabs` dot check becomes `hasToday || daysWithHistory[i] || historicalCache[i]`. The last clause stays as a fallback in case `daysWithHistory` is stale (e.g., after a discard that removes the last workout for a day — acceptable staleness, refreshes on next hydrate).
+
+**Alternatives considered:**
+
+1. **Eagerly load full `historicalCache` for every plan day on hydrate.** Rejected — N additional queries on every hydrate, when all we need is an existence flag per day, not full state.
+2. **Re-render `buildTabs` after every lazy `loadHistorical` completion.** Doesn't solve hard reload — hard reload doesn't trigger lazy loads for non-focused days.
+3. **Redesign the dropdown to lazy-load dots on scroll / open.** Over-engineered for a ~5-row dropdown.
+
+**Lifecycle hooks added:**
+- `applySession` (auth.js sign-in reset) clears `daysWithHistory`.
+- `savePlanAsActive` + `activateExistingPlan` (plan-switch paths) clear it and call `loadDaysWithHistory()` before `buildTabs` so dots match the new plan's history.
+
+**How to apply:**
+
+- When a UI indicator depends on data from another table, ask: is this data lazy-loaded, or eagerly available? If lazy, either (a) eagerly load a minimal existence flag, or (b) make the indicator re-render when the lazy-load completes. Relying on "the user will eventually select it" is the wrong mental model — UIs should be correct on first paint.
+- Pair eager-flag maps with the corresponding hydrate + plan-switch paths so they stay in sync without requiring full state loads.
+- This pattern (small eager-load of existence flags alongside lazy-load of full state) is a general-purpose fix for "list with indicators where the underlying detail state is per-item lazy." Reuse it when the same shape appears elsewhere.
+
 ## 2026-04-21 — Drag-to-reorder exercise cards, two zones, plan-level mutation (v2.2.5)
 
 Long-press an exercise card to lift it via SortableJS, drag within the same sort zone, drop. Plan-day sessions have two zones (prescribed / extras); ad-hoc sessions have one. Zones don't cross.

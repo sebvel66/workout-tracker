@@ -124,7 +124,7 @@ function applySession(session) {
     activePlanId = null; plan = null;
     todayState = null; todayPlanStates = {}; todayAdHocs = [];
     suggestedDayIndex = null;
-    historicalCache = {}; planCache = {}; exerciseIdCache = {};
+    historicalCache = {}; daysWithHistory = {}; planCache = {}; exerciseIdCache = {};
     exerciseLibrary = []; exerciseLibraryByName = {}; exerciseLibraryById = {};
     recentExercises = [];
     pickerState = { search: '', equipment: [], muscleGroup: [] };

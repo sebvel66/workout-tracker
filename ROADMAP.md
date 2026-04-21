@@ -23,6 +23,10 @@ First v2.1 bundle. Three features as one minor-version bump.
 - **AI exercise swap.** Small ⇄ icon on plan exercise cards (editable mode only) opens a modal that finds an AI-suggested replacement for one exercise via `POST /api/generate-plan { mode: "swap", ... }`. Server early-dispatches to `handleSwap` with its own inline system prompt (1h cache, 500 max tokens, ~8-15s warm). Optional reason input ("different gym", "knee pain", etc.) factors into selection. On Accept, mutates `plan.days[di].exercises[ei]` and writes `plans.data`. Already-logged sets stay attached to their original `exercise_id` in the sets table.
 - **View Recent enhancements.** Exercise-level notes now surface below RPE in the View Recent modal (muted italic). Gym location tag gets an "@" prefix for clarity. Both lines render only when data exists — no empty placeholders.
 
+### Shipped — v2.2.6 (2026-04-21)
+
+- **Day-dropdown completion dot hotfix.** The `●` on each plan day in the dropdown now renders correctly on first paint (hard reload). Previously it required selecting a day to trigger the lazy `historicalCache[i]` populate; non-focused days with prior workouts showed no dot. Fix: new `daysWithHistory` eager map populated by one cheap query at hydrate; dot check uses it alongside `historicalCache[i]` as a fallback. Reset + reloaded on plan switch and sign-in.
+
 ### Shipped — v2.2.5 (2026-04-21)
 
 - **Drag-to-reorder exercise cards.** Long-press (400ms) → SortableJS lift → drop within the same sort zone. Two zones on plan days (prescribed / extras, can't cross); one zone on ad-hoc. Plan-zone reorder mutates `plan.data` (same scope as Swap — *"for the rest of the week"*); extras / ad-hoc reorder is session-only. Current workout's sets are remapped so each stays attached to its exercise across the drag; remap is two-phase (`+10000` temp shift) to dodge the partial unique index on `(workout_id, exercise_id, exercise_order, set_order) WHERE done = true`. SortableJS 1.15.2 via CDN.

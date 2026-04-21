@@ -61,6 +61,12 @@ var todayState = null;
 var suggestedDayIndex = null;
 
 var historicalCache = {};     // dayIndex -> state (read-only past workouts)
+// Which plan-day indexes have any workout in history (today or past) for
+// the active plan. Populated once at hydrate via a single cheap query so
+// the dropdown completion dot renders correctly on first paint — previously
+// it required selecting a day to lazy-load historicalCache[i], leaving
+// non-focused days undotted on hard reload.
+var daysWithHistory = {};     // { [dayIndex]: true }
 var planCache = {};           // planId -> plan blob
 var exerciseIdCache = {};     // normName -> uuid
 
@@ -403,6 +409,32 @@ async function loadSuggestedDayIndex() {
     return;
   }
   suggestedDayIndex = (res.data[0].day_index + 1) % plan.days.length;
+}
+
+// Populate daysWithHistory (used by buildTabs for the completion dot)
+// with one cheap query: every distinct day_index that has a workout row
+// on the currently active plan. Payload is a few ints. Runs once per
+// hydrate so the dropdown dots render correctly on first paint —
+// historicalCache is still lazy-loaded on tab selection for the full
+// state, but the dot check no longer depends on it.
+async function loadDaysWithHistory() {
+  daysWithHistory = {};
+  if (!activePlanId || !userId) return;
+  var res = await sb.from('workouts')
+    .select('day_index')
+    .eq('user_id', userId)
+    .eq('plan_id', activePlanId)
+    .not('day_index', 'is', null);
+  if (res.error) {
+    // Non-fatal — dots just won't show for non-focused days, matching the
+    // pre-fix behavior. Log so we notice in dev.
+    console.error('loadDaysWithHistory error:', res.error);
+    return;
+  }
+  var rows = res.data || [];
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i].day_index != null) daysWithHistory[rows[i].day_index] = true;
+  }
 }
 
 // Lazy-load the earliest workout date once per session. Returns '' if the
@@ -1900,8 +1932,13 @@ async function savePlanAsActive(newPlan) {
   todayState = null;
   todayPlanStates = {};
   historicalCache = {};
+  daysWithHistory = {};
   exerciseIdCache = {};
   currentDay = 0;
+
+  // Repopulate days-with-history for the new active plan so dots render
+  // correctly in buildTabs below. Cheap query; new plans return nothing.
+  await loadDaysWithHistory();
 
   document.getElementById('emptyState').style.display = 'none';
   document.getElementById('summaryBar').style.display = 'flex';
@@ -1933,8 +1970,13 @@ async function activateExistingPlan(planId) {
   todayState = null;
   todayPlanStates = {};
   historicalCache = {};
+  daysWithHistory = {};
   exerciseIdCache = {};
   currentDay = 0;
+
+  // Repopulate days-with-history for the new active plan so dots render
+  // correctly in buildTabs below. Cheap query; new plans return nothing.
+  await loadDaysWithHistory();
 
   document.getElementById('emptyState').style.display = 'none';
   document.getElementById('summaryBar').style.display = 'flex';
