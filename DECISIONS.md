@@ -2,6 +2,26 @@
 
 Running log of architecture/behavior decisions for the workout tracker. Newest first.
 
+## 2026-04-21 — Hydration cache for fast warm boot (v2.4.0)
+
+**Problem.** Warm-boot latency: the empty-state shell ("Import a plan") flashes for 1-3s between page load and `hydrate()` completion. For a daily-opened PWA, the gap is a recurring friction on every open. The six sequential awaits in `hydrate` (auth, plans query, exercise library, recent exercises, locations, suggested day, days-with-history, today's workouts) all run before the first `buildDay()` paint.
+
+**Decision.** Cache the last-painted tracker state in `localStorage` and paint it synchronously on boot, before any network call. `hydrate()` still runs and reconciles in the background; a "Refreshing…" pill signals the state to the user. Cache is single-keyed (`wt.hydration.v1`), schema-versioned (`schemaVersion: 1`), age-gated (7 days), and scoped to the signed-in `userId`.
+
+**Why not:**
+- *Skeleton shimmer only.* Simpler but doesn't deliver "see what I last saw" — still blank during network.
+- *Full PWA offline with service worker + IndexedDB.* Overkill for the current ask; the failure modes (stale service worker, IndexedDB migration) outweigh the benefit for a single-user app.
+- *Write-through on every mutation.* Adds per-set-done / per-keystroke overhead. The lifecycle-event write cadence (`visibilitychange`, `beforeunload`, `hydrate` end, plan-activation) is sufficient because mutations already persist to Supabase via existing paths; the cache only drives the optimistic *first paint*, which only needs to be correct at the "close" moment.
+- *Invalidate on `APP_VERSION` bump.* We bump APP_VERSION on every visible change; tying cache invalidation to it would defeat the feature on every deploy. Instead: separate `HYDRATION_SCHEMA_VERSION` constant, bumped only when the cache shape changes.
+
+**Acceptable trade-off:** users may briefly see stale state after multi-device mutations (e.g., completed a set on another device). The pill signals this and the swap happens within ~2s.
+
+**Files:** [js/data.js](js/data.js) (helpers + listeners + plan-activation triggers), [js/app.js](js/app.js) (`paintFromCache` IIFE, reconcile logic, `__removeRefreshingPill`), [js/auth.js](js/auth.js) (sign-out clear), [index.html](index.html) (`.refreshing-pill` CSS). No schema changes.
+
+**Future schema bumps:** any change to the cached-blob shape (add/remove/rename a top-level field in the snapshot) must bump `HYDRATION_SCHEMA_VERSION` in the same commit. Old caches are then ignored on read and rewritten correctly at next hydrate end.
+
+**Spec + plan:** [docs/superpowers/specs/2026-04-21-hydration-cache-design.md](docs/superpowers/specs/2026-04-21-hydration-cache-design.md), [docs/superpowers/plans/2026-04-21-hydration-cache.md](docs/superpowers/plans/2026-04-21-hydration-cache.md).
+
 ## 2026-04-21 — Core prompt audit: strip plan-mode input references that dangle in analyze mode (v2.3.2)
 
 v2.3.0 split the monolithic system prompt into shared `core.md` + mode-specific `plan.md` / `analyze.md` suffixes. An audit after v2.3.1 (at user request — "triple-check for conflicts, especially with user inputs") found four places in `core.md` that still referenced plan-only inputs (`Training days`, `Target session duration`). In analyze mode those inputs aren't in the user message, so the references dangled — Claude reads "Training days overrides it" with no Training days input present and spends reasoning tokens reconciling. The MAJOR-BUGS 2026-04-20 lesson applies: instruction text with no data behind it is pure reasoning cost.
