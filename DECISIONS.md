@@ -2,7 +2,7 @@
 
 Running log of architecture/behavior decisions for the workout tracker. Newest first.
 
-## 2026-04-20 — Plan templates: same plans table with `is_template` flag; fourth card in start-session modal (v2.0.28)
+## 2026-04-20 — Plan templates: same plans table with `is_template` flag; fourth card in start-session modal (v2.1.0)
 
 Templates are reusable workout blueprints. They're modeled as a new row in the existing `plans` table (rather than a new table) gated by `is_template = true` + `is_active = false`. A template can be a whole plan (many days) or a single day (one-entry `days` array); the same consumer code handles both.
 
@@ -45,7 +45,7 @@ No edit button in the templates modal. If the user wants a modified version, the
 - Any new session-start path (e.g., "Resume from last week", "Copy yesterday") must land as another card in the start-session modal. Do not add new entry points elsewhere — that was settled in the 2026-04-19 flexible-session-start decision.
 - When a feature has two hamburger entries that are always paired or contextually redundant, merge them into one entry with the distinction inside the modal.
 
-## 2026-04-20 — AI exercise swap: separate workflow on the same endpoint (v2.0.29)
+## 2026-04-20 — AI exercise swap: separate workflow on the same endpoint (v2.1.0)
 
 Single-exercise replacement on a plan day. Reuses the existing `/api/generate-plan` endpoint with `mode: "swap"` — not a new endpoint.
 
