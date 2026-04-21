@@ -16,6 +16,49 @@ var APP_VERSION = 'v2.3.2';
   if (el) el.textContent = APP_VERSION;
 })();
 
+// ---- Paint from hydration cache ----
+// Runs synchronously before any network call. Reads the last-saved
+// tracker state from localStorage and paints it so the user sees their
+// last view instantly on warm boot. hydrate() then reconciles in the
+// background and swaps in fresh data. Cold boot (no cache) falls through
+// unchanged — #emptyState stays visible per HTML default until auth
+// resolves. Full design: docs/superpowers/specs/2026-04-21-hydration-cache-design.md
+var __hydratedFromCache = false;
+(function paintFromCache() {
+  var blob = readHydrationSnapshot();
+  if (!blob) return;
+  try {
+    // Populate globals. hydrate() will overwrite these with fresh server
+    // state when it runs; this is the optimistic first paint.
+    activePlanId = blob.activePlanId;
+    plan = blob.plan;
+    planCache[activePlanId] = plan;
+    currentDay = blob.currentDay;
+    daysWithHistory = blob.daysWithHistory || {};
+    todayPlanStates = blob.todayPlanStates || {};
+    todayAdHocs = blob.todayAdHocs || [];
+    sessionTodayStart = dayBounds(new Date()).start;
+
+    // Paint.
+    document.getElementById('emptyState').style.display = 'none';
+    document.getElementById('summaryBar').style.display = 'flex';
+    document.getElementById('planTitle').textContent = blob.planTitle || 'Workout Tracker';
+    document.getElementById('planWeek').textContent = blob.planWeek || '';
+    buildTabs();
+    buildDay(currentDay);
+
+    __hydratedFromCache = true;
+  } catch (err) {
+    // Paint failed — wipe the bad cache, reset globals, let hydrate do
+    // its normal cold-render. Don't mask the error; log it.
+    console.error('paintFromCache failed:', err);
+    clearHydrationSnapshot();
+    activePlanId = null; plan = null;
+    todayPlanStates = {}; todayAdHocs = []; daysWithHistory = {};
+    __hydratedFromCache = false;
+  }
+})();
+
 // ---- Hydration ----
 async function hydrate() {
   try {
