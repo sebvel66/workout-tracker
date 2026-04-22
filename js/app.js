@@ -7,7 +7,7 @@
 
 // Bump this on every deploy. Displayed at the bottom of the app so stale-
 // cache issues can be diagnosed from the client ("which version am I on?").
-var APP_VERSION = 'v2.4.15';
+var APP_VERSION = 'v2.4.16';
 
 // Paint the version tag in the bottom-right as soon as APP_VERSION is declared.
 // DOM is already parsed here (all the script tags sit at the end of <body>).
@@ -134,6 +134,18 @@ async function hydrate() {
       .order('performed_at', { ascending: true });
     if (wRes.error) { showToast("Failed to load today's workouts", null); }
     else {
+      // Reconcile: replace cached today-state with fresh DB state.
+      // paintFromCache may have populated todayAdHocs / todayPlanStates
+      // from the hydration snapshot; without clearing, the push loop
+      // below duplicates each ad-hoc entry (push, not assign) and
+      // leaves stale plan-day states for day_indexes not in today's
+      // rows. A stale cache paired with a duplicated fresh entry
+      // caused a 23505 on persistSet — findAdHoc returned the FIRST
+      // (stale) match with missing setIds, so taps on already-logged
+      // sets went INSERT instead of UPDATE and collided with the
+      // existing done=true row under sets_unique_position_per_workout.
+      todayAdHocs = [];
+      todayPlanStates = {};
       var rows = wRes.data || [];
       for (var i = 0; i < rows.length; i++) {
         var row = rows[i];
