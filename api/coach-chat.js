@@ -31,10 +31,7 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 // would be overkill. Lives close to the code that uses it.
 const COACH_SYSTEM_PROMPT = `You are the client's strength and hypertrophy coach, available during training sessions for real-time guidance. You know their training history, current plan, injury profile, and what they've done so far today — this context is provided in the first message of each conversation.
 
-CLIENT PROFILE:
-- Male, 5'11", approximately 165-175 lbs
-- Intermediate lifter, hypertrophy-focused
-- Injuries: patellofemoral knee pain, lower back sensitivity on Bulgarian Split Squats (BSS), grip as limiter on heavy pulls (straps approved)
+The first user message includes a CLIENT PROFILE section with current demographics, environment, goal, phase, active injuries (with per-injury management notes), and any special instructions. Read it once and treat it as the source of truth for who the client is. It supersedes defaults.
 
 RESPONSE STYLE:
 - Concise. 2-4 sentences for simple questions. Never more than a short paragraph unless the question genuinely requires depth.
@@ -110,15 +107,30 @@ export default async function handler(req, res) {
       if (typeof m.content !== 'string' || !m.content) return jsonError(res, 400, `Message ${i} has empty content`);
     }
 
-    // Inject RECENT COACHING CONVERSATIONS into messages[0] (the COACHING
-    // CONTEXT block the frontend pre-assembles). The block sits before the
-    // "Please acknowledge..." trailer so Claude reads context → continuity
-    // → acknowledgement in that order. Failure of the side-channel fetch
-    // is non-fatal (formatCoachHistory returns ''), and we never block
-    // the chat call on it.
-    const t_chist = Date.now();
-    const coachHistory = await fetchRecentCoachHistory(userId, 2);
-    console.log('[coach-chat] coach_history fetch:', Date.now() - t_chist, 'ms · msgs:', coachHistory.length);
+    // Side-channel fetches for profile + coach history. Run in parallel;
+    // both are non-fatal (formatters return '' on empty input). The
+    // results get spliced into messages[0] (the COACHING CONTEXT block
+    // the frontend pre-assembles): profile at the top so Claude reads
+    // "who is this client" first, history before the "Please acknowledge"
+    // trailer so the order is profile → context → history → ack.
+    const t_side = Date.now();
+    const [coachHistory, coachingProfile] = await Promise.all([
+      fetchRecentCoachHistory(userId, 2),
+      fetchCoachingProfile(userId),
+    ]);
+    console.log('[coach-chat] side fetches:', Date.now() - t_side, 'ms · msgs:', coachHistory.length, '· profile:', coachingProfile ? 'yes' : 'no');
+
+    // Prepend CLIENT PROFILE to messages[0].content. formatCoachingProfile
+    // always returns a non-empty string (either the profile block or a
+    // "not set" fallback), so Claude always sees a profile section.
+    const profileBlock = formatCoachingProfile(coachingProfile);
+    if (profileBlock) {
+      messages[0].content = profileBlock + '\n' + messages[0].content;
+    }
+
+    // Append coach history before the trailer. Failure of the
+    // side-channel fetch is non-fatal (formatCoachHistory returns ''
+    // on empty input), and we never block the chat call on it.
     const historyBlock = formatCoachHistory(coachHistory);
     if (historyBlock) {
       const trailer = '\n\nPlease acknowledge you have this context.';
@@ -210,10 +222,86 @@ async function verifyUser(authHeader) {
   return data && data.id ? data.id : null;
 }
 
-// ---- Coach history (mirrors generate-plan.js) ----
+// ---- Coaching profile + coach history helpers (mirror generate-plan.js) ----
 // Duplicated here rather than shared via a module because /api/ has no
 // shared-module pattern today and a single helper file would just add
-// import overhead. ~30 lines duplicated; cheap.
+// import overhead. Changes here should land in generate-plan.js in the
+// same commit.
+
+async function fetchCoachingProfile(userId) {
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/coaching_profile?user_id=eq.${userId}&select=data&limit=1`,
+      {
+        headers: {
+          apikey: SUPABASE_SERVICE_ROLE_KEY,
+          Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        },
+      }
+    );
+    if (!res.ok) return null;
+    const rows = await res.json();
+    return (rows[0] && rows[0].data) || null;
+  } catch (err) {
+    console.warn('[coaching_profile] fetch failed:', err && err.message);
+    return null;
+  }
+}
+
+function formatCoachingProfile(profile) {
+  if (!profile || typeof profile !== 'object' || Object.keys(profile).length === 0) {
+    return 'CLIENT PROFILE: (not set — client has not filled in their coaching profile yet. Rely on training data and general coaching principles.)\n\n';
+  }
+  let out = 'CLIENT PROFILE\n\n';
+  const basics = [];
+  if (profile.sex) basics.push(`Sex: ${profile.sex}`);
+  if (profile.height_ft != null || profile.height_in != null) {
+    const ft = profile.height_ft != null ? profile.height_ft : '?';
+    const inch = profile.height_in != null ? profile.height_in : '0';
+    basics.push(`Height: ${ft}'${inch}"`);
+  }
+  if (profile.weight_lbs != null) basics.push(`Current weight: ${profile.weight_lbs} lbs`);
+  if (profile.experience_level) basics.push(`Experience level: ${profile.experience_level}`);
+  if (basics.length) out += 'BASICS:\n- ' + basics.join('\n- ') + '\n\n';
+
+  if (profile.environment) out += `ENVIRONMENT: ${profile.environment}\n\n`;
+  if (profile.split_preference) out += `TRAINING PREFERENCE: ${profile.split_preference}\n\n`;
+
+  if (profile.goal_type || profile.goal_detail) {
+    out += 'GOAL';
+    if (profile.goal_type) out += `: ${profile.goal_type}`;
+    out += '\n';
+    if (profile.goal_detail) out += `Details: ${profile.goal_detail}\n`;
+    out += '\n';
+  }
+
+  if (profile.phase || profile.phase_notes || profile.phase_start_date) {
+    out += 'CURRENT PHASE';
+    if (profile.phase) out += `: ${profile.phase}`;
+    out += '\n';
+    if (profile.phase_start_date) out += `Started (or planned start): ${profile.phase_start_date}\n`;
+    if (profile.phase_notes) out += `Notes: ${profile.phase_notes}\n`;
+    out += '\n';
+  }
+
+  if (Array.isArray(profile.injuries) && profile.injuries.length) {
+    out += 'INJURIES / LIMITATIONS:\n';
+    for (const inj of profile.injuries) {
+      if (!inj || (!inj.name && !inj.notes)) continue;
+      out += `- ${inj.name || '(unnamed)'}\n`;
+      if (inj.notes) out += `  Management: ${inj.notes}\n`;
+    }
+    out += '\n';
+  }
+
+  if (profile.special_instructions) {
+    out += `SPECIAL INSTRUCTIONS: ${profile.special_instructions}\n\n`;
+  }
+
+  return out;
+}
+
+// ---- Coach history (mirrors generate-plan.js) ----
 
 async function fetchRecentCoachHistory(userId, weeksBack) {
   if (!Number.isFinite(weeksBack) || weeksBack < 1) weeksBack = 2;

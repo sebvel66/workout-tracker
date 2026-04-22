@@ -163,14 +163,15 @@ export default async function handler(req, res) {
     const verbatimWeeks = Math.min(MAX_VERBATIM_WEEKS, userInputs.historyWeeks);
 
     const t0 = Date.now();
-    const [activePlan, history, exercises, photos, coachHistory] = await Promise.all([
+    const [activePlan, history, exercises, photos, coachHistory, coachingProfile] = await Promise.all([
       fetchActivePlan(userId),
       fetchRecentWorkouts(userId, userInputs.historyWeeks),
       fetchExerciseLibrary(userId),
       userInputs.includePhotos ? fetchPhysiquePhotos(userId) : Promise.resolve({ goal: null, progress: [] }),
       fetchRecentCoachHistory(userId, 2),
+      fetchCoachingProfile(userId),
     ]);
-    console.log('[generate-plan] data fetch:', Date.now() - t0, 'ms', '· history_weeks:', userInputs.historyWeeks, '· training_days:', userInputs.trainingDays, '· include_photos:', userInputs.includePhotos, '· coach_msgs:', coachHistory.length);
+    console.log('[generate-plan] data fetch:', Date.now() - t0, 'ms', '· history_weeks:', userInputs.historyWeeks, '· training_days:', userInputs.trainingDays, '· include_photos:', userInputs.includePhotos, '· coach_msgs:', coachHistory.length, '· profile:', coachingProfile ? 'yes' : 'no');
 
     if (!activePlan) {
       return jsonError(res, 400, 'No active plan. Import a plan before generating.');
@@ -180,7 +181,7 @@ export default async function handler(req, res) {
     }
 
     const t1 = Date.now();
-    const userMessage = await buildUserMessage({ activePlan, history, exercises, photos, userInputs, verbatimWeeks, coachHistory });
+    const userMessage = await buildUserMessage({ activePlan, history, exercises, photos, userInputs, verbatimWeeks, coachHistory, coachingProfile });
     console.log('[generate-plan] prompt build (incl photo b64):', Date.now() - t1, 'ms');
 
     const t2 = Date.now();
@@ -354,6 +355,82 @@ async function fetchExerciseLibrary(userId) {
   return await res.json();
 }
 
+// Adaptive coaching profile (v2.5 layer 1). Replaces the hardcoded CLIENT
+// PROFILE / Injury-aware programming / Phase awareness blocks that used to
+// live in system-prompt-core.md. One row per user in coaching_profile;
+// the `data` jsonb holds the full shape. Missing row -> returns null and
+// formatCoachingProfile falls back to a one-line "not set" note.
+async function fetchCoachingProfile(userId) {
+  try {
+    const res = await sbFetch(
+      `/coaching_profile?user_id=eq.${userId}&select=data&limit=1`
+    );
+    if (!res.ok) return null;
+    const rows = await res.json();
+    return (rows[0] && rows[0].data) || null;
+  } catch (err) {
+    console.warn('[coaching_profile] fetch failed:', err && err.message);
+    return null;
+  }
+}
+
+// Build the CLIENT PROFILE text block that gets injected into the user
+// message. Keys follow the jsonb shape written by saveCoachingProfile in
+// js/data.js. Every field is optional — we only emit lines for populated
+// fields so a partially-filled profile doesn't bloat the prompt.
+function formatCoachingProfile(profile) {
+  if (!profile || typeof profile !== 'object' || Object.keys(profile).length === 0) {
+    return 'CLIENT PROFILE: (not set — client has not filled in their coaching profile yet. Rely on training data and general coaching principles.)\n\n';
+  }
+  let out = 'CLIENT PROFILE\n\n';
+  const basics = [];
+  if (profile.sex) basics.push(`Sex: ${profile.sex}`);
+  if (profile.height_ft != null || profile.height_in != null) {
+    const ft = profile.height_ft != null ? profile.height_ft : '?';
+    const inch = profile.height_in != null ? profile.height_in : '0';
+    basics.push(`Height: ${ft}'${inch}"`);
+  }
+  if (profile.weight_lbs != null) basics.push(`Current weight: ${profile.weight_lbs} lbs`);
+  if (profile.experience_level) basics.push(`Experience level: ${profile.experience_level}`);
+  if (basics.length) out += 'BASICS:\n- ' + basics.join('\n- ') + '\n\n';
+
+  if (profile.environment) out += `ENVIRONMENT: ${profile.environment}\n\n`;
+  if (profile.split_preference) out += `TRAINING PREFERENCE: ${profile.split_preference}\n\n`;
+
+  if (profile.goal_type || profile.goal_detail) {
+    out += 'GOAL';
+    if (profile.goal_type) out += `: ${profile.goal_type}`;
+    out += '\n';
+    if (profile.goal_detail) out += `Details: ${profile.goal_detail}\n`;
+    out += '\n';
+  }
+
+  if (profile.phase || profile.phase_notes || profile.phase_start_date) {
+    out += 'CURRENT PHASE';
+    if (profile.phase) out += `: ${profile.phase}`;
+    out += '\n';
+    if (profile.phase_start_date) out += `Started (or planned start): ${profile.phase_start_date}\n`;
+    if (profile.phase_notes) out += `Notes: ${profile.phase_notes}\n`;
+    out += '\n';
+  }
+
+  if (Array.isArray(profile.injuries) && profile.injuries.length) {
+    out += 'INJURIES / LIMITATIONS:\n';
+    for (const inj of profile.injuries) {
+      if (!inj || (!inj.name && !inj.notes)) continue;
+      out += `- ${inj.name || '(unnamed)'}\n`;
+      if (inj.notes) out += `  Management: ${inj.notes}\n`;
+    }
+    out += '\n';
+  }
+
+  if (profile.special_instructions) {
+    out += `SPECIAL INSTRUCTIONS: ${profile.special_instructions}\n\n`;
+  }
+
+  return out;
+}
+
 // Coach history window: last `weeksBack` complete prior weeks (Sun-anchored)
 // + current week to date. Same shape as fetchRecentWorkouts so the prompt
 // blocks line up temporally. Failure is NON-fatal — return [] so the plan
@@ -457,7 +534,7 @@ async function downloadPhotoAsBase64(storagePath) {
 }
 
 // ---- Prompt assembly ----
-async function buildUserMessage({ activePlan, history, exercises, photos, userInputs, verbatimWeeks, coachHistory }) {
+async function buildUserMessage({ activePlan, history, exercises, photos, userInputs, verbatimWeeks, coachHistory, coachingProfile }) {
   const content = [];
   const { verbatim, summarized } = splitHistoryByRecency(history, verbatimWeeks);
 
@@ -480,7 +557,10 @@ async function buildUserMessage({ activePlan, history, exercises, photos, userIn
   // Coach history slots between RECENT PERFORMANCE (verbatim+summarized) and
   // USER INPUTS so Claude reads "what happened in training" → "what we
   // talked about" → "what the user asked for this time" in that order.
+  // CLIENT PROFILE comes FIRST so Claude reads "who is this client" before
+  // interpreting plan state, history, coaching context, and user inputs.
   let dynText = '';
+  dynText += formatCoachingProfile(coachingProfile);
   dynText += formatCurrentPlan(activePlan);
   dynText += formatVerbatimHistory(verbatim, activePlan, verbatimWeeks);
   dynText += formatSummarizedHistory(summarized);
@@ -735,7 +815,7 @@ async function handleAnalyze(res, userId, rawInputs) {
   const includePhotos = rawInputs.include_photos === false ? false : true;
 
   const t0 = Date.now();
-  const [activePlan, history, exercises, photos, coachHistory] = await Promise.all([
+  const [activePlan, history, exercises, photos, coachHistory, coachingProfile] = await Promise.all([
     fetchActivePlan(userId),
     fetchRecentWorkouts(userId, historyWeeks),
     fetchExerciseLibrary(userId),
@@ -743,15 +823,16 @@ async function handleAnalyze(res, userId, rawInputs) {
       ? fetchPhysiquePhotos(userId, ANALYZE_PROGRESS_PHOTO_LIMIT)
       : Promise.resolve({ goal: null, progress: [] }),
     fetchRecentCoachHistory(userId, 2),
+    fetchCoachingProfile(userId),
   ]);
-  console.log('[generate-plan:analyze] data fetch:', Date.now() - t0, 'ms', '· history_weeks:', historyWeeks, '· include_photos:', includePhotos, '· progress_photos:', (photos.progress || []).length, '· coach_msgs:', coachHistory.length);
+  console.log('[generate-plan:analyze] data fetch:', Date.now() - t0, 'ms', '· history_weeks:', historyWeeks, '· include_photos:', includePhotos, '· progress_photos:', (photos.progress || []).length, '· coach_msgs:', coachHistory.length, '· profile:', coachingProfile ? 'yes' : 'no');
 
   if (!history.length) {
     return jsonError(res, 400, 'No workout history found. Log at least one week of training before requesting an analysis.');
   }
 
   const t1 = Date.now();
-  const userMessage = await buildAnalyzeUserMessage({ activePlan, history, exercises, photos, historyWeeks, verbatimWeeks, notes, coachHistory });
+  const userMessage = await buildAnalyzeUserMessage({ activePlan, history, exercises, photos, historyWeeks, verbatimWeeks, notes, coachHistory, coachingProfile });
   console.log('[generate-plan:analyze] prompt build:', Date.now() - t1, 'ms');
 
   const t2 = Date.now();
@@ -827,7 +908,7 @@ async function handleAnalyze(res, userId, rawInputs) {
   });
 }
 
-async function buildAnalyzeUserMessage({ activePlan, history, exercises, photos, historyWeeks, verbatimWeeks, notes, coachHistory }) {
+async function buildAnalyzeUserMessage({ activePlan, history, exercises, photos, historyWeeks, verbatimWeeks, notes, coachHistory, coachingProfile }) {
   const content = [];
   const { verbatim, summarized } = splitHistoryByRecency(history, verbatimWeeks);
 
@@ -842,6 +923,7 @@ async function buildAnalyzeUserMessage({ activePlan, history, exercises, photos,
   });
 
   let dynText = '';
+  dynText += formatCoachingProfile(coachingProfile);
   if (activePlan) dynText += formatCurrentPlan(activePlan);
   dynText += formatVerbatimHistory(verbatim, activePlan, verbatimWeeks);
   dynText += formatSummarizedHistory(summarized);
@@ -918,13 +1000,14 @@ async function handleSwap(res, userId, rawInputs) {
   const dayName = typeof rawInputs.day_name === 'string' ? rawInputs.day_name.slice(0, 120) : '';
 
   const t0 = Date.now();
-  const [activePlan, history, exercises, coachHistory] = await Promise.all([
+  const [activePlan, history, exercises, coachHistory, coachingProfile] = await Promise.all([
     fetchActivePlan(userId),
     fetchRecentWorkouts(userId, SWAP_HISTORY_WEEKS),
     fetchExerciseLibrary(userId),
     fetchRecentCoachHistory(userId, 2),
+    fetchCoachingProfile(userId),
   ]);
-  console.log('[generate-plan:swap] data fetch:', Date.now() - t0, 'ms', '· coach_msgs:', coachHistory.length);
+  console.log('[generate-plan:swap] data fetch:', Date.now() - t0, 'ms', '· coach_msgs:', coachHistory.length, '· profile:', coachingProfile ? 'yes' : 'no');
 
   const libraryNames = new Set(exercises.map(e => e.name));
 
@@ -946,7 +1029,7 @@ async function handleSwap(res, userId, rawInputs) {
   const movementHistory = summarizeMovementHistory(history, exercise.movement_pattern, exercise.muscle_group);
 
   const t1 = Date.now();
-  const userText = buildSwapUserMessage({ exercise, reason, dayName, otherToday, movementHistory, coachHistory });
+  const userText = buildSwapUserMessage({ exercise, reason, dayName, otherToday, movementHistory, coachHistory, coachingProfile });
   const userContent = [
     // Library block is cached (same 1h TTL pattern as plan generation).
     // Multiple swaps within an hour reuse this cache entry as long as the
@@ -1034,8 +1117,9 @@ async function handleSwap(res, userId, rawInputs) {
   });
 }
 
-function buildSwapUserMessage({ exercise, reason, dayName, otherToday, movementHistory, coachHistory }) {
-  let out = 'EXERCISE TO REPLACE\n';
+function buildSwapUserMessage({ exercise, reason, dayName, otherToday, movementHistory, coachHistory, coachingProfile }) {
+  let out = formatCoachingProfile(coachingProfile);
+  out += 'EXERCISE TO REPLACE\n';
   out += `Name: ${exercise.name}\n`;
   if (exercise.muscle_group) out += `Muscle group: ${exercise.muscle_group}\n`;
   if (exercise.movement_pattern) out += `Movement pattern: ${exercise.movement_pattern}\n`;
