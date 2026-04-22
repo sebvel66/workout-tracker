@@ -1293,6 +1293,73 @@ body.unauthed #emptyState { display: none !important; }
   font-family: 'Outfit', sans-serif; font-size: 14px; font-weight: 600;
   cursor: pointer; -webkit-tap-highlight-color: transparent;
 }
+/* Day header: tappable name for rename + remove-day button. */
+.template-editor-day-right { display: flex; align-items: center; gap: 8px; }
+.template-editor-day-name-btn {
+  background: none; border: none; color: var(--text1);
+  font-family: 'Outfit', sans-serif; font-size: 13px; font-weight: 600;
+  cursor: pointer; padding: 0; text-align: left;
+  -webkit-tap-highlight-color: transparent;
+}
+.template-editor-day-name-btn:active { opacity: 0.7; }
+.template-editor-day-remove {
+  background: transparent; color: var(--text3);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 3px 7px; font-size: 12px; cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.template-editor-day-remove:active {
+  color: var(--danger); border-color: var(--danger);
+}
+/* Expanded exercise form: rest + note + per-set grid. */
+.template-editor-ex-row { display: flex; align-items: center; gap: 8px; }
+.template-editor-ex-btn.expand { padding: 5px 8px; min-width: 28px; }
+.template-editor-ex-form {
+  margin-top: 10px; padding: 10px;
+  border-top: 1px solid var(--border); background: var(--bg);
+  border-radius: 8px;
+}
+.template-editor-ex-field {
+  display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px;
+}
+.template-editor-ex-field label { font-size: 11px; color: var(--text3); }
+.template-editor-ex-field input {
+  background: var(--surface2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 6px 10px; font-family: 'Outfit', sans-serif; font-size: 13px;
+  color: var(--text1);
+}
+.template-editor-sets-header {
+  display: grid; grid-template-columns: 28px 1fr 1fr 1fr 28px; gap: 6px;
+  font-size: 10px; color: var(--text3); font-weight: 500;
+  text-transform: uppercase; padding: 0 2px; margin-bottom: 4px;
+}
+.template-editor-set-row {
+  display: grid; grid-template-columns: 28px 1fr 1fr 1fr 28px; gap: 6px;
+  align-items: center; margin-bottom: 4px;
+}
+.template-editor-set-label {
+  font-size: 11px; color: var(--text2); font-weight: 500; text-align: center;
+}
+.template-editor-set-row input {
+  background: var(--surface2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 6px 6px; font-family: 'Outfit', sans-serif; font-size: 12px;
+  color: var(--text1); width: 100%; box-sizing: border-box;
+}
+.template-editor-set-remove {
+  background: transparent; color: var(--text3);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 4px; cursor: pointer; font-size: 12px;
+  -webkit-tap-highlight-color: transparent;
+}
+.template-editor-set-remove:active { color: var(--danger); }
+.template-editor-addset-btn {
+  background: transparent; color: var(--accent);
+  border: 1px dashed var(--accent); border-radius: 6px;
+  padding: 6px 10px; width: 100%; margin-top: 6px;
+  font-family: 'Outfit', sans-serif; font-size: 11px;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.template-editor-adddays-row { padding: 10px 14px; }
 .history-empty {
   text-align: center; padding: 40px 20px;
   color: var(--text3); font-size: 13px;

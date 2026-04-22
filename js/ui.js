@@ -3119,6 +3119,7 @@ function renderTemplates() {
   h += '<div class="templates-save-row">';
   h += '<button type="button" class="generate-btn-secondary" id="btnTemplatesSaveCurrent"' +
        (hasActivePlan ? '' : ' disabled') + '>+ Save current plan as template</button>';
+  h += '<button type="button" class="generate-btn-secondary" id="btnTemplatesCreateNew">+ Create new template</button>';
   h += '<div class="templates-save-hint">' + escapeHtml(saveHint) + '</div>';
   h += '</div>';
   if (!templatesList.length) {
@@ -3170,12 +3171,15 @@ async function onRenameTemplate(templateId) {
   }
 }
 
-// ---- Template editor (Phase 2: exercise-level edits) ----
+// ---- Template editor (Phases 2 + 3) ----
 // Open clones the template's data blob into editingTemplateBlob. All
-// edits mutate the clone. Save writes back to plans (data + title +
-// template_name). Cancel discards. No autosave.
+// edits mutate the clone. Save writes back via UPDATE (existing template)
+// or INSERT (create-from-scratch when editingTemplateId is null). Cancel
+// discards. No autosave. Per-exercise expansion state is UI-only and
+// lives outside the blob.
 var editingTemplateId = null;
 var editingTemplateBlob = null;
+var editingTemplateExpanded = {}; // "di:ei" -> true
 
 async function openTemplateEditor(templateId) {
   try {
@@ -3185,6 +3189,7 @@ async function openTemplateEditor(templateId) {
     editingTemplateBlob = JSON.parse(JSON.stringify(r.data.data || {}));
     if (!Array.isArray(editingTemplateBlob.days)) editingTemplateBlob.days = [];
     if (!editingTemplateBlob.title) editingTemplateBlob.title = r.data.template_name || 'Template';
+    editingTemplateExpanded = {};
     renderTemplateEditor();
     document.getElementById('templateEditorOverlay').classList.add('show');
   } catch(err) {
@@ -3193,10 +3198,29 @@ async function openTemplateEditor(templateId) {
   }
 }
 
+// Create-from-scratch entry. Opens the editor with a blank blob seeded
+// with one empty day. Save flow takes the INSERT branch since
+// editingTemplateId is null.
+function openTemplateEditorEmpty() {
+  editingTemplateId = null;
+  editingTemplateBlob = {
+    title: '',
+    days: [{ name: 'Day 1', exercises: [] }]
+  };
+  editingTemplateExpanded = {};
+  renderTemplateEditor();
+  document.getElementById('templateEditorOverlay').classList.add('show');
+  setTimeout(function() {
+    var nameEl = document.getElementById('templateEditorName');
+    if (nameEl) { nameEl.focus(); nameEl.select(); }
+  }, 50);
+}
+
 function closeTemplateEditor() {
   document.getElementById('templateEditorOverlay').classList.remove('show');
   editingTemplateId = null;
   editingTemplateBlob = null;
+  editingTemplateExpanded = {};
 }
 
 function renderTemplateEditor() {
@@ -3214,8 +3238,12 @@ function renderTemplateEditor() {
     var exs = Array.isArray(d.exercises) ? d.exercises : [];
     h += '<div class="template-editor-day">';
     h += '<div class="template-editor-day-header">';
-    h += '<div class="template-editor-day-name">' + escapeHtml(d.name || 'Day ' + (di + 1)) + '</div>';
-    h += '<div class="template-editor-day-meta">' + exs.length + ' exercise' + (exs.length === 1 ? '' : 's') + '</div>';
+    h += '<button type="button" class="template-editor-day-name-btn" data-rename-day="' + di + '">' +
+         escapeHtml(d.name || 'Day ' + (di + 1)) + '</button>';
+    h += '<div class="template-editor-day-right">';
+    h += '<div class="template-editor-day-meta">' + exs.length + ' ex</div>';
+    h += '<button type="button" class="template-editor-day-remove" data-remove-day="' + di + '" aria-label="Remove day">✕</button>';
+    h += '</div>';
     h += '</div>';
     h += '<div class="template-editor-ex-list" data-day-idx="' + di + '">';
     for (var ei = 0; ei < exs.length; ei++) {
@@ -3227,6 +3255,9 @@ function renderTemplateEditor() {
     h += '</div>';
     h += '</div>';
   }
+  h += '<div class="template-editor-adddays-row">';
+  h += '<button type="button" class="template-editor-add-btn" id="btnTemplateEditorAddDay">+ Add day</button>';
+  h += '</div>';
   body.innerHTML = h;
   initTemplateEditorDrag();
 }
@@ -3238,15 +3269,61 @@ function renderTemplateEditorExercise(ex, di, ei) {
   var repsStr = first.reps_range || (first.reps_target != null ? String(first.reps_target) : '?');
   var weightPart = (first.weight != null && first.weight !== 0) ? ' @' + first.weight : '';
   var meta = setCount + ' × ' + repsStr + weightPart;
+  var key = di + ':' + ei;
+  var expanded = !!editingTemplateExpanded[key];
   var h = '';
   h += '<div class="template-editor-ex" data-di="' + di + '" data-ei="' + ei + '">';
+  h += '<div class="template-editor-ex-row">';
   h += '<div class="template-editor-ex-main">';
   h += '<div class="template-editor-ex-name">' + escapeHtml(ex.name || '—') + '</div>';
   h += '<div class="template-editor-ex-meta">' + escapeHtml(meta) + '</div>';
   h += '</div>';
   h += '<div class="template-editor-ex-actions">';
+  h += '<button type="button" class="template-editor-ex-btn expand" data-expand-di="' + di + '" data-expand-ei="' + ei + '" aria-label="' + (expanded ? 'Collapse' : 'Expand') + '">' + (expanded ? '▴' : '▾') + '</button>';
   h += '<button type="button" class="template-editor-ex-btn swap" data-swap-di="' + di + '" data-swap-ei="' + ei + '">Swap</button>';
   h += '<button type="button" class="template-editor-ex-btn remove" data-remove-di="' + di + '" data-remove-ei="' + ei + '" aria-label="Remove">✕</button>';
+  h += '</div>';
+  h += '</div>';
+  if (expanded) h += renderTemplateEditorExerciseExpanded(ex, di, ei, sets);
+  h += '</div>';
+  return h;
+}
+
+function renderTemplateEditorExerciseExpanded(ex, di, ei, sets) {
+  var rest = ex.rest != null ? ex.rest : '';
+  var note = ex.note || '';
+  var h = '<div class="template-editor-ex-form">';
+  h += '<div class="template-editor-ex-field">';
+  h += '<label>Rest (sec)</label>';
+  h += '<input type="number" inputmode="numeric" min="0" step="5" value="' + escapeAttr(String(rest)) +
+       '" data-field="rest" data-di="' + di + '" data-ei="' + ei + '">';
+  h += '</div>';
+  h += '<div class="template-editor-ex-field">';
+  h += '<label>Note (optional)</label>';
+  h += '<input type="text" value="' + escapeAttr(note) + '" placeholder="e.g. slow eccentric, grip close"' +
+       ' data-field="note" data-di="' + di + '" data-ei="' + ei + '">';
+  h += '</div>';
+  h += '<div class="template-editor-sets">';
+  h += '<div class="template-editor-sets-header"><span></span><span>Weight</span><span>Reps</span><span>Range</span><span></span></div>';
+  for (var si = 0; si < sets.length; si++) {
+    var s = sets[si];
+    h += '<div class="template-editor-set-row">';
+    h += '<span class="template-editor-set-label">S' + (si + 1) + '</span>';
+    h += '<input type="number" inputmode="decimal" step="0.5" min="0" value="' +
+         escapeAttr(s.weight != null ? String(s.weight) : '') + '" placeholder="0"' +
+         ' data-set-field="weight" data-di="' + di + '" data-ei="' + ei + '" data-si="' + si + '">';
+    h += '<input type="number" inputmode="numeric" step="1" min="0" value="' +
+         escapeAttr(s.reps_target != null ? String(s.reps_target) : '') + '" placeholder="—"' +
+         ' data-set-field="reps_target" data-di="' + di + '" data-ei="' + ei + '" data-si="' + si + '">';
+    h += '<input type="text" value="' + escapeAttr(s.reps_range || '') + '" placeholder="8-12"' +
+         ' data-set-field="reps_range" data-di="' + di + '" data-ei="' + ei + '" data-si="' + si + '">';
+    h += '<button type="button" class="template-editor-set-remove"' +
+         ' data-remove-set-di="' + di + '" data-remove-set-ei="' + ei + '" data-remove-set-si="' + si + '"' +
+         ' aria-label="Remove set">×</button>';
+    h += '</div>';
+  }
+  h += '<button type="button" class="template-editor-addset-btn"' +
+       ' data-add-set-di="' + di + '" data-add-set-ei="' + ei + '">+ Add set</button>';
   h += '</div>';
   h += '</div>';
   return h;
@@ -3328,8 +3405,123 @@ function syncTemplateEditorNameInput() {
   if (el && editingTemplateBlob) editingTemplateBlob.title = el.value || '';
 }
 
+// ---- Day operations ----
+function onTemplateEditorAddDay() {
+  if (!editingTemplateBlob) return;
+  syncTemplateEditorNameInput();
+  if (!Array.isArray(editingTemplateBlob.days)) editingTemplateBlob.days = [];
+  var n = editingTemplateBlob.days.length + 1;
+  editingTemplateBlob.days.push({ name: 'Day ' + n, exercises: [] });
+  renderTemplateEditor();
+}
+
+function onTemplateEditorRemoveDay(di) {
+  if (!editingTemplateBlob || !editingTemplateBlob.days[di]) return;
+  var dayName = editingTemplateBlob.days[di].name || ('Day ' + (di + 1));
+  if (!confirm('Remove "' + dayName + '" and all its exercises?')) return;
+  syncTemplateEditorNameInput();
+  editingTemplateBlob.days.splice(di, 1);
+  // Indices shift after a splice; drop all expansion state rather than
+  // try to rekey. Minor UX cost (re-expand what you were viewing).
+  editingTemplateExpanded = {};
+  renderTemplateEditor();
+}
+
+function onTemplateEditorRenameDay(di) {
+  if (!editingTemplateBlob || !editingTemplateBlob.days[di]) return;
+  var current = editingTemplateBlob.days[di].name || '';
+  var next = prompt('Rename day', current);
+  if (next === null) return;
+  var trimmed = (next || '').trim();
+  if (!trimmed) { showToast('Day name required', null); return; }
+  if (trimmed === current) return;
+  syncTemplateEditorNameInput();
+  editingTemplateBlob.days[di].name = trimmed;
+  renderTemplateEditor();
+}
+
+// ---- Set operations ----
+function onTemplateEditorToggleExpand(di, ei) {
+  var key = di + ':' + ei;
+  if (editingTemplateExpanded[key]) delete editingTemplateExpanded[key];
+  else editingTemplateExpanded[key] = true;
+  renderTemplateEditor();
+}
+
+function onTemplateEditorAddSet(di, ei) {
+  if (!editingTemplateBlob || !editingTemplateBlob.days[di]) return;
+  var ex = editingTemplateBlob.days[di].exercises[ei];
+  if (!ex) return;
+  if (!Array.isArray(ex.sets)) ex.sets = [];
+  // Duplicate the last set when present so progressive add is quick; else
+  // fall back to a neutral default that matches the add-exercise path.
+  var last = ex.sets[ex.sets.length - 1];
+  var newSet = last
+    ? { weight: last.weight, reps_target: last.reps_target, reps_range: last.reps_range }
+    : { weight: 0, reps_target: 10, reps_range: '8-12' };
+  ex.sets.push(newSet);
+  renderTemplateEditor();
+}
+
+function onTemplateEditorRemoveSet(di, ei, si) {
+  if (!editingTemplateBlob || !editingTemplateBlob.days[di]) return;
+  var ex = editingTemplateBlob.days[di].exercises[ei];
+  if (!ex || !Array.isArray(ex.sets) || !ex.sets[si]) return;
+  if (ex.sets.length <= 1) {
+    showToast('Each exercise needs at least one set', null);
+    return;
+  }
+  ex.sets.splice(si, 1);
+  renderTemplateEditor();
+}
+
+// Centralized change handler for inline inputs (rest, note, per-set
+// weight/reps/range). Keeps the render function idempotent — edits flow
+// to the blob on blur/enter, no re-render required.
+function onTemplateEditorInputChange(target) {
+  if (!target || !editingTemplateBlob) return;
+  var field = target.getAttribute('data-field');
+  if (field) {
+    var di = parseInt(target.getAttribute('data-di'), 10);
+    var ei = parseInt(target.getAttribute('data-ei'), 10);
+    if (isNaN(di) || isNaN(ei)) return;
+    var ex = editingTemplateBlob.days[di] && editingTemplateBlob.days[di].exercises[ei];
+    if (!ex) return;
+    if (field === 'rest') {
+      var r = parseInt(target.value, 10);
+      ex.rest = isNaN(r) ? null : r;
+    } else if (field === 'note') {
+      var n = (target.value || '').trim();
+      if (n) ex.note = n; else delete ex.note;
+    }
+    return;
+  }
+  var setField = target.getAttribute('data-set-field');
+  if (setField) {
+    var sdi = parseInt(target.getAttribute('data-di'), 10);
+    var sei = parseInt(target.getAttribute('data-ei'), 10);
+    var ssi = parseInt(target.getAttribute('data-si'), 10);
+    if (isNaN(sdi) || isNaN(sei) || isNaN(ssi)) return;
+    var sets = editingTemplateBlob.days[sdi] &&
+               editingTemplateBlob.days[sdi].exercises[sei] &&
+               editingTemplateBlob.days[sdi].exercises[sei].sets;
+    if (!sets || !sets[ssi]) return;
+    var s = sets[ssi];
+    if (setField === 'weight') {
+      var w = parseFloat(target.value);
+      s.weight = isNaN(w) ? 0 : w;
+    } else if (setField === 'reps_target') {
+      var rt = parseInt(target.value, 10);
+      s.reps_target = isNaN(rt) ? null : rt;
+    } else if (setField === 'reps_range') {
+      var rr = (target.value || '').trim();
+      if (rr) s.reps_range = rr; else delete s.reps_range;
+    }
+  }
+}
+
 async function saveTemplateEdits() {
-  if (!editingTemplateId || !editingTemplateBlob) return;
+  if (!editingTemplateBlob) return;
   syncTemplateEditorNameInput();
   var name = (editingTemplateBlob.title || '').trim();
   if (!name) {
@@ -3337,16 +3529,37 @@ async function saveTemplateEdits() {
     var el = document.getElementById('templateEditorName'); if (el) el.focus();
     return;
   }
+  // Shape validation: prevent saving a malformed template that would
+  // misbehave on later use (createAdHocFromTemplate + start-screen
+  // picker both assume non-empty days).
+  var days = Array.isArray(editingTemplateBlob.days) ? editingTemplateBlob.days : [];
+  if (!days.length) {
+    showToast('Template needs at least one day', null);
+    return;
+  }
+  for (var di = 0; di < days.length; di++) {
+    var exs = Array.isArray(days[di].exercises) ? days[di].exercises : [];
+    if (!exs.length) {
+      showToast((days[di].name || 'Day ' + (di + 1)) + ' is empty — add an exercise or remove the day', null);
+      return;
+    }
+  }
   editingTemplateBlob.title = name;
   var btn = document.getElementById('btnTemplateEditorSave');
   if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
   try {
-    var r = await sb.from('plans').update({
-      template_name: name,
-      title: name,
-      data: editingTemplateBlob
-    }).eq('id', editingTemplateId);
-    if (r.error) throw new Error(r.error.message);
+    if (editingTemplateId) {
+      // Existing template → update in place.
+      var r = await sb.from('plans').update({
+        template_name: name,
+        title: name,
+        data: editingTemplateBlob
+      }).eq('id', editingTemplateId);
+      if (r.error) throw new Error(r.error.message);
+    } else {
+      // Create-from-scratch → new plans row.
+      await saveAsTemplate(name, editingTemplateBlob);
+    }
     closeTemplateEditor();
     await loadTemplatesIntoState();
     renderTemplates();
@@ -3864,6 +4077,11 @@ document.getElementById('templatesBody').addEventListener('click', function(e) {
     openSaveAsTemplateFromMenu();
     return;
   }
+  var createBtn = e.target.closest('#btnTemplatesCreateNew');
+  if (createBtn && !createBtn.disabled) {
+    openTemplateEditorEmpty();
+    return;
+  }
   var renameBtn = e.target.closest('.plans-btn.rename');
   if (renameBtn && !renameBtn.disabled) {
     var rid = renameBtn.getAttribute('data-template-id');
@@ -3896,6 +4114,32 @@ document.getElementById('templateEditorOverlay').addEventListener('click', funct
 });
 document.getElementById('templateEditorBody').addEventListener('click', function(e) {
   if (!e.target || !e.target.closest) return;
+  // Add-day footer button (bottom of all days)
+  if (e.target.closest('#btnTemplateEditorAddDay')) {
+    onTemplateEditorAddDay();
+    return;
+  }
+  // Day-level: rename / remove
+  var renameDayBtn = e.target.closest('[data-rename-day]');
+  if (renameDayBtn) {
+    var rdn = parseInt(renameDayBtn.getAttribute('data-rename-day'), 10);
+    if (!isNaN(rdn)) onTemplateEditorRenameDay(rdn);
+    return;
+  }
+  var removeDayBtn = e.target.closest('[data-remove-day]');
+  if (removeDayBtn) {
+    var rdd = parseInt(removeDayBtn.getAttribute('data-remove-day'), 10);
+    if (!isNaN(rdd)) onTemplateEditorRemoveDay(rdd);
+    return;
+  }
+  // Exercise-level: expand / swap / remove
+  var expandBtn = e.target.closest('[data-expand-ei]');
+  if (expandBtn) {
+    var xdi = parseInt(expandBtn.getAttribute('data-expand-di'), 10);
+    var xei = parseInt(expandBtn.getAttribute('data-expand-ei'), 10);
+    if (!isNaN(xdi) && !isNaN(xei)) onTemplateEditorToggleExpand(xdi, xei);
+    return;
+  }
   var addBtn = e.target.closest('[data-add-day]');
   if (addBtn) {
     var adi = parseInt(addBtn.getAttribute('data-add-day'), 10);
@@ -3916,6 +4160,29 @@ document.getElementById('templateEditorBody').addEventListener('click', function
     if (!isNaN(rdi) && !isNaN(rei)) onTemplateEditorRemove(rdi, rei);
     return;
   }
+  // Set-level: add / remove
+  var addSetBtn = e.target.closest('[data-add-set-ei]');
+  if (addSetBtn) {
+    var asdi = parseInt(addSetBtn.getAttribute('data-add-set-di'), 10);
+    var asei = parseInt(addSetBtn.getAttribute('data-add-set-ei'), 10);
+    if (!isNaN(asdi) && !isNaN(asei)) onTemplateEditorAddSet(asdi, asei);
+    return;
+  }
+  var removeSetBtn = e.target.closest('[data-remove-set-si]');
+  if (removeSetBtn) {
+    var rsdi = parseInt(removeSetBtn.getAttribute('data-remove-set-di'), 10);
+    var rsei = parseInt(removeSetBtn.getAttribute('data-remove-set-ei'), 10);
+    var rssi = parseInt(removeSetBtn.getAttribute('data-remove-set-si'), 10);
+    if (!isNaN(rsdi) && !isNaN(rsei) && !isNaN(rssi)) onTemplateEditorRemoveSet(rsdi, rsei, rssi);
+    return;
+  }
+});
+// Input listener for inline inputs (rest, note, per-set weight/reps/range).
+// Fires per-keystroke so that tapping another action (add set, swap,
+// remove) mid-typing doesn't drop unsaved characters — `change` only
+// fires on blur, which tap-to-button doesn't always trigger.
+document.getElementById('templateEditorBody').addEventListener('input', function(e) {
+  onTemplateEditorInputChange(e.target);
 });
 document.getElementById('saveTemplateOverlay').addEventListener('click', function(e) {
   if (e.target === this) closeSaveTemplate();
