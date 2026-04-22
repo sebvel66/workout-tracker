@@ -1212,6 +1212,7 @@ body.unauthed #emptyState { display: none !important; }
 .plans-btn:disabled { opacity: 0.3; cursor: default; }
 .plans-btn.activate:not(:disabled) { color: var(--accent); border-color: var(--accent); }
 .plans-btn.rename:not(:disabled) { color: var(--text1); border-color: var(--border); }
+.plans-btn.view:not(:disabled) { color: var(--text1); border-color: var(--border); }
 .plans-btn.delete:not(:disabled) { color: var(--danger); border-color: var(--danger); }
 .templates-save-row {
   padding: 12px 14px; border-bottom: 1px solid var(--border);
@@ -1360,6 +1361,40 @@ body.unauthed #emptyState { display: none !important; }
   cursor: pointer; -webkit-tap-highlight-color: transparent;
 }
 .template-editor-adddays-row { padding: 10px 14px; }
+
+/* View-only mode (Plans/Templates → View button). Static rendering for
+   mid-workout reference — no inputs, no action buttons, no drag. */
+.template-editor-name-static {
+  background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; font-family: 'Outfit', sans-serif; font-size: 14px;
+  color: var(--text1); font-weight: 500;
+}
+.template-editor-ex.readonly { cursor: default; }
+.template-editor-ex-view {
+  background: transparent; padding: 8px 0 4px 0; border-radius: 0;
+}
+.template-editor-view-meta {
+  display: flex; gap: 8px; font-size: 12px; color: var(--text2);
+  margin-bottom: 4px;
+}
+.template-editor-view-label {
+  color: var(--text3); font-weight: 500; min-width: 40px;
+}
+.template-editor-view-sets {
+  margin-top: 6px; background: var(--surface); border-radius: 6px;
+  padding: 6px 8px;
+}
+.template-editor-view-sets-header {
+  display: grid; grid-template-columns: 28px 1fr 1fr 1fr; gap: 8px;
+  font-size: 10px; color: var(--text3); font-weight: 500;
+  text-transform: uppercase; padding: 0 2px 4px 2px;
+  border-bottom: 1px solid var(--border); margin-bottom: 4px;
+}
+.template-editor-view-set-row {
+  display: grid; grid-template-columns: 28px 1fr 1fr 1fr; gap: 8px;
+  align-items: center; padding: 4px 2px; font-size: 13px; color: var(--text1);
+}
+.template-editor-view-set-row .template-editor-set-label { color: var(--text2); }
 .history-empty {
   text-align: center; padding: 40px 20px;
   color: var(--text3); font-size: 13px;

@@ -2386,6 +2386,7 @@ function renderPlans() {
     h += '</div>';
     h += '</div>';
     h += '<div class="plans-row-actions">';
+    h += '<button type="button" class="plans-btn view" data-view-plan-id="' + escapeAttr(p.id) + '">View</button>';
     h += '<button type="button" class="plans-btn activate" data-plan-id="' + escapeAttr(p.id) + '"' +
          (p.is_active ? ' disabled' : '') + '>Activate</button>';
     h += '<button type="button" class="plans-btn template" data-plan-id="' + escapeAttr(p.id) + '">Template</button>';
@@ -3138,6 +3139,7 @@ function renderTemplates() {
     h += '<div class="plans-row-meta">' + dayLabel + ' · ' + escapeHtml(dateLabel) + '</div>';
     h += '</div>';
     h += '<div class="plans-row-actions">';
+    h += '<button type="button" class="plans-btn view" data-view-plan-id="' + escapeAttr(t.id) + '">View</button>';
     h += '<button type="button" class="plans-btn rename" data-template-id="' + escapeAttr(t.id) + '">Rename</button>';
     h += '<button type="button" class="plans-btn activate" data-edit-template-id="' + escapeAttr(t.id) + '">Edit</button>';
     h += '<button type="button" class="plans-btn delete" data-template-id="' + escapeAttr(t.id) + '">Delete</button>';
@@ -3180,6 +3182,11 @@ async function onRenameTemplate(templateId) {
 var editingTemplateId = null;
 var editingTemplateBlob = null;
 var editingTemplateExpanded = {}; // "di:ei" -> true
+// When true the editor renders as a static, tap-safe reference — no
+// inputs, no action buttons, no drag handles. Used by the Plans and
+// Templates modals' View button (mid-workout reference without any
+// risk of accidental edits).
+var templateEditorReadOnly = false;
 
 async function openTemplateEditor(templateId) {
   try {
@@ -3221,16 +3228,68 @@ function closeTemplateEditor() {
   editingTemplateId = null;
   editingTemplateBlob = null;
   editingTemplateExpanded = {};
+  templateEditorReadOnly = false;
+  applyTemplateEditorChrome();
+}
+
+// View-only entry: loads any plans row (template or active/historical
+// plan) and paints the editor in readOnly mode. editingTemplateId is
+// cleared so the Save path can't mis-fire; the footer hides Save and
+// relabels Cancel → Close.
+async function openPlanOrTemplateViewer(planRowId) {
+  try {
+    var r = await sb.from('plans')
+      .select('data, template_name, title, is_template')
+      .eq('id', planRowId).single();
+    if (r.error) throw r.error;
+    editingTemplateId = null;
+    editingTemplateBlob = JSON.parse(JSON.stringify(r.data.data || {}));
+    if (!Array.isArray(editingTemplateBlob.days)) editingTemplateBlob.days = [];
+    if (!editingTemplateBlob.title) {
+      editingTemplateBlob.title = r.data.template_name || r.data.title || (r.data.is_template ? 'Template' : 'Plan');
+    }
+    editingTemplateExpanded = {};
+    templateEditorReadOnly = true;
+    applyTemplateEditorChrome(r.data.is_template ? 'template' : 'plan');
+    renderTemplateEditor();
+    document.getElementById('templateEditorOverlay').classList.add('show');
+  } catch(err) {
+    console.error('openPlanOrTemplateViewer error:', err);
+    showToast("Couldn't load: " + (err.message || 'unknown error'), null);
+  }
+}
+
+// Adjust modal header + footer for the current mode. Called on open
+// (edit, empty, view) and close. `kind` only matters in view mode
+// ('plan' vs 'template') to tune the title wording.
+function applyTemplateEditorChrome(kind) {
+  var titleEl = document.querySelector('#templateEditorOverlay .history-title');
+  var saveBtn = document.getElementById('btnTemplateEditorSave');
+  var cancelBtn = document.getElementById('btnTemplateEditorCancel');
+  if (templateEditorReadOnly) {
+    if (titleEl) titleEl.textContent = kind === 'plan' ? 'View plan' : 'View template';
+    if (saveBtn) saveBtn.style.display = 'none';
+    if (cancelBtn) cancelBtn.textContent = 'Close';
+  } else {
+    if (titleEl) titleEl.textContent = 'Edit template';
+    if (saveBtn) saveBtn.style.display = '';
+    if (cancelBtn) cancelBtn.textContent = 'Cancel';
+  }
 }
 
 function renderTemplateEditor() {
   var body = document.getElementById('templateEditorBody');
   if (!body || !editingTemplateBlob) return;
   var blob = editingTemplateBlob;
+  var ro = templateEditorReadOnly;
   var h = '';
   h += '<div class="template-editor-name">';
-  h += '<span class="template-editor-name-label">Template name</span>';
-  h += '<input type="text" id="templateEditorName" value="' + escapeAttr(blob.title || '') + '" placeholder="Template name">';
+  h += '<span class="template-editor-name-label">' + (ro ? 'Name' : 'Template name') + '</span>';
+  if (ro) {
+    h += '<div class="template-editor-name-static">' + escapeHtml(blob.title || 'Untitled') + '</div>';
+  } else {
+    h += '<input type="text" id="templateEditorName" value="' + escapeAttr(blob.title || '') + '" placeholder="Template name">';
+  }
   h += '</div>';
   var days = Array.isArray(blob.days) ? blob.days : [];
   for (var di = 0; di < days.length; di++) {
@@ -3238,11 +3297,17 @@ function renderTemplateEditor() {
     var exs = Array.isArray(d.exercises) ? d.exercises : [];
     h += '<div class="template-editor-day">';
     h += '<div class="template-editor-day-header">';
-    h += '<button type="button" class="template-editor-day-name-btn" data-rename-day="' + di + '">' +
-         escapeHtml(d.name || 'Day ' + (di + 1)) + '</button>';
+    if (ro) {
+      h += '<div class="template-editor-day-name">' + escapeHtml(d.name || 'Day ' + (di + 1)) + '</div>';
+    } else {
+      h += '<button type="button" class="template-editor-day-name-btn" data-rename-day="' + di + '">' +
+           escapeHtml(d.name || 'Day ' + (di + 1)) + '</button>';
+    }
     h += '<div class="template-editor-day-right">';
     h += '<div class="template-editor-day-meta">' + exs.length + ' ex</div>';
-    h += '<button type="button" class="template-editor-day-remove" data-remove-day="' + di + '" aria-label="Remove day">✕</button>';
+    if (!ro) {
+      h += '<button type="button" class="template-editor-day-remove" data-remove-day="' + di + '" aria-label="Remove day">✕</button>';
+    }
     h += '</div>';
     h += '</div>';
     h += '<div class="template-editor-ex-list" data-day-idx="' + di + '">';
@@ -3250,16 +3315,20 @@ function renderTemplateEditor() {
       h += renderTemplateEditorExercise(exs[ei], di, ei);
     }
     h += '</div>';
-    h += '<div class="template-editor-add-row">';
-    h += '<button type="button" class="template-editor-add-btn" data-add-day="' + di + '">+ Add exercise</button>';
-    h += '</div>';
+    if (!ro) {
+      h += '<div class="template-editor-add-row">';
+      h += '<button type="button" class="template-editor-add-btn" data-add-day="' + di + '">+ Add exercise</button>';
+      h += '</div>';
+    }
     h += '</div>';
   }
-  h += '<div class="template-editor-adddays-row">';
-  h += '<button type="button" class="template-editor-add-btn" id="btnTemplateEditorAddDay">+ Add day</button>';
-  h += '</div>';
+  if (!ro) {
+    h += '<div class="template-editor-adddays-row">';
+    h += '<button type="button" class="template-editor-add-btn" id="btnTemplateEditorAddDay">+ Add day</button>';
+    h += '</div>';
+  }
   body.innerHTML = h;
-  initTemplateEditorDrag();
+  if (!ro) initTemplateEditorDrag();
 }
 
 function renderTemplateEditorExercise(ex, di, ei) {
@@ -3269,22 +3338,57 @@ function renderTemplateEditorExercise(ex, di, ei) {
   var repsStr = first.reps_range || (first.reps_target != null ? String(first.reps_target) : '?');
   var weightPart = (first.weight != null && first.weight !== 0) ? ' @' + first.weight : '';
   var meta = setCount + ' × ' + repsStr + weightPart;
-  var key = di + ':' + ei;
-  var expanded = !!editingTemplateExpanded[key];
+  var ro = templateEditorReadOnly;
+  // In view mode every exercise is always expanded — this is a reference
+  // surface. No chevron to collapse.
+  var expanded = ro ? true : !!editingTemplateExpanded[di + ':' + ei];
   var h = '';
-  h += '<div class="template-editor-ex" data-di="' + di + '" data-ei="' + ei + '">';
+  h += '<div class="template-editor-ex' + (ro ? ' readonly' : '') + '" data-di="' + di + '" data-ei="' + ei + '">';
   h += '<div class="template-editor-ex-row">';
   h += '<div class="template-editor-ex-main">';
   h += '<div class="template-editor-ex-name">' + escapeHtml(ex.name || '—') + '</div>';
   h += '<div class="template-editor-ex-meta">' + escapeHtml(meta) + '</div>';
   h += '</div>';
-  h += '<div class="template-editor-ex-actions">';
-  h += '<button type="button" class="template-editor-ex-btn expand" data-expand-di="' + di + '" data-expand-ei="' + ei + '" aria-label="' + (expanded ? 'Collapse' : 'Expand') + '">' + (expanded ? '▴' : '▾') + '</button>';
-  h += '<button type="button" class="template-editor-ex-btn swap" data-swap-di="' + di + '" data-swap-ei="' + ei + '">Swap</button>';
-  h += '<button type="button" class="template-editor-ex-btn remove" data-remove-di="' + di + '" data-remove-ei="' + ei + '" aria-label="Remove">✕</button>';
+  if (!ro) {
+    h += '<div class="template-editor-ex-actions">';
+    h += '<button type="button" class="template-editor-ex-btn expand" data-expand-di="' + di + '" data-expand-ei="' + ei + '" aria-label="' + (expanded ? 'Collapse' : 'Expand') + '">' + (expanded ? '▴' : '▾') + '</button>';
+    h += '<button type="button" class="template-editor-ex-btn swap" data-swap-di="' + di + '" data-swap-ei="' + ei + '">Swap</button>';
+    h += '<button type="button" class="template-editor-ex-btn remove" data-remove-di="' + di + '" data-remove-ei="' + ei + '" aria-label="Remove">✕</button>';
+    h += '</div>';
+  }
   h += '</div>';
+  if (expanded) {
+    h += ro
+      ? renderTemplateEditorExerciseReadOnly(ex, sets)
+      : renderTemplateEditorExerciseExpanded(ex, di, ei, sets);
+  }
   h += '</div>';
-  if (expanded) h += renderTemplateEditorExerciseExpanded(ex, di, ei, sets);
+  return h;
+}
+
+function renderTemplateEditorExerciseReadOnly(ex, sets) {
+  var h = '<div class="template-editor-ex-form template-editor-ex-view">';
+  if (ex.rest != null && ex.rest !== '') {
+    h += '<div class="template-editor-view-meta"><span class="template-editor-view-label">Rest</span><span>' + escapeHtml(String(ex.rest)) + 's</span></div>';
+  }
+  if (ex.note) {
+    h += '<div class="template-editor-view-meta"><span class="template-editor-view-label">Note</span><span>' + escapeHtml(ex.note) + '</span></div>';
+  }
+  h += '<div class="template-editor-view-sets">';
+  h += '<div class="template-editor-view-sets-header"><span></span><span>Weight</span><span>Reps</span><span>Range</span></div>';
+  for (var si = 0; si < sets.length; si++) {
+    var s = sets[si];
+    var w = (s.weight != null && s.weight !== 0) ? String(s.weight) : '—';
+    var rt = s.reps_target != null ? String(s.reps_target) : '—';
+    var rr = s.reps_range || '—';
+    h += '<div class="template-editor-view-set-row">';
+    h += '<span class="template-editor-set-label">S' + (si + 1) + '</span>';
+    h += '<span>' + escapeHtml(w) + '</span>';
+    h += '<span>' + escapeHtml(rt) + '</span>';
+    h += '<span>' + escapeHtml(rr) + '</span>';
+    h += '</div>';
+  }
+  h += '</div>';
   h += '</div>';
   return h;
 }
@@ -4082,6 +4186,12 @@ document.getElementById('templatesBody').addEventListener('click', function(e) {
     openTemplateEditorEmpty();
     return;
   }
+  var viewBtn = e.target.closest('.plans-btn[data-view-plan-id]');
+  if (viewBtn && !viewBtn.disabled) {
+    var vid = viewBtn.getAttribute('data-view-plan-id');
+    if (vid) openPlanOrTemplateViewer(vid);
+    return;
+  }
   var renameBtn = e.target.closest('.plans-btn.rename');
   if (renameBtn && !renameBtn.disabled) {
     var rid = renameBtn.getAttribute('data-template-id');
@@ -4206,6 +4316,10 @@ document.getElementById('plansBody').addEventListener('click', function(e) {
   if (!e.target || !e.target.closest) return;
   var btn = e.target.closest('.plans-btn');
   if (!btn || btn.disabled) return;
+  // View button uses its own attribute so the click isn't confused with
+  // the action-id (activate/template/delete) attribute above.
+  var viewId = btn.getAttribute('data-view-plan-id');
+  if (viewId) { openPlanOrTemplateViewer(viewId); return; }
   var planId = btn.getAttribute('data-plan-id');
   if (!planId) return;
   if (btn.classList.contains('activate')) onActivatePlan(planId);
