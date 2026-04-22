@@ -2532,18 +2532,41 @@ async function onDeletePlan(planId) {
 // ---- Coach Chat ----
 // Session-level chat panel. coachContext (data.js) + getLiveContext() (data.js)
 // are reassembled fresh on every send; only the Q/A history accumulates here.
-// chatHistory is ephemeral — cleared on sign-out, session start, session
-// complete. Not persisted to Supabase.
+// Two arrays now (post-v2.5):
+//   chatHistory          — in-memory ring buffer for the API call (this
+//                          session only). Sent to /api/coach-chat as the
+//                          multi-turn conversation; capped at 20 entries.
+//   chatLoadedHistory    — past 2 weeks + current week of coach_messages
+//                          loaded from DB on chat open. Renders above the
+//                          current session in the panel as historical
+//                          context (date headers, muted style, context
+//                          badges for swap / plan_generation rows).
+// Persistence to coach_messages is durable (logCoachMessage in data.js);
+// in-memory chatHistory is cleared on sign-out, session start, session
+// complete — the historical view picks them back up on next chat open
+// because the persistence already happened.
 var chatHistory = [];         // [{ role: 'user'|'assistant', content }]
+var chatLoadedHistory = [];   // [{ role, content, context_type, exercise_name, created_at }]
+var chatLoadedAt = 0;         // ms epoch of last successful load; 0 = never
+var chatLoadingHistory = false;
 var chatPending = false;      // blocks double-sends + Enter-spam
 var chatHasUnread = false;    // drives the fab dot while panel is closed
 var chatAttempt = 0;          // 1 = first try, 2 = cold-start retry
 
-// Keep only the last 20 messages (10 Q/A pairs). Older entries drop off to
-// prevent token bloat on long conversations. Context pair is NOT stored
-// here — it's synthesized fresh from coachContext + getLiveContext() on
-// every send.
+// Keep only the last 20 messages (10 Q/A pairs) for the API call. Older
+// entries drop off to prevent token bloat on long conversations. Context
+// pair is NOT stored here — it's synthesized fresh from coachContext +
+// getLiveContext() on every send.
 var CHAT_HISTORY_MAX = 20;
+// Cap rendered historical messages so a chatty user with months of history
+// doesn't paint a 500-row scroll on chat open. "Load earlier messages"
+// pagination deferred to a follow-up.
+var CHAT_DISPLAY_MAX = 50;
+// Re-query coach_messages only every ~5 min on chat open. Closing and
+// reopening the panel rapidly should be instant; long-idle reopens get
+// a fresh pull so cross-context writes (a swap or plan-gen done while
+// the panel was closed) surface naturally on the next open.
+var CHAT_HISTORY_REFRESH_MS = 5 * 60 * 1000;
 
 function openCoachChat() {
   document.getElementById('coachOverlay').classList.add('show');
@@ -2554,6 +2577,13 @@ function openCoachChat() {
   // types, and the send flow will wait for context if still building.
   if (!coachContext && typeof buildCoachContext === 'function') {
     buildCoachContext();
+  }
+  // Lazy-load coach history on open. Uses a 5-min cache so rapid
+  // open/close cycles don't re-query; first open or stale cache pulls
+  // fresh. Non-blocking — the thread re-renders when load completes.
+  var stale = (Date.now() - chatLoadedAt) > CHAT_HISTORY_REFRESH_MS;
+  if (chatLoadedAt === 0 || stale) {
+    loadChatHistory();
   }
   setTimeout(function() {
     var input = document.getElementById('coachInput');
@@ -2567,11 +2597,70 @@ function closeCoachChat() {
 
 function clearChatHistory() {
   chatHistory = [];
+  // The DURABLE log isn't cleared here — sign-out cascades the table
+  // via auth.users ON DELETE; session start / complete just clear the
+  // in-memory ring buffer. The historical view stays accurate for the
+  // user's account either way. Drop the loaded-history cache so the
+  // next chat open reloads fresh (covers the case where the user just
+  // started a new session and wants to see today's prior chat in
+  // historical context rather than as "current session").
+  chatLoadedHistory = [];
+  chatLoadedAt = 0;
   setCoachUnread(false);
   // If the thread is currently in the DOM (panel was left open at session
   // boundary), re-render so it reflects the cleared state.
   if (document.getElementById('coachOverlay').classList.contains('show')) {
     renderCoachThread();
+  }
+}
+
+// Pull recent coach_messages (2 weeks back through current week) and
+// re-render. Non-blocking on the input — the user can type while the
+// query is in flight, and a small "Loading history…" tag renders at
+// the top of the thread until results land. Failure is silent — the
+// chat still works without the historical strip.
+async function loadChatHistory() {
+  if (!userId || chatLoadingHistory) return;
+  chatLoadingHistory = true;
+  // Re-render so the loading tag appears immediately if the thread is
+  // visible. Avoids a "blank scroll" feel on first open.
+  if (document.getElementById('coachOverlay').classList.contains('show')) {
+    renderCoachThread();
+  }
+  try {
+    // Sun-anchored window matching the server-side helper. Two full
+    // prior weeks plus the current week to date.
+    var today = new Date();
+    var weekSunday = new Date(today);
+    weekSunday.setHours(0, 0, 0, 0);
+    weekSunday.setDate(today.getDate() - today.getDay());
+    var start = new Date(weekSunday);
+    start.setDate(start.getDate() - 14);
+    var res = await sb.from('coach_messages')
+      .select('role, content, context_type, exercise_name, created_at')
+      .eq('user_id', userId)
+      .gte('created_at', start.toISOString())
+      .order('created_at', { ascending: true });
+    if (res.error) {
+      console.warn('loadChatHistory error:', res.error.message);
+      chatLoadedHistory = [];
+    } else {
+      var rows = res.data || [];
+      // Silent cap — most-recent CHAT_DISPLAY_MAX. Pagination
+      // ("Load earlier messages") deferred per the original design.
+      if (rows.length > CHAT_DISPLAY_MAX) {
+        rows = rows.slice(rows.length - CHAT_DISPLAY_MAX);
+      }
+      chatLoadedHistory = rows;
+      chatLoadedAt = Date.now();
+    }
+  } catch (err) {
+    console.warn('loadChatHistory exception:', err);
+  } finally {
+    chatLoadingHistory = false;
+    if (document.getElementById('coachOverlay').classList.contains('show')) {
+      renderCoachThread();
+    }
   }
 }
 
@@ -2581,24 +2670,85 @@ function setCoachUnread(flag) {
   if (badge) badge.classList.toggle('hidden', !flag);
 }
 
+// Render order:
+//   1. Loading tag while history is mid-fetch (only if there's nothing
+//      else to show — otherwise the existing thread stays visible
+//      under the optimistic cached array).
+//   2. Historical block: chatLoadedHistory grouped by date with
+//      "--- Tue, Apr 15 ---" headers, muted style, and inline context
+//      badges for swap / plan_generation rows.
+//   3. Current-session block: chatHistory entries that DON'T appear in
+//      chatLoadedHistory (deduped by content + role on the tail). These
+//      render at full opacity with no date header — they're "right now."
+//   4. If both blocks are empty, the welcome empty-hint takes the panel.
 function renderCoachThread() {
   var thread = document.getElementById('coachThread');
   if (!thread) return;
-  if (!chatHistory.length) {
-    thread.innerHTML =
-      '<div class="coach-msg empty-hint">' +
+
+  var h = '';
+
+  // Filter chatHistory to entries not already in chatLoadedHistory.
+  // Comparison is by role + content. Logged messages from THIS open
+  // get persisted by the success path AND fetched on next open / 5-min
+  // refresh — without dedup, they'd appear twice (muted historical +
+  // bright current). Tail-only check is fine because chatHistory is
+  // append-only within a session.
+  var loadedKeys = {};
+  for (var li = 0; li < chatLoadedHistory.length; li++) {
+    var lm = chatLoadedHistory[li];
+    if (!lm) continue;
+    loadedKeys[lm.role + '' + lm.content] = true;
+  }
+  var currentNew = [];
+  for (var ci = 0; ci < chatHistory.length; ci++) {
+    var cm = chatHistory[ci];
+    if (cm && !loadedKeys[cm.role + '' + cm.content]) {
+      currentNew.push(cm);
+    }
+  }
+
+  if (chatLoadingHistory && !chatLoadedHistory.length && !currentNew.length) {
+    h += '<div class="coach-history-loading">Loading recent conversations…</div>';
+  }
+
+  // Historical block with date headers + context badges.
+  var lastDate = '';
+  for (var i = 0; i < chatLoadedHistory.length; i++) {
+    var m = chatLoadedHistory[i];
+    if (!m || !m.content) continue;
+    var d = new Date(m.created_at);
+    var dateLabel = d.toLocaleDateString(undefined, {
+      weekday: 'short', month: 'short', day: 'numeric',
+    });
+    if (dateLabel !== lastDate) {
+      lastDate = dateLabel;
+      h += '<div class="coach-date-header">' + escapeHtml(dateLabel) + '</div>';
+    }
+    var roleCls = m.role === 'user' ? 'user' : 'coach';
+    var badge = '';
+    if (m.context_type === 'swap' && m.exercise_name) {
+      badge = '<span class="coach-context-badge">swap: ' + escapeHtml(m.exercise_name) + '</span>';
+    } else if (m.context_type === 'plan_generation') {
+      badge = '<span class="coach-context-badge">plan</span>';
+    }
+    h += '<div class="coach-msg history ' + roleCls + '">' + badge + escapeHtml(m.content) + '</div>';
+  }
+
+  // Current-session block (deduped against historical).
+  for (var k = 0; k < currentNew.length; k++) {
+    var cur = currentNew[k];
+    var curCls = cur.role === 'user' ? 'user' : 'coach';
+    h += '<div class="coach-msg ' + curCls + '">' + escapeHtml(cur.content) + '</div>';
+  }
+
+  if (!h) {
+    h = '<div class="coach-msg empty-hint">' +
       (todayState && todayState.workoutId
         ? 'Ask about weight, RPE, form, substitutions, or whatever comes up mid-session.'
         : 'Start a session for live coaching, or ask a general question. The coach knows your plan either way.') +
       '</div>';
-    return;
   }
-  var h = '';
-  for (var i = 0; i < chatHistory.length; i++) {
-    var m = chatHistory[i];
-    var cls = m.role === 'user' ? 'user' : 'coach';
-    h += '<div class="coach-msg ' + cls + '">' + escapeHtml(m.content) + '</div>';
-  }
+
   thread.innerHTML = h;
   thread.scrollTop = thread.scrollHeight;
 }

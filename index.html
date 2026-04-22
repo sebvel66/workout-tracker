@@ -1656,6 +1656,51 @@ body.unauthed .coach-fab { display: none; }
   background: transparent; color: var(--text3);
   font-size: 13px; text-align: center; padding: 20px 10px;
 }
+/* Past-session messages render at reduced opacity so the user can
+ * visually distinguish "what we said before" from "what we're saying now".
+ * Applied alongside .user / .coach so background colors stay consistent. */
+.coach-msg.history { opacity: 0.65; }
+/* Date dividers in the historical scroll: monospace label centered with
+ * thin lines on either side to match the app's "section-break" feel
+ * (mirrors .extras-divider in the workout view). */
+.coach-date-header {
+  align-self: stretch;
+  display: flex; align-items: center; gap: 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px; color: var(--text3);
+  text-transform: uppercase; letter-spacing: 0.5px;
+  margin: 6px 0 -2px;
+}
+.coach-date-header::before, .coach-date-header::after {
+  content: ''; flex: 1;
+  border-top: 1px solid var(--border);
+}
+/* Inline tag for messages from swap / plan_generation flows so the user
+ * understands the conversation flow ("this was during a swap"). */
+.coach-context-badge {
+  display: inline-block;
+  background: rgba(74, 222, 128, 0.12);
+  color: var(--accent);
+  border: 1px solid rgba(74, 222, 128, 0.3);
+  border-radius: 4px;
+  padding: 0 5px;
+  margin-right: 6px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  vertical-align: 1px;
+}
+/* Faint loading skeleton above the input while history is fetching.
+ * Kept subtle so the user can start typing immediately. */
+.coach-history-loading {
+  align-self: center;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px; color: var(--text3); text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 8px 0;
+}
 .coach-typing {
   align-self: flex-start;
   background: var(--surface2);
