@@ -7,7 +7,7 @@
 
 // Bump this on every deploy. Displayed at the bottom of the app so stale-
 // cache issues can be diagnosed from the client ("which version am I on?").
-var APP_VERSION = 'v2.4.16';
+var APP_VERSION = 'v2.4.17';
 
 // Paint the version tag in the bottom-right as soon as APP_VERSION is declared.
 // DOM is already parsed here (all the script tags sit at the end of <body>).
@@ -40,9 +40,25 @@ function __removeRefreshingPill() {
     planCache[activePlanId] = plan;
     currentDay = blob.currentDay;
     daysWithHistory = blob.daysWithHistory || {};
-    todayPlanStates = blob.todayPlanStates || {};
-    todayAdHocs = blob.todayAdHocs || [];
     sessionTodayStart = dayBounds(new Date()).start;
+    // Today-state restore is gated on the cache having been saved on this
+    // same local calendar day. Yesterday's snapshot can carry an empty (or
+    // any) todayPlanStates entry that would shadow earlier-this-week
+    // historical workouts on the day-tab view (viewModeFor short-circuits
+    // to 'editable' whenever todayPlanStates[di] is truthy, and the day-
+    // picker handler skips loadHistorical for the same reason). Dropping
+    // stale today-state means cross-midnight warm-boots paint a brief
+    // empty shell for ~1s until hydrate fills it from DB — but the
+    // historical workout the user actually did this week reliably surfaces.
+    var savedAtMs = blob.savedAt ? new Date(blob.savedAt).getTime() : 0;
+    var todayMidnightMs = sessionTodayStart.getTime();
+    if (savedAtMs >= todayMidnightMs) {
+      todayPlanStates = blob.todayPlanStates || {};
+      todayAdHocs = blob.todayAdHocs || [];
+    } else {
+      todayPlanStates = {};
+      todayAdHocs = [];
+    }
 
     // Paint.
     document.getElementById('emptyState').style.display = 'none';
