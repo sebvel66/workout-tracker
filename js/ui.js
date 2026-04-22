@@ -2142,6 +2142,7 @@ function renderGenerateReview(body) {
 
   h += '<div class="generate-actions">';
   h += '<button class="generate-btn-cancel" id="btnGenerateCancel" type="button">Cancel</button>';
+  h += '<button class="generate-btn-secondary" id="btnGenerateSaveTemplate" type="button">Save as template</button>';
   h += '<button class="generate-btn-accept" id="btnGenerateAccept" type="button">Accept plan</button>';
   h += '</div>';
   h += '</div>';
@@ -2298,6 +2299,19 @@ async function onAcceptGeneratedPlan() {
     showToast('Failed to save plan: ' + (err.message || 'unknown error'), null);
     if (btn) { btn.disabled = false; btn.textContent = 'Accept plan'; }
   }
+}
+
+// Save the currently-previewed generated plan as a reusable template,
+// WITHOUT activating it. Reuses openSaveTemplate which opens the save-
+// template modal on top of the generate review; closing the save modal
+// returns the user to the review so they can still Accept plan afterward
+// if they want both outcomes (template for future + activate now).
+function onSaveGeneratedPlanAsTemplate() {
+  if (!generatedPlan) return;
+  if (generatedInputs && generatedInputs.start_date && !generatedPlan.start_date) {
+    generatedPlan.start_date = generatedInputs.start_date;
+  }
+  openSaveTemplate(generatedPlan, null, '');
 }
 
 // ---- Plans management ----
@@ -3678,6 +3692,7 @@ document.getElementById('generateBody').addEventListener('click', function(e) {
   if (e.target.closest('#btnGenerateInputAnalyze')) { submitGenerateInputs('analyze'); return; }
   if (e.target.closest('#btnGenerateInputCancel')) { closeGenerate(); return; }
   if (e.target.closest('#btnGenerateAccept')) { onAcceptGeneratedPlan(); return; }
+  if (e.target.closest('#btnGenerateSaveTemplate')) { onSaveGeneratedPlanAsTemplate(); return; }
   if (e.target.closest('#btnAnalyzeUseForPlan')) { useAnalysisForNextPlan(); return; }
   if (e.target.closest('#btnGenerateCancel')) { closeGenerate(); return; }
   if (e.target.closest('#btnGenerateAbort')) { cancelGenerate(); return; }
