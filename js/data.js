@@ -1279,7 +1279,14 @@ async function persistSet(di, ei, si) {
     var fallback = extra && (extra.isExtra || (todayState && todayState.isAdHoc)) && extra.exerciseMeta
       ? extra.exerciseMeta.name
       : (((plan && plan.days[di]) || {}).exercises || [])[ei] ? plan.days[di].exercises[ei].name : 'exercise';
-    showToast('Set ' + (si+1) + ' of ' + fallback + " didn't save", function() { persistSet(di, ei, si); });
+    // Surface the underlying Supabase error on the toast so it doesn't
+    // require DevTools to diagnose field-save failures. Truncate to keep
+    // the toast digestible.
+    var errMsg = (err && (err.message || err.code)) ? String(err.message || err.code) : '';
+    if (errMsg.length > 80) errMsg = errMsg.slice(0, 80) + '…';
+    var toast = 'Set ' + (si + 1) + ' of ' + fallback + " didn't save";
+    if (errMsg) toast += ' · ' + errMsg;
+    showToast(toast, function() { persistSet(di, ei, si); });
   }
 }
 
