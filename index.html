@@ -542,10 +542,11 @@ html, body {
   position: fixed; inset: 0; background: rgba(0, 0, 0, 0.7); z-index: 200;
   display: none; align-items: flex-end; justify-content: center;
 }
-/* Save-template can be opened on top of other modals (Generate review,
-   Templates, Plans). Bump its z-index so it always wins the stacking
-   context regardless of DOM order. */
+/* Stacking: picker (terminal "pick a thing") always on top; save-template
+   above any editor; editor above list modals. All others default 200. */
+.modal-overlay#templateEditorOverlay { z-index: 220; }
 .modal-overlay#saveTemplateOverlay { z-index: 250; }
+.modal-overlay#pickerOverlay { z-index: 300; }
 .modal-overlay.show { display: flex; }
 
 .modal {
@@ -1223,6 +1224,75 @@ body.unauthed #emptyState { display: none !important; }
 }
 .templates-save-row button:disabled { opacity: 0.4; cursor: default; }
 .templates-save-hint { font-size: 12px; color: var(--text3); }
+
+/* Template editor — full-plan edit surface for a saved template. */
+.template-editor-name {
+  padding: 12px 14px; border-bottom: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.template-editor-name-label { font-size: 11px; color: var(--text3); font-weight: 500; }
+.template-editor-name input {
+  background: var(--surface2); color: var(--text1);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; font-family: 'Outfit', sans-serif; font-size: 14px;
+  width: 100%; box-sizing: border-box;
+}
+.template-editor-day {
+  border-bottom: 1px solid var(--border);
+  padding: 10px 14px;
+}
+.template-editor-day-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px;
+}
+.template-editor-day-name { font-weight: 600; font-size: 13px; }
+.template-editor-day-meta { font-size: 11px; color: var(--text3); }
+.template-editor-ex-list { display: flex; flex-direction: column; gap: 6px; }
+.template-editor-ex {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; background: var(--surface2);
+  border: 1px solid var(--border); border-radius: 8px;
+  cursor: grab;
+}
+.template-editor-ex.sortable-chosen { cursor: grabbing; }
+.template-editor-ex-main { flex: 1; min-width: 0; }
+.template-editor-ex-name {
+  font-size: 13px; font-weight: 500;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.template-editor-ex-meta { font-size: 11px; color: var(--text3); margin-top: 2px; }
+.template-editor-ex-actions { display: flex; gap: 4px; flex-shrink: 0; }
+.template-editor-ex-btn {
+  background: transparent; color: var(--text2);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 5px 9px; font-family: 'Outfit', sans-serif;
+  font-size: 11px; font-weight: 500;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.template-editor-ex-btn.remove:not(:disabled) {
+  color: var(--danger); border-color: var(--danger);
+}
+.template-editor-ex-btn:active:not(:disabled) { background: var(--surface); }
+.template-editor-add-row { margin-top: 8px; }
+.template-editor-add-btn {
+  background: transparent; color: var(--accent);
+  border: 1px dashed var(--accent); border-radius: 8px;
+  padding: 8px 12px; width: 100%;
+  font-family: 'Outfit', sans-serif; font-size: 12px; font-weight: 500;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.template-editor-add-btn:active { opacity: 0.8; }
+.template-editor-footer {
+  position: sticky; bottom: 0; left: 0; right: 0;
+  display: flex; gap: 10px;
+  padding: 12px 14px calc(12px + var(--safe-bottom));
+  background: var(--surface); border-top: 1px solid var(--border);
+}
+.template-editor-footer button { flex: 1; padding: 12px 16px;
+  border-radius: 10px; border: none;
+  font-family: 'Outfit', sans-serif; font-size: 14px; font-weight: 600;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
 .history-empty {
   text-align: center; padding: 40px 20px;
   color: var(--text3); font-size: 13px;
@@ -2113,6 +2183,21 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
       <button class="history-close" id="btnTemplatesClose" type="button">×</button>
     </div>
     <div class="history-body" id="templatesBody"></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="templateEditorOverlay">
+  <div class="history-modal">
+    <div class="history-header">
+      <div style="width:32px"></div>
+      <div class="history-title">Edit template</div>
+      <button class="history-close" id="btnTemplateEditorClose" type="button">×</button>
+    </div>
+    <div class="history-body" id="templateEditorBody"></div>
+    <div class="template-editor-footer">
+      <button type="button" class="generate-btn-cancel" id="btnTemplateEditorCancel">Cancel</button>
+      <button type="button" class="generate-btn-accept" id="btnTemplateEditorSave">Save changes</button>
+    </div>
   </div>
 </div>
 
