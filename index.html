@@ -542,6 +542,10 @@ html, body {
   position: fixed; inset: 0; background: rgba(0, 0, 0, 0.7); z-index: 200;
   display: none; align-items: flex-end; justify-content: center;
 }
+/* Save-template can be opened on top of other modals (Generate review,
+   Templates, Plans). Bump its z-index so it always wins the stacking
+   context regardless of DOM order. */
+.modal-overlay#saveTemplateOverlay { z-index: 250; }
 .modal-overlay.show { display: flex; }
 
 .modal {
