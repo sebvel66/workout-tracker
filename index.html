@@ -1207,6 +1207,17 @@ body.unauthed #emptyState { display: none !important; }
 .plans-btn:disabled { opacity: 0.3; cursor: default; }
 .plans-btn.activate:not(:disabled) { color: var(--accent); border-color: var(--accent); }
 .plans-btn.delete:not(:disabled) { color: var(--danger); border-color: var(--danger); }
+.templates-save-row {
+  padding: 12px 14px; border-bottom: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.templates-save-row button { width: 100%; padding: 10px 14px;
+  border-radius: 10px; font-family: 'Outfit', sans-serif;
+  font-size: 13px; font-weight: 600;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.templates-save-row button:disabled { opacity: 0.4; cursor: default; }
+.templates-save-hint { font-size: 12px; color: var(--text3); }
 .history-empty {
   text-align: center; padding: 40px 20px;
   color: var(--text3); font-size: 13px;
@@ -2177,7 +2188,6 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
       <button class="menu-row" id="menuGenerate" type="button">Analyze or generate plan or template</button>
       <button class="menu-row" id="menuPlans" type="button">Plans</button>
       <button class="menu-row" id="menuTemplates" type="button">Templates</button>
-      <button class="menu-row" id="menuSaveAsTemplate" type="button">Save as template</button>
       <button class="menu-row" id="menuImport" type="button">Import Plan</button>
       <button class="menu-row" id="menuExport" type="button">Export Data</button>
       <button class="menu-row" id="menuHistory" type="button">History</button>

@@ -687,15 +687,6 @@ function openMenu() {
     row.textContent = 'Weight unit (' + getWeightUnit() + ')';
   }
 
-  // Save-as-template row availability tracks the active plan. The modal
-  // itself handles day vs plan scope based on the currently-focused tab.
-  var hasActivePlan = !!(plan && plan.days && plan.days.length);
-  var saveRow = document.getElementById('menuSaveAsTemplate');
-  if (saveRow) {
-    saveRow.disabled = !hasActivePlan;
-    saveRow.style.opacity = hasActivePlan ? '' : '0.4';
-    saveRow.title = hasActivePlan ? '' : 'Requires an active plan';
-  }
 
   document.getElementById('menuOverlay').classList.add('show');
 }
@@ -3037,6 +3028,11 @@ async function submitSaveTemplate() {
     await saveAsTemplate(name, blob);
     closeSaveTemplate();
     showToast('Template saved: ' + name, null);
+    // If the Templates modal is open beneath this one, refresh its list.
+    var templatesOverlay = document.getElementById('templatesOverlay');
+    if (templatesOverlay && templatesOverlay.classList.contains('show')) {
+      loadTemplatesIntoState().then(renderTemplates);
+    }
   } catch(err) {
     console.error('submitSaveTemplate error:', err);
     showToast("Couldn't save template: " + (err.message || 'unknown error'), null);
@@ -3115,11 +3111,22 @@ function renderTemplates() {
     body.innerHTML = '<div class="history-empty">Loading…</div>';
     return;
   }
+  var hasActivePlan = !!(plan && plan.days && plan.days.length);
+  var saveHint = hasActivePlan
+    ? 'Save your current plan — or just the focused day — as a reusable template.'
+    : 'No active plan to save. Import or generate one first.';
+  var h = '';
+  h += '<div class="templates-save-row">';
+  h += '<button type="button" class="generate-btn-secondary" id="btnTemplatesSaveCurrent"' +
+       (hasActivePlan ? '' : ' disabled') + '>+ Save current plan as template</button>';
+  h += '<div class="templates-save-hint">' + escapeHtml(saveHint) + '</div>';
+  h += '</div>';
   if (!templatesList.length) {
-    body.innerHTML = '<div class="history-empty">No templates saved yet.<br>Use the hamburger menu to save a plan or day as a template.</div>';
+    h += '<div class="history-empty">No templates saved yet.</div>';
+    body.innerHTML = h;
     return;
   }
-  var h = '<div class="plans-list">';
+  h += '<div class="plans-list">';
   for (var i = 0; i < templatesList.length; i++) {
     var t = templatesList[i];
     var dayLabel = t.day_count + ' day' + (t.day_count === 1 ? '' : 's');
@@ -3630,11 +3637,6 @@ document.getElementById('menuTemplates').addEventListener('click', function() {
   closeMenu();
   openTemplates();
 });
-document.getElementById('menuSaveAsTemplate').addEventListener('click', function() {
-  if (this.disabled) return;
-  closeMenu();
-  openSaveAsTemplateFromMenu();
-});
 
 // Templates management modal.
 document.getElementById('btnTemplatesClose').addEventListener('click', closeTemplates);
@@ -3643,9 +3645,14 @@ document.getElementById('templatesOverlay').addEventListener('click', function(e
 });
 document.getElementById('templatesBody').addEventListener('click', function(e) {
   if (!e.target || !e.target.closest) return;
-  var btn = e.target.closest('.plans-btn.delete');
-  if (!btn || btn.disabled) return;
-  var tid = btn.getAttribute('data-template-id');
+  var saveBtn = e.target.closest('#btnTemplatesSaveCurrent');
+  if (saveBtn && !saveBtn.disabled) {
+    openSaveAsTemplateFromMenu();
+    return;
+  }
+  var deleteBtn = e.target.closest('.plans-btn.delete');
+  if (!deleteBtn || deleteBtn.disabled) return;
+  var tid = deleteBtn.getAttribute('data-template-id');
   if (tid) onDeleteTemplate(tid);
 });
 
