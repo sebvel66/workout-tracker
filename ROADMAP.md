@@ -76,6 +76,14 @@ Hotfix for three v2.2.2 regressions surfaced during local-dev testing.
 
 Next-tier AI features not yet built. Order is rough priority.
 
+- **Adaptive coaching profile — three layers:**
+
+  1. **Manual coaching profile (v2.5):** A `coaching_profile` table with user-editable fields: current weight, current goal (bulk/cut/maintain), active injuries, equipment access notes, training preferences, special instructions. Editable via a "Coaching Profile" screen in the hamburger menu. The Edge Function reads this on every plan generation and chat call, injecting it into the prompt alongside the static system prompt. This replaces hardcoded values in the system prompt (like body weight, injury list, and cut timeline) with live data the user can update anytime.
+
+  2. **AI-generated behavioral observations (v2.6):** After each plan generation, Claude also produces 3-5 short behavioral observations about patterns in the data. Stored in a `coaching_observations` table (user_id, observation, observed_at, category). The most recent 8-12 observations are included in future prompts as "COACH'S RUNNING NOTES" — giving the AI continuity between sessions. Examples: "Client hit 3×12 on cable row 2 weeks running — ready to progress", "Rear delt work consistently completed — no longer a skip risk", "Knee pain not mentioned in 4 weeks — may be resolved."
+
+  3. **Periodic prompt self-revision (v3):** Every 4-6 weeks, a special "coaching review" call where Claude reviews the full system prompt against 6 weeks of data and proposes updates to the behavioral and injury sections. User reviews a diff before changes take effect. The coach effectively rewrites its own instructions based on evidence.
+
 - **Persistent chat history.** Store coach messages in a new `coach_messages` table so past conversations survive reloads and the plan generator can reference coaching advice across sessions. ~15 min of code on each side plus schema. Revisit if ephemeral feels wrong in practice.
 - **External warmup pinger for Hobby plan.** Vercel Hobby limits crons to once per day (useless for interactive warmup). Options: GitHub Actions cron (free, 5-min granularity) hitting `/api/coach-chat?warmup=true` and `/api/generate-plan?warmup=true`; UptimeRobot free tier (5-min min); or Vercel Pro upgrade ($20/mo unlocks per-minute crons). First-call-of-the-day cold-start cost is ~3-5s; acceptable for now given Haiku warms fast and the v2.0.26 silent retry covers the plan-gen tail.
 - **Replan-remainder mode.** User generates Wed evening after completing Days 1-3; Edge Function detects completed days this week and generates only the remaining 2 days. Scope hinted at in the Part 2 spec but deferred for MVP. Would require: a new API mode field, detection of completed days in the request handler, and a prompt addition describing "replan" context.
