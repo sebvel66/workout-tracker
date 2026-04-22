@@ -76,6 +76,13 @@ var exerciseLibraryByName = {};  // normName -> row
 var exerciseLibraryById = {};    // uuid -> row
 var recentExercises = [];        // most-recently-logged first, up to 10
 
+// Coaching profile (v2.5): per-user adaptive client profile replacing the
+// hardcoded CLIENT PROFILE / Injury-aware programming / Phase awareness
+// blocks in system-prompt-core.md. Read on every Claude call; editable via
+// the Coaching Profile modal (hamburger → Coaching Profile). Null until
+// load attempted; {} means load attempted but no row (pre-seed install).
+var coachingProfile = null;
+
 // Gym profiles (user-defined training locations). Loaded once per session.
 // recentLocationId is computed at hydrate time from the most recent workout
 // whose location_id is not null; used as the default for fresh sessions.
@@ -2101,6 +2108,48 @@ async function resumeSession() {
   todayState.suppressResumePrompt = false;
   buildDay(currentDay);
   invalidateHistoryCache();
+}
+
+// ---- Coaching profile load/save ----
+// One row per user in coaching_profile; `data` jsonb holds the full profile.
+// Edge Functions read the same table via service role on every Claude call
+// (next commit); frontend keeps an in-memory copy for the modal and for
+// any future read paths.
+async function loadCoachingProfile() {
+  if (!userId) return null;
+  try {
+    var res = await sb.from('coaching_profile')
+      .select('data')
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (res.error) {
+      console.warn('loadCoachingProfile error:', res.error.message);
+      coachingProfile = {};
+      return coachingProfile;
+    }
+    coachingProfile = (res.data && res.data.data) || {};
+    return coachingProfile;
+  } catch (err) {
+    console.warn('loadCoachingProfile exception:', err);
+    coachingProfile = {};
+    return coachingProfile;
+  }
+}
+
+// Upsert the profile blob. Keeps the in-memory copy in sync on success.
+// Failures propagate so the modal can surface an error toast.
+async function saveCoachingProfile(profile) {
+  if (!userId) throw new Error('not signed in');
+  var payload = {
+    user_id: userId,
+    data: profile || {},
+    updated_at: new Date().toISOString(),
+  };
+  var res = await sb.from('coaching_profile')
+    .upsert(payload, { onConflict: 'user_id' });
+  if (res.error) throw new Error(res.error.message);
+  coachingProfile = profile || {};
+  return coachingProfile;
 }
 
 // ---- Coach message persistence ----

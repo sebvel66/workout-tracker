@@ -1165,6 +1165,50 @@ body.unauthed #emptyState { display: none !important; }
 .generate-inputs-actions {
   display: flex; gap: 10px; margin-top: 6px;
 }
+/* Coaching Profile section header — same visual weight as generate-form-label
+ * (monospace micro-caps) but stretched full-width to divide the form into
+ * logical blocks (Basics / Goal / Phase / Injuries / etc). */
+.profile-section-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; color: var(--accent);
+  text-transform: uppercase; letter-spacing: 0.5px;
+  padding: 4px 0 6px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 6px;
+}
+/* Injury row: name + notes + delete, stacked on mobile (since the modal
+ * is narrow on phones) with a small × affordance aligned to the right. */
+.cp-injury-row {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 8px 10px;
+  background: var(--surface2);
+  border: 1px solid var(--border); border-radius: 8px;
+  margin-bottom: 6px;
+  position: relative;
+}
+.cp-injury-row input, .cp-injury-row textarea {
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 6px 8px;
+  font-family: 'Outfit', sans-serif; font-size: 13px;
+}
+.cp-injury-row textarea { resize: vertical; min-height: 50px; }
+.cp-injury-row-remove {
+  position: absolute;
+  top: 4px; right: 4px;
+  background: transparent; color: var(--text3);
+  border: none;
+  font-size: 18px; line-height: 1;
+  padding: 2px 6px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.cp-injury-row-remove:active { color: var(--danger); }
+.cp-injury-row-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px; color: var(--text3);
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
 .generate-inputs-actions button {
   flex: 1; padding: 12px 16px;
   border-radius: 10px; border: none;
@@ -2498,6 +2542,7 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
       <button class="menu-row" id="menuImport" type="button">Import Plan</button>
       <button class="menu-row" id="menuExport" type="button">Export Data</button>
       <button class="menu-row" id="menuHistory" type="button">History</button>
+      <button class="menu-row" id="menuCoachingProfile" type="button">Coaching Profile</button>
       <button class="menu-row" id="menuGymProfiles" type="button">Gym Profiles</button>
       <button class="menu-row" id="menuPhotos" type="button">Photos</button>
       <button class="menu-row" id="menuWeightUnit" type="button">Weight unit (lbs)</button>
@@ -2535,6 +2580,116 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
         No active plan. Start a blank session, or
         <span class="start-import-link" id="startPathImportLink">import a plan</span>.
       </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="coachingProfileOverlay">
+  <div class="history-modal">
+    <div class="history-header">
+      <div style="width:32px"></div>
+      <div class="history-title">Coaching Profile</div>
+      <button class="history-close" id="btnCoachingProfileClose" type="button">×</button>
+    </div>
+    <div class="history-body" id="coachingProfileBody">
+      <div class="generate-inputs">
+        <div class="profile-section-label">Basics</div>
+        <label class="generate-form-row">
+          <span class="generate-form-label">Sex</span>
+          <select id="cpSex" class="generate-form-input">
+            <option value="">—</option>
+            <option value="male">Male</option>
+            <option value="female">Female</option>
+            <option value="other">Other</option>
+          </select>
+        </label>
+        <div class="generate-form-row">
+          <span class="generate-form-label">Height</span>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <input type="number" id="cpHeightFt" class="generate-form-input" placeholder="5" min="3" max="8" style="flex:1;">
+            <span style="font-size:12px; color:var(--text3);">ft</span>
+            <input type="number" id="cpHeightIn" class="generate-form-input" placeholder="11" min="0" max="11" style="flex:1;">
+            <span style="font-size:12px; color:var(--text3);">in</span>
+          </div>
+        </div>
+        <label class="generate-form-row">
+          <span class="generate-form-label">Current weight</span>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <input type="number" id="cpWeightLbs" class="generate-form-input" placeholder="170" min="50" max="500" step="1" style="flex:1;">
+            <span style="font-size:12px; color:var(--text3);">lbs</span>
+          </div>
+        </label>
+
+        <div class="profile-section-label" style="margin-top:18px;">Experience & environment</div>
+        <label class="generate-form-row">
+          <span class="generate-form-label">Experience level</span>
+          <select id="cpExperienceLevel" class="generate-form-input">
+            <option value="">—</option>
+            <option value="beginner">Beginner</option>
+            <option value="intermediate">Intermediate</option>
+            <option value="advanced">Advanced</option>
+          </select>
+        </label>
+        <label class="generate-form-row">
+          <span class="generate-form-label">Training environment</span>
+          <textarea id="cpEnvironment" class="generate-form-textarea" placeholder="e.g., commercial gym with full equipment access…" rows="2"></textarea>
+        </label>
+        <label class="generate-form-row">
+          <span class="generate-form-label">Preferred split & cadence</span>
+          <textarea id="cpSplitPreference" class="generate-form-textarea" placeholder="e.g., 5-day Upper/Lower, Sunday-anchored" rows="2"></textarea>
+        </label>
+
+        <div class="profile-section-label" style="margin-top:18px;">Goal</div>
+        <label class="generate-form-row">
+          <span class="generate-form-label">Goal type</span>
+          <select id="cpGoalType" class="generate-form-input">
+            <option value="">—</option>
+            <option value="bulk">Bulk (muscle gain)</option>
+            <option value="cut">Cut (fat loss)</option>
+            <option value="maintain">Maintain</option>
+            <option value="recomp">Recomp</option>
+          </select>
+        </label>
+        <label class="generate-form-row">
+          <span class="generate-form-label">Goal detail (target physique, timeline, etc.)</span>
+          <textarea id="cpGoalDetail" class="generate-form-textarea" placeholder="e.g., 8-12 lbs of muscle over 12-18 months, BF down to ~10-12%" rows="3"></textarea>
+        </label>
+
+        <div class="profile-section-label" style="margin-top:18px;">Current phase</div>
+        <label class="generate-form-row">
+          <span class="generate-form-label">Phase</span>
+          <select id="cpPhase" class="generate-form-input">
+            <option value="">—</option>
+            <option value="accumulation">Accumulation (volume bulk)</option>
+            <option value="pre-cut">Pre-cut taper</option>
+            <option value="cut">Cut</option>
+            <option value="reverse">Reverse diet</option>
+            <option value="maintain">Maintain</option>
+          </select>
+        </label>
+        <label class="generate-form-row">
+          <span class="generate-form-label">Phase start date (optional)</span>
+          <input type="date" id="cpPhaseStartDate" class="generate-form-input">
+        </label>
+        <label class="generate-form-row">
+          <span class="generate-form-label">Phase notes (macros, timing, etc.)</span>
+          <textarea id="cpPhaseNotes" class="generate-form-textarea" placeholder="e.g., cut planned for July, ~2000-2200 kcal, ~170g protein" rows="4"></textarea>
+        </label>
+
+        <div class="profile-section-label" style="margin-top:18px;">Injuries & limitations</div>
+        <div id="cpInjuriesList"></div>
+        <button type="button" class="generate-btn-secondary" id="btnCpAddInjury" style="width:100%; padding:10px;">+ Add injury / limitation</button>
+
+        <div class="profile-section-label" style="margin-top:18px;">Special instructions</div>
+        <label class="generate-form-row">
+          <span class="generate-form-label">Anything else the coach should know</span>
+          <textarea id="cpSpecialInstructions" class="generate-form-textarea" placeholder="e.g., avoid exercises X, prefer dumbbells over barbells, warmup quirks" rows="3"></textarea>
+        </label>
+      </div>
+    </div>
+    <div class="template-editor-footer">
+      <button type="button" class="generate-btn-cancel" id="btnCoachingProfileCancel">Cancel</button>
+      <button type="button" class="generate-btn-accept" id="btnCoachingProfileSave">Save</button>
     </div>
   </div>
 </div>

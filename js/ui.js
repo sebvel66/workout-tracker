@@ -702,6 +702,163 @@ function closeMenu() {
   document.getElementById('menuOverlay').classList.remove('show');
 }
 
+// ---- Coaching Profile modal (v2.5) ----
+// The modal is a single scrolling form with sections for basics, goal,
+// phase, injuries (repeatable), and special instructions. Values load
+// from coachingProfile (data.js) on open; Save upserts via
+// saveCoachingProfile. Close + Cancel discard unsaved edits.
+async function openCoachingProfile() {
+  document.getElementById('coachingProfileOverlay').classList.add('show');
+  // Lazy-load on first open so sign-in path doesn't pay for a profile
+  // fetch the user may never need. Subsequent opens reuse the cached
+  // coachingProfile; save path keeps it in sync.
+  if (coachingProfile === null) {
+    await loadCoachingProfile();
+  }
+  populateCoachingProfileForm(coachingProfile || {});
+}
+
+function closeCoachingProfile() {
+  document.getElementById('coachingProfileOverlay').classList.remove('show');
+}
+
+// Fill every form control with the saved profile. Missing keys leave the
+// control at its default empty state.
+function populateCoachingProfileForm(p) {
+  var setVal = function(id, val) {
+    var el = document.getElementById(id);
+    if (el) el.value = (val == null) ? '' : String(val);
+  };
+  setVal('cpSex', p.sex);
+  setVal('cpHeightFt', p.height_ft);
+  setVal('cpHeightIn', p.height_in);
+  setVal('cpWeightLbs', p.weight_lbs);
+  setVal('cpExperienceLevel', p.experience_level);
+  setVal('cpEnvironment', p.environment);
+  setVal('cpSplitPreference', p.split_preference);
+  setVal('cpGoalType', p.goal_type);
+  setVal('cpGoalDetail', p.goal_detail);
+  setVal('cpPhase', p.phase);
+  setVal('cpPhaseStartDate', p.phase_start_date);
+  setVal('cpPhaseNotes', p.phase_notes);
+  setVal('cpSpecialInstructions', p.special_instructions);
+  renderInjuryList(Array.isArray(p.injuries) ? p.injuries : []);
+}
+
+// Render the injury rows. Each row has a name input + notes textarea + ×
+// remove button. The full list is re-rendered on add/remove for simplicity
+// (the list is always short, so repainting a handful of rows is cheap).
+function renderInjuryList(injuries) {
+  var host = document.getElementById('cpInjuriesList');
+  if (!host) return;
+  var h = '';
+  for (var i = 0; i < injuries.length; i++) {
+    var inj = injuries[i] || {};
+    h += '<div class="cp-injury-row" data-injury-idx="' + i + '">';
+    h += '<button type="button" class="cp-injury-row-remove" data-cp-remove-injury="' + i + '" aria-label="Remove">×</button>';
+    h += '<span class="cp-injury-row-label">Name</span>';
+    h += '<input type="text" data-cp-injury-name="' + i + '" value="' + escapeAttr(inj.name || '') + '" placeholder="e.g., knee pain, lower back sensitivity">';
+    h += '<span class="cp-injury-row-label" style="margin-top:6px;">Management notes</span>';
+    h += '<textarea data-cp-injury-notes="' + i + '" placeholder="How to program around it (cues, substitutions, volume rules, etc.)">' + escapeHtml(inj.notes || '') + '</textarea>';
+    h += '</div>';
+  }
+  host.innerHTML = h;
+}
+
+// Read the current injury rows off the DOM. Used both by the Save handler
+// AND by add/remove so ongoing edits aren't lost when rows shift.
+function readInjuryListFromDom() {
+  var rows = document.querySelectorAll('#cpInjuriesList .cp-injury-row');
+  var out = [];
+  for (var i = 0; i < rows.length; i++) {
+    var nameEl = rows[i].querySelector('[data-cp-injury-name]');
+    var notesEl = rows[i].querySelector('[data-cp-injury-notes]');
+    var name = (nameEl && nameEl.value || '').trim();
+    var notes = (notesEl && notesEl.value || '').trim();
+    // Drop entries where both fields are blank — empty row after add + no typing.
+    if (!name && !notes) continue;
+    out.push({ name: name, notes: notes });
+  }
+  return out;
+}
+
+function addInjuryRow() {
+  var current = readInjuryListFromDom();
+  current.push({ name: '', notes: '' });
+  renderInjuryList(current);
+}
+
+function removeInjuryRow(idx) {
+  var current = readInjuryListFromDom();
+  // Edge case: the row being removed is a brand-new empty row that
+  // readInjuryListFromDom dropped. Fall back to reading by attribute.
+  if (idx < 0) return;
+  var domRows = document.querySelectorAll('#cpInjuriesList .cp-injury-row');
+  var fromDom = [];
+  for (var i = 0; i < domRows.length; i++) {
+    var nameEl = domRows[i].querySelector('[data-cp-injury-name]');
+    var notesEl = domRows[i].querySelector('[data-cp-injury-notes]');
+    fromDom.push({
+      name: (nameEl && nameEl.value || '').trim(),
+      notes: (notesEl && notesEl.value || '').trim(),
+    });
+  }
+  fromDom.splice(idx, 1);
+  renderInjuryList(fromDom);
+}
+
+// Collect the full form, upsert to Supabase, close on success.
+async function saveCoachingProfileFromForm() {
+  var getVal = function(id) {
+    var el = document.getElementById(id);
+    return el ? el.value : '';
+  };
+  var parseIntOrNull = function(v) {
+    var trimmed = String(v || '').trim();
+    if (!trimmed) return null;
+    var n = parseInt(trimmed, 10);
+    return Number.isFinite(n) ? n : null;
+  };
+  var parseNumOrNull = function(v) {
+    var trimmed = String(v || '').trim();
+    if (!trimmed) return null;
+    var n = parseFloat(trimmed);
+    return Number.isFinite(n) ? n : null;
+  };
+  var trimOrNull = function(v) {
+    var t = String(v || '').trim();
+    return t || null;
+  };
+  var profile = {
+    sex: trimOrNull(getVal('cpSex')),
+    height_ft: parseIntOrNull(getVal('cpHeightFt')),
+    height_in: parseIntOrNull(getVal('cpHeightIn')),
+    weight_lbs: parseNumOrNull(getVal('cpWeightLbs')),
+    experience_level: trimOrNull(getVal('cpExperienceLevel')),
+    environment: trimOrNull(getVal('cpEnvironment')),
+    split_preference: trimOrNull(getVal('cpSplitPreference')),
+    goal_type: trimOrNull(getVal('cpGoalType')),
+    goal_detail: trimOrNull(getVal('cpGoalDetail')),
+    phase: trimOrNull(getVal('cpPhase')),
+    phase_start_date: trimOrNull(getVal('cpPhaseStartDate')),
+    phase_notes: trimOrNull(getVal('cpPhaseNotes')),
+    injuries: readInjuryListFromDom(),
+    special_instructions: trimOrNull(getVal('cpSpecialInstructions')),
+  };
+  var btn = document.getElementById('btnCoachingProfileSave');
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+  try {
+    await saveCoachingProfile(profile);
+    closeCoachingProfile();
+    showToast('Coaching profile saved', null);
+  } catch (err) {
+    console.error('saveCoachingProfileFromForm error:', err);
+    showToast("Couldn't save profile: " + (err.message || 'unknown error'), null);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
+  }
+}
+
 // ---- Gym Profiles management modal ----
 function openGymProfiles() {
   renderGymProfiles();
@@ -4713,6 +4870,10 @@ document.getElementById('menuHistory').addEventListener('click', function() {
   closeMenu();
   openHistory();
 });
+document.getElementById('menuCoachingProfile').addEventListener('click', function() {
+  closeMenu();
+  openCoachingProfile();
+});
 document.getElementById('menuGymProfiles').addEventListener('click', function() {
   closeMenu();
   openGymProfiles();
@@ -5053,6 +5214,21 @@ document.getElementById('swapExerciseBody').addEventListener('click', function(e
   if (e.target.closest('#btnSwapAccept')) { acceptSwap(); return; }
   if (e.target.closest('#btnSwapCancel')) { closeSwapModal(); return; }
   if (e.target.closest('#btnSwapAbort')) { closeSwapModal(); return; }
+});
+
+// Coaching Profile modal wiring.
+document.getElementById('btnCoachingProfileClose').addEventListener('click', closeCoachingProfile);
+document.getElementById('btnCoachingProfileCancel').addEventListener('click', closeCoachingProfile);
+document.getElementById('btnCoachingProfileSave').addEventListener('click', saveCoachingProfileFromForm);
+document.getElementById('coachingProfileOverlay').addEventListener('click', function(e) {
+  if (e.target === this) closeCoachingProfile();
+});
+document.getElementById('btnCpAddInjury').addEventListener('click', addInjuryRow);
+document.getElementById('cpInjuriesList').addEventListener('click', function(e) {
+  var btn = e.target && e.target.closest ? e.target.closest('[data-cp-remove-injury]') : null;
+  if (!btn) return;
+  var idx = parseInt(btn.getAttribute('data-cp-remove-injury'), 10);
+  if (Number.isFinite(idx)) removeInjuryRow(idx);
 });
 
 // Gym Profiles modal wiring.

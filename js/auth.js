@@ -133,6 +133,7 @@ function applySession(session) {
     earliestWorkoutDate = null;
     photosGoal = null; photosProgress = []; photosLoaded = false;
     photosSignedUrls = {};
+    coachingProfile = null;
     currentDay = 0;
     hydrate();
   } else {
@@ -160,6 +161,7 @@ function applySession(session) {
     photosProgress = [];
     photosLoaded = false;
     photosSignedUrls = {};
+    coachingProfile = null;
     if (typeof resetCoachForSignOut === 'function') resetCoachForSignOut();
     document.body.classList.add('unauthed');
   }
