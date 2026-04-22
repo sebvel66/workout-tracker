@@ -4054,6 +4054,52 @@ async function onPickStartScreenTemplate(templateId, dayIndexAttr) {
   row.parentNode.insertBefore(container, row.nextSibling);
 }
 
+// ---- Resume-session prompt ----
+// When the user attempts to log more work (add set, add exercise, check a
+// set done) on a session that's already been completed (endedAt set), this
+// modal asks whether to resume the session timer first. Reuses the same
+// gap-into-paused_ms math as the manual Resume button by delegating to
+// resumeSession(). The "Just log it" choice sets a per-session in-memory
+// suppress flag so the prompt doesn't re-fire for the same workoutId — a
+// natural ad-hoc decision that resets on next app load. An explicit Resume
+// (modal or session-bar button) clears the flag — if the user later
+// completes again and adds more, they'll be prompted again.
+var __resumePromptAction = null;
+function promptResumeIfEnded(actionFn) {
+  var st = todayState;
+  if (!st || !st.workoutId || !st.endedAt || st.suppressResumePrompt) {
+    actionFn();
+    return;
+  }
+  __resumePromptAction = actionFn;
+  var endedTime = new Date(st.endedAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  document.getElementById('resumePromptEndedAt').textContent = endedTime;
+  document.getElementById('resumePromptOverlay').classList.add('show');
+}
+function closeResumePrompt() {
+  document.getElementById('resumePromptOverlay').classList.remove('show');
+  __resumePromptAction = null;
+}
+async function onResumePromptResume() {
+  document.getElementById('resumePromptOverlay').classList.remove('show');
+  var fn = __resumePromptAction;
+  __resumePromptAction = null;
+  // resumeSession() flips endedAt → null and rolls the gap into paused_ms.
+  // It also clears suppressResumePrompt so a later Complete + add cycle re-prompts.
+  await resumeSession();
+  if (fn) fn();
+}
+function onResumePromptJustLog() {
+  document.getElementById('resumePromptOverlay').classList.remove('show');
+  if (todayState) todayState.suppressResumePrompt = true;
+  var fn = __resumePromptAction;
+  __resumePromptAction = null;
+  if (fn) fn();
+}
+function onResumePromptCancel() {
+  closeResumePrompt();
+}
+
 // ---- Toast ----
 function showToast(msg, retryFn) {
   toastCounter++;
@@ -4604,6 +4650,14 @@ document.getElementById('saveTemplateScopeDay').addEventListener('click', functi
 document.getElementById('btnPlansClose').addEventListener('click', closePlans);
 document.getElementById('plansOverlay').addEventListener('click', function(e) {
   if (e.target === this) closePlans();
+});
+
+document.getElementById('btnResumePromptResume').addEventListener('click', onResumePromptResume);
+document.getElementById('btnResumePromptJustLog').addEventListener('click', onResumePromptJustLog);
+document.getElementById('btnResumePromptCancel').addEventListener('click', onResumePromptCancel);
+document.getElementById('btnResumePromptClose').addEventListener('click', onResumePromptCancel);
+document.getElementById('resumePromptOverlay').addEventListener('click', function(e) {
+  if (e.target === this) onResumePromptCancel();
 });
 document.getElementById('plansBody').addEventListener('click', function(e) {
   if (!e.target || !e.target.closest) return;

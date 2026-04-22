@@ -2548,6 +2548,28 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
   </div>
 </div>
 
+<div class="modal-overlay" id="resumePromptOverlay" style="z-index:260;">
+  <div class="history-modal save-template-modal">
+    <div class="history-header">
+      <div style="width:32px"></div>
+      <div class="history-title">Resume session timer?</div>
+      <button class="history-close" id="btnResumePromptClose" type="button">×</button>
+    </div>
+    <div class="history-body">
+      <div class="generate-inputs">
+        <div style="font-size:14px;line-height:1.5;color:var(--text);">
+          This session ended at <span id="resumePromptEndedAt" style="font-weight:600">—</span>. Resume the timer so this set counts toward your session duration?
+        </div>
+        <div class="generate-inputs-actions" style="flex-direction:column;">
+          <button type="button" class="generate-btn-accept" id="btnResumePromptResume">Resume timer</button>
+          <button type="button" class="generate-btn-secondary" id="btnResumePromptJustLog">Just log it</button>
+          <button type="button" class="generate-btn-cancel" id="btnResumePromptCancel">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script src="js/resolver.js"></script>
 <script src="js/data.js"></script>
 <script src="js/ui.js"></script>

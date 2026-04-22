@@ -1352,6 +1352,19 @@ async function toggleSet(di, ei, si) {
   var exState = getOrInitExercise(st, ei);
   var sl = getOrInitSet(exState, si);
   var wasDone = !!sl.done;
+  // Check-ON in an ended session routes through the resume prompt; un-check
+  // doesn't (it isn't new work). promptResumeIfEnded runs the action
+  // synchronously when the prompt isn't needed (no ended session, or user
+  // already chose "Just log it" this session), so the same code path covers
+  // running sessions and post-prompt continuations cleanly.
+  if (!wasDone) {
+    promptResumeIfEnded(function() { _toggleSetCommit(di, ei, si, sl, wasDone); });
+    return;
+  }
+  await _toggleSetCommit(di, ei, si, sl, wasDone);
+}
+
+async function _toggleSetCommit(di, ei, si, sl, wasDone) {
   sl.done = !wasDone;
   if (sl.done) {
     sl.completedAt = new Date().toISOString();
@@ -1532,18 +1545,20 @@ function addExerciseToSession(exerciseRow) {
   if (viewModeFor(currentDay) !== 'editable') return;
   var st = getOrInitToday(currentDay);
   if (!st) return;
-  var ei = nextExerciseIndex();
-  var ek = 'ex_' + ei;
-  st.exercises[ek] = {
-    rpe: null, note: '', sub: '', sets: [{ isExtra: true }],
-    // Mark isExtra only on plan days (drives the "added" badge + divider).
-    // Ad-hoc sessions render every exercise uniformly with no badge.
-    isExtra: !st.isAdHoc,
-    exerciseId: exerciseRow.id,
-    exerciseMeta: exerciseRow,
-  };
-  exerciseIdCache[exerciseRow.name] = exerciseRow.id;
-  buildDay(currentDay);
+  promptResumeIfEnded(function() {
+    var ei = nextExerciseIndex();
+    var ek = 'ex_' + ei;
+    st.exercises[ek] = {
+      rpe: null, note: '', sub: '', sets: [{ isExtra: true }],
+      // Mark isExtra only on plan days (drives the "added" badge + divider).
+      // Ad-hoc sessions render every exercise uniformly with no badge.
+      isExtra: !st.isAdHoc,
+      exerciseId: exerciseRow.id,
+      exerciseMeta: exerciseRow,
+    };
+    exerciseIdCache[exerciseRow.name] = exerciseRow.id;
+    buildDay(currentDay);
+  });
 }
 
 // Add an exercise to the current session with set schemes preserved
@@ -1558,41 +1573,45 @@ function addTemplateExerciseToSession(exerciseRow, templateExerciseBlob) {
   if (viewModeFor(currentDay) !== 'editable') return;
   var st = getOrInitToday(currentDay);
   if (!st) return;
-  var templateSets = (templateExerciseBlob && Array.isArray(templateExerciseBlob.sets))
-    ? templateExerciseBlob.sets : [];
-  var sets = [];
-  if (templateSets.length) {
-    for (var j = 0; j < templateSets.length; j++) {
-      var s = templateSets[j] || {};
-      var setEntry = { isExtra: true };
-      // Pre-fill weight only when the template actually had one — null /
-      // 0 is treated as "no suggestion" so the input placeholder shows —.
-      if (s.weight != null && s.weight !== 0) setEntry.weight = Number(s.weight);
-      sets.push(setEntry);
+  promptResumeIfEnded(function() {
+    var templateSets = (templateExerciseBlob && Array.isArray(templateExerciseBlob.sets))
+      ? templateExerciseBlob.sets : [];
+    var sets = [];
+    if (templateSets.length) {
+      for (var j = 0; j < templateSets.length; j++) {
+        var s = templateSets[j] || {};
+        var setEntry = { isExtra: true };
+        // Pre-fill weight only when the template actually had one — null /
+        // 0 is treated as "no suggestion" so the input placeholder shows —.
+        if (s.weight != null && s.weight !== 0) setEntry.weight = Number(s.weight);
+        sets.push(setEntry);
+      }
+    } else {
+      sets.push({ isExtra: true });
     }
-  } else {
-    sets.push({ isExtra: true });
-  }
-  var ei = nextExerciseIndex();
-  var ek = 'ex_' + ei;
-  st.exercises[ek] = {
-    rpe: null,
-    note: (templateExerciseBlob && templateExerciseBlob.note) || '',
-    sub: '',
-    sets: sets,
-    isExtra: !st.isAdHoc,
-    exerciseId: exerciseRow.id,
-    exerciseMeta: exerciseRow,
-  };
-  exerciseIdCache[exerciseRow.name] = exerciseRow.id;
-  buildDay(currentDay);
+    var ei = nextExerciseIndex();
+    var ek = 'ex_' + ei;
+    st.exercises[ek] = {
+      rpe: null,
+      note: (templateExerciseBlob && templateExerciseBlob.note) || '',
+      sub: '',
+      sets: sets,
+      isExtra: !st.isAdHoc,
+      exerciseId: exerciseRow.id,
+      exerciseMeta: exerciseRow,
+    };
+    exerciseIdCache[exerciseRow.name] = exerciseRow.id;
+    buildDay(currentDay);
+  });
 }
 
 function addExtraSet(ei) {
   if (viewModeFor(currentDay) !== 'editable') return;
   if (!todayState || !todayState.exercises['ex_' + ei]) return;
-  todayState.exercises['ex_' + ei].sets.push({ isExtra: true });
-  buildDay(currentDay);
+  promptResumeIfEnded(function() {
+    todayState.exercises['ex_' + ei].sets.push({ isExtra: true });
+    buildDay(currentDay);
+  });
 }
 
 // Delete a single set from an extras-on-plan-day exercise or an ad-hoc
@@ -2076,6 +2095,10 @@ async function resumeSession() {
   }
   todayState.endedAt = null;
   todayState.pausedMs = newPausedMs;
+  // Explicit resume clears the per-session suppression flag (set by the
+  // resume-prompt's "Just log it" choice). If the user later completes
+  // again and adds more, they'll be re-prompted as a fresh decision.
+  todayState.suppressResumePrompt = false;
   buildDay(currentDay);
   invalidateHistoryCache();
 }
