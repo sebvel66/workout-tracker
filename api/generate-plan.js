@@ -74,6 +74,9 @@ RULES:
 - "note" explains why this replacement was chosen and how the weight was derived. Hard cap 20 words.
 - Return exactly ONE exercise. Do not offer options, do not hedge, do not list alternatives.
 - Do not suggest an exercise that is already programmed on the same day (list provided in the user message).
+
+COACHING CONTINUITY:
+The user message may include a RECENT COACHING CONVERSATIONS section with prior swap requests, injury discussions, and session notes from the last two weeks plus current week. If the client has discussed this exercise or muscle group recently, factor that into your suggestion. For example, if the client mentioned knee pain in chat earlier this week, prioritize knee-friendly alternatives even if they don't restate that in the swap reason. Don't repeat a substitute they recently rejected.
 `;
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -160,13 +163,14 @@ export default async function handler(req, res) {
     const verbatimWeeks = Math.min(MAX_VERBATIM_WEEKS, userInputs.historyWeeks);
 
     const t0 = Date.now();
-    const [activePlan, history, exercises, photos] = await Promise.all([
+    const [activePlan, history, exercises, photos, coachHistory] = await Promise.all([
       fetchActivePlan(userId),
       fetchRecentWorkouts(userId, userInputs.historyWeeks),
       fetchExerciseLibrary(userId),
       userInputs.includePhotos ? fetchPhysiquePhotos(userId) : Promise.resolve({ goal: null, progress: [] }),
+      fetchRecentCoachHistory(userId, 2),
     ]);
-    console.log('[generate-plan] data fetch:', Date.now() - t0, 'ms', '· history_weeks:', userInputs.historyWeeks, '· training_days:', userInputs.trainingDays, '· include_photos:', userInputs.includePhotos);
+    console.log('[generate-plan] data fetch:', Date.now() - t0, 'ms', '· history_weeks:', userInputs.historyWeeks, '· training_days:', userInputs.trainingDays, '· include_photos:', userInputs.includePhotos, '· coach_msgs:', coachHistory.length);
 
     if (!activePlan) {
       return jsonError(res, 400, 'No active plan. Import a plan before generating.');
@@ -176,7 +180,7 @@ export default async function handler(req, res) {
     }
 
     const t1 = Date.now();
-    const userMessage = await buildUserMessage({ activePlan, history, exercises, photos, userInputs, verbatimWeeks });
+    const userMessage = await buildUserMessage({ activePlan, history, exercises, photos, userInputs, verbatimWeeks, coachHistory });
     console.log('[generate-plan] prompt build (incl photo b64):', Date.now() - t1, 'ms');
 
     const t2 = Date.now();
@@ -350,6 +354,64 @@ async function fetchExerciseLibrary(userId) {
   return await res.json();
 }
 
+// Coach history window: last `weeksBack` complete prior weeks (Sun-anchored)
+// + current week to date. Same shape as fetchRecentWorkouts so the prompt
+// blocks line up temporally. Failure is NON-fatal — return [] so the plan
+// generation never fails because the chat-history side-channel is degraded.
+async function fetchRecentCoachHistory(userId, weeksBack) {
+  if (!Number.isFinite(weeksBack) || weeksBack < 1) weeksBack = 2;
+  try {
+    const today = new Date();
+    const weekSunday = new Date(today);
+    weekSunday.setUTCHours(0, 0, 0, 0);
+    weekSunday.setUTCDate(today.getUTCDate() - today.getUTCDay());
+    const start = new Date(weekSunday);
+    start.setUTCDate(start.getUTCDate() - weeksBack * 7);
+    const startIso = start.toISOString();
+    const select = encodeURIComponent('role,content,context_type,exercise_name,created_at');
+    const res = await sbFetch(
+      `/coach_messages?user_id=eq.${userId}&created_at=gte.${startIso}&order=created_at.asc&select=${select}`
+    );
+    if (!res.ok) return [];
+    return await res.json();
+  } catch (err) {
+    console.warn('[coach_history] fetch failed:', err && err.message);
+    return [];
+  }
+}
+
+// Render coach_messages as a labeled text block keyed by date so Claude
+// can read the conversation as a journal. Returns '' for empty input so
+// callers can append unconditionally without polluting the prompt with
+// an empty header. Format mirrors the spec example: "--- Tue, Apr 15 ---"
+// header per day, "Client" / "Coach" prefix, optional "[exercise swap: X]"
+// or "[plan generation]" inline tag from context_type.
+function formatCoachHistory(messages) {
+  if (!Array.isArray(messages) || !messages.length) return '';
+  let out = 'RECENT COACHING CONVERSATIONS (last 2 weeks + current week):\n';
+  let currentDate = '';
+  for (const m of messages) {
+    if (!m || !m.content) continue;
+    const d = new Date(m.created_at);
+    const dateStr = d.toLocaleDateString('en-US', {
+      weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC',
+    });
+    if (dateStr !== currentDate) {
+      currentDate = dateStr;
+      out += `\n--- ${dateStr} ---\n`;
+    }
+    const prefix = m.role === 'user' ? 'Client' : 'Coach';
+    let tag = '';
+    if (m.context_type === 'swap' && m.exercise_name) {
+      tag = ` [exercise swap: ${m.exercise_name}]`;
+    } else if (m.context_type === 'plan_generation') {
+      tag = ' [plan generation]';
+    }
+    out += `${prefix}${tag}: ${m.content}\n`;
+  }
+  return out + '\n';
+}
+
 // progressLimit controls how many progress photos come back. Plan-gen
 // uses 1 (latest only — visual cue for programming, more would bloat the
 // prompt). Analyze mode uses more (up to ~4) so the prompt carries the
@@ -395,7 +457,7 @@ async function downloadPhotoAsBase64(storagePath) {
 }
 
 // ---- Prompt assembly ----
-async function buildUserMessage({ activePlan, history, exercises, photos, userInputs, verbatimWeeks }) {
+async function buildUserMessage({ activePlan, history, exercises, photos, userInputs, verbatimWeeks, coachHistory }) {
   const content = [];
   const { verbatim, summarized } = splitHistoryByRecency(history, verbatimWeeks);
 
@@ -415,10 +477,14 @@ async function buildUserMessage({ activePlan, history, exercises, photos, userIn
   // USER INPUTS section holds the rules, the data section below holds the
   // values. No re-statement of day structure here — that would duplicate what
   // the CLIENT PROFILE section and the formatCurrentPlan snapshot already say.
+  // Coach history slots between RECENT PERFORMANCE (verbatim+summarized) and
+  // USER INPUTS so Claude reads "what happened in training" → "what we
+  // talked about" → "what the user asked for this time" in that order.
   let dynText = '';
   dynText += formatCurrentPlan(activePlan);
   dynText += formatVerbatimHistory(verbatim, activePlan, verbatimWeeks);
   dynText += formatSummarizedHistory(summarized);
+  dynText += formatCoachHistory(coachHistory);
   dynText += formatUserInputs(userInputs);
   dynText += '\nGENERATE the training plan per the USER INPUTS above. Return ONLY the JSON object as specified in your instructions. No preamble, no markdown fences, no trailing text.\n';
   content.push({ type: 'text', text: dynText });
@@ -669,22 +735,23 @@ async function handleAnalyze(res, userId, rawInputs) {
   const includePhotos = rawInputs.include_photos === false ? false : true;
 
   const t0 = Date.now();
-  const [activePlan, history, exercises, photos] = await Promise.all([
+  const [activePlan, history, exercises, photos, coachHistory] = await Promise.all([
     fetchActivePlan(userId),
     fetchRecentWorkouts(userId, historyWeeks),
     fetchExerciseLibrary(userId),
     includePhotos
       ? fetchPhysiquePhotos(userId, ANALYZE_PROGRESS_PHOTO_LIMIT)
       : Promise.resolve({ goal: null, progress: [] }),
+    fetchRecentCoachHistory(userId, 2),
   ]);
-  console.log('[generate-plan:analyze] data fetch:', Date.now() - t0, 'ms', '· history_weeks:', historyWeeks, '· include_photos:', includePhotos, '· progress_photos:', (photos.progress || []).length);
+  console.log('[generate-plan:analyze] data fetch:', Date.now() - t0, 'ms', '· history_weeks:', historyWeeks, '· include_photos:', includePhotos, '· progress_photos:', (photos.progress || []).length, '· coach_msgs:', coachHistory.length);
 
   if (!history.length) {
     return jsonError(res, 400, 'No workout history found. Log at least one week of training before requesting an analysis.');
   }
 
   const t1 = Date.now();
-  const userMessage = await buildAnalyzeUserMessage({ activePlan, history, exercises, photos, historyWeeks, verbatimWeeks, notes });
+  const userMessage = await buildAnalyzeUserMessage({ activePlan, history, exercises, photos, historyWeeks, verbatimWeeks, notes, coachHistory });
   console.log('[generate-plan:analyze] prompt build:', Date.now() - t1, 'ms');
 
   const t2 = Date.now();
@@ -760,7 +827,7 @@ async function handleAnalyze(res, userId, rawInputs) {
   });
 }
 
-async function buildAnalyzeUserMessage({ activePlan, history, exercises, photos, historyWeeks, verbatimWeeks, notes }) {
+async function buildAnalyzeUserMessage({ activePlan, history, exercises, photos, historyWeeks, verbatimWeeks, notes, coachHistory }) {
   const content = [];
   const { verbatim, summarized } = splitHistoryByRecency(history, verbatimWeeks);
 
@@ -778,6 +845,7 @@ async function buildAnalyzeUserMessage({ activePlan, history, exercises, photos,
   if (activePlan) dynText += formatCurrentPlan(activePlan);
   dynText += formatVerbatimHistory(verbatim, activePlan, verbatimWeeks);
   dynText += formatSummarizedHistory(summarized);
+  dynText += formatCoachHistory(coachHistory);
   dynText += formatAnalyzeInputs({ historyWeeks, notes });
   dynText += '\nProduce the analysis per your instructions. Return ONLY the JSON object. No preamble, no markdown fences.\n';
   content.push({ type: 'text', text: dynText });
@@ -850,12 +918,13 @@ async function handleSwap(res, userId, rawInputs) {
   const dayName = typeof rawInputs.day_name === 'string' ? rawInputs.day_name.slice(0, 120) : '';
 
   const t0 = Date.now();
-  const [activePlan, history, exercises] = await Promise.all([
+  const [activePlan, history, exercises, coachHistory] = await Promise.all([
     fetchActivePlan(userId),
     fetchRecentWorkouts(userId, SWAP_HISTORY_WEEKS),
     fetchExerciseLibrary(userId),
+    fetchRecentCoachHistory(userId, 2),
   ]);
-  console.log('[generate-plan:swap] data fetch:', Date.now() - t0, 'ms');
+  console.log('[generate-plan:swap] data fetch:', Date.now() - t0, 'ms', '· coach_msgs:', coachHistory.length);
 
   const libraryNames = new Set(exercises.map(e => e.name));
 
@@ -877,7 +946,7 @@ async function handleSwap(res, userId, rawInputs) {
   const movementHistory = summarizeMovementHistory(history, exercise.movement_pattern, exercise.muscle_group);
 
   const t1 = Date.now();
-  const userText = buildSwapUserMessage({ exercise, reason, dayName, otherToday, movementHistory });
+  const userText = buildSwapUserMessage({ exercise, reason, dayName, otherToday, movementHistory, coachHistory });
   const userContent = [
     // Library block is cached (same 1h TTL pattern as plan generation).
     // Multiple swaps within an hour reuse this cache entry as long as the
@@ -965,7 +1034,7 @@ async function handleSwap(res, userId, rawInputs) {
   });
 }
 
-function buildSwapUserMessage({ exercise, reason, dayName, otherToday, movementHistory }) {
+function buildSwapUserMessage({ exercise, reason, dayName, otherToday, movementHistory, coachHistory }) {
   let out = 'EXERCISE TO REPLACE\n';
   out += `Name: ${exercise.name}\n`;
   if (exercise.muscle_group) out += `Muscle group: ${exercise.muscle_group}\n`;
@@ -996,6 +1065,11 @@ function buildSwapUserMessage({ exercise, reason, dayName, otherToday, movementH
     out += 'RECENT HISTORY FOR THIS MOVEMENT PATTERN (use for weight calibration)\n';
     out += movementHistory + '\n\n';
   }
+
+  // Coach history goes after movement context but before the JSON return
+  // instruction. formatCoachHistory returns '' for empty input so the prompt
+  // stays clean when there's nothing to inject.
+  out += formatCoachHistory(coachHistory);
 
   out += 'Return ONLY the JSON object for the replacement exercise. No preamble, no markdown fences, no trailing text.\n';
   return out;

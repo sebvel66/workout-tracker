@@ -23,6 +23,7 @@ const TEMPERATURE = 0.4;
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
 // System prompt is inline (not bundled via system-prompt.md) because this is
@@ -63,7 +64,10 @@ PROGRESSION RULES (from the client's coaching agreement):
 - Weight jumps: 5 lbs max on compounds, 2.5-5 lbs on isolations.
 - If RPE is consistently 9+ across all sets, hold weight and consolidate rather than progressing.
 - Grip-dependent exercises (RDLs, heavy rows) should use straps if grip is limiting — grip is trained separately via dead hangs.
-- The client tends to drop end-of-session accessories. If they ask about skipping, acknowledge the pattern but make a clear recommendation.`;
+- The client tends to drop end-of-session accessories. If they ask about skipping, acknowledge the pattern but make a clear recommendation.
+
+COACHING CONTINUITY:
+The first user message of each conversation may include a RECENT COACHING CONVERSATIONS section — the last two weeks plus current week of prior coaching interactions (chat, exercise swaps, plan generation). Reference past conversations naturally when relevant: "As we discussed Tuesday..." or "You mentioned knee pain last week — how is that feeling now?" If the client asks something you've already answered recently, acknowledge your prior advice rather than restarting from scratch. This continuity is what makes you a coach instead of a stateless chatbot. Don't fabricate references to conversations that aren't in the history.`;
 
 export default async function handler(req, res) {
   // Warmup branch — keep a Fluid Compute instance hot without touching Anthropic.
@@ -77,6 +81,7 @@ export default async function handler(req, res) {
   const missingVars = [];
   if (!SUPABASE_URL) missingVars.push('SUPABASE_URL');
   if (!SUPABASE_ANON_KEY) missingVars.push('SUPABASE_ANON_KEY');
+  if (!SUPABASE_SERVICE_ROLE_KEY) missingVars.push('SUPABASE_SERVICE_ROLE_KEY');
   if (!ANTHROPIC_API_KEY) missingVars.push('ANTHROPIC_API_KEY');
   if (missingVars.length) {
     return jsonError(res, 500, 'Server misconfigured — missing: ' + missingVars.join(', '));
@@ -103,6 +108,29 @@ export default async function handler(req, res) {
       if (!m || typeof m !== 'object') return jsonError(res, 400, `Message ${i} is not an object`);
       if (m.role !== 'user' && m.role !== 'assistant') return jsonError(res, 400, `Message ${i} has invalid role`);
       if (typeof m.content !== 'string' || !m.content) return jsonError(res, 400, `Message ${i} has empty content`);
+    }
+
+    // Inject RECENT COACHING CONVERSATIONS into messages[0] (the COACHING
+    // CONTEXT block the frontend pre-assembles). The block sits before the
+    // "Please acknowledge..." trailer so Claude reads context → continuity
+    // → acknowledgement in that order. Failure of the side-channel fetch
+    // is non-fatal (formatCoachHistory returns ''), and we never block
+    // the chat call on it.
+    const t_chist = Date.now();
+    const coachHistory = await fetchRecentCoachHistory(userId, 2);
+    console.log('[coach-chat] coach_history fetch:', Date.now() - t_chist, 'ms · msgs:', coachHistory.length);
+    const historyBlock = formatCoachHistory(coachHistory);
+    if (historyBlock) {
+      const trailer = '\n\nPlease acknowledge you have this context.';
+      const idx = messages[0].content.lastIndexOf(trailer);
+      if (idx > -1) {
+        messages[0].content = messages[0].content.slice(0, idx)
+          + '\n\n' + historyBlock + trailer;
+      } else {
+        // Frontend may have changed the trailer; append at end so the
+        // history is still in the prompt.
+        messages[0].content += '\n\n' + historyBlock;
+      }
     }
 
     const t0 = Date.now();
@@ -180,4 +208,63 @@ async function verifyUser(authHeader) {
   if (!res.ok) return null;
   const data = await res.json();
   return data && data.id ? data.id : null;
+}
+
+// ---- Coach history (mirrors generate-plan.js) ----
+// Duplicated here rather than shared via a module because /api/ has no
+// shared-module pattern today and a single helper file would just add
+// import overhead. ~30 lines duplicated; cheap.
+
+async function fetchRecentCoachHistory(userId, weeksBack) {
+  if (!Number.isFinite(weeksBack) || weeksBack < 1) weeksBack = 2;
+  try {
+    const today = new Date();
+    const weekSunday = new Date(today);
+    weekSunday.setUTCHours(0, 0, 0, 0);
+    weekSunday.setUTCDate(today.getUTCDate() - today.getUTCDay());
+    const start = new Date(weekSunday);
+    start.setUTCDate(start.getUTCDate() - weeksBack * 7);
+    const startIso = start.toISOString();
+    const select = encodeURIComponent('role,content,context_type,exercise_name,created_at');
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/coach_messages?user_id=eq.${userId}&created_at=gte.${startIso}&order=created_at.asc&select=${select}`,
+      {
+        headers: {
+          apikey: SUPABASE_SERVICE_ROLE_KEY,
+          Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        },
+      }
+    );
+    if (!res.ok) return [];
+    return await res.json();
+  } catch (err) {
+    console.warn('[coach_history] fetch failed:', err && err.message);
+    return [];
+  }
+}
+
+function formatCoachHistory(messages) {
+  if (!Array.isArray(messages) || !messages.length) return '';
+  let out = 'RECENT COACHING CONVERSATIONS (last 2 weeks + current week):\n';
+  let currentDate = '';
+  for (const m of messages) {
+    if (!m || !m.content) continue;
+    const d = new Date(m.created_at);
+    const dateStr = d.toLocaleDateString('en-US', {
+      weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC',
+    });
+    if (dateStr !== currentDate) {
+      currentDate = dateStr;
+      out += `\n--- ${dateStr} ---\n`;
+    }
+    const prefix = m.role === 'user' ? 'Client' : 'Coach';
+    let tag = '';
+    if (m.context_type === 'swap' && m.exercise_name) {
+      tag = ` [exercise swap: ${m.exercise_name}]`;
+    } else if (m.context_type === 'plan_generation') {
+      tag = ' [plan generation]';
+    }
+    out += `${prefix}${tag}: ${m.content}\n`;
+  }
+  return out + '\n';
 }
