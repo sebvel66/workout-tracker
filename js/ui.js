@@ -2320,9 +2320,15 @@ async function loadPlans() {
   plansLoading = true;
   renderPlans();
   try {
+    // Templates live in the same plans table (is_template = true) but
+    // belong in the Templates modal, not here. Without this filter, a
+    // template row shows up in the Plans list and "deleting the plan"
+    // actually deletes the template — which is what the user's "plan
+    // delete took out my template" report turned out to be.
     var pr = await sb.from('plans')
       .select('id, title, week, is_active, created_at, data')
       .eq('user_id', userId)
+      .eq('is_template', false)
       .order('created_at', { ascending: false });
     if (pr.error) throw pr.error;
 
@@ -2424,7 +2430,13 @@ async function onDeletePlan(planId) {
   if (!p || p.workout_count > 0) return;
   if (!confirm('Delete "' + (p.title || 'Untitled') + '"? This cannot be undone.')) return;
   try {
-    var dr = await sb.from('plans').delete().eq('id', planId);
+    // Defensive: scope delete to non-template rows. Pre-v2.4.11 the
+    // Plans list could include template rows; if a stale client still
+    // has one in plansList, this prevents the delete from landing on
+    // the template by id.
+    var dr = await sb.from('plans').delete()
+      .eq('id', planId)
+      .eq('is_template', false);
     if (dr.error) throw dr.error;
     await loadPlans();
     renderPlans();
