@@ -1904,18 +1904,28 @@ async function submitGenerateInputs(mode) {
   generatedPlan = null;
   generatedAnalysis = null;
   renderGenerate();
-  // Log the request itself. Both modes use the 'plan_generation' bucket
-  // (the schema's CHECK constraint is fixed at three values; analyze
-  // is plan-adjacent enough to share the bucket — the prefix in content
-  // disambiguates). Notes default to "none" so the log reads cleanly.
-  var notesText = notes ? notes : 'none';
+  // Option L (2026-04-22): plan-gen doesn't log its submit anymore —
+  // only the accept row persists (onAcceptGeneratedPlan). Cancelled
+  // plan-gens leave no trace; the chat history reflects things that
+  // happened to the training plan, not things the user considered
+  // and abandoned. Analyze still logs its request because the
+  // analysis content (the assistant response) is always informational
+  // and the request row gives it the corresponding "Client asked" turn.
+  // Notes are capped at 200 chars — chained-from-analyze or pasted-
+  // analysis notes can be 1500+ chars of redundant content already
+  // captured in the analyze response row.
   if (mode === 'analyze') {
+    var rawNotes = notes ? String(notes).trim() : '';
+    var notesForLog;
+    if (!rawNotes) {
+      notesForLog = 'none';
+    } else if (rawNotes.length <= 200) {
+      notesForLog = rawNotes;
+    } else {
+      notesForLog = rawNotes.slice(0, 200).trim() + '… [truncated, ' + rawNotes.length + ' chars]';
+    }
     logCoachMessage('user',
-      'Requested training analysis. Weeks of history: ' + historyWeeks + '. Notes: ' + notesText,
-      'plan_generation', null);
-  } else {
-    logCoachMessage('user',
-      'Generated new plan. Weeks of history: ' + historyWeeks + '. Notes: ' + notesText,
+      'Requested training analysis. Weeks of history: ' + historyWeeks + '. Notes: ' + notesForLog,
       'plan_generation', null);
   }
 
@@ -2327,10 +2337,27 @@ async function onAcceptGeneratedPlan() {
   try {
     await savePlanAsActive(generatedPlan);
     var label = generatedPlan.week || generatedPlan.title || 'New plan';
-    // Log on success so the durable history shows accept-only outcomes
-    // (cancels and failed saves stay out of the conversation thread).
+    // Option L: one outcome row per accepted plan — there's no separate
+    // "submit" row anymore. Captures label + history window + user
+    // notes. Notes are capped at 200 chars because chained-from-analyze
+    // flows can put 1500+ chars of redundant analysis in the notes
+    // field; the analyze assistant row already holds the analytical
+    // content, and the full notes are sent to Claude at plan-gen
+    // time via USER INPUTS regardless of what gets logged here.
+    var weeksStr = (generatedInputs && generatedInputs.history_weeks != null)
+      ? String(generatedInputs.history_weeks) : '?';
+    var rawNotes = (generatedInputs && generatedInputs.notes)
+      ? String(generatedInputs.notes).trim() : '';
+    var notesForLog;
+    if (!rawNotes) {
+      notesForLog = 'none';
+    } else if (rawNotes.length <= 200) {
+      notesForLog = rawNotes;
+    } else {
+      notesForLog = rawNotes.slice(0, 200).trim() + '… [truncated, ' + rawNotes.length + ' chars]';
+    }
     logCoachMessage('user',
-      'Accepted plan: ' + label,
+      'Accepted plan: ' + label + '. Weeks of history: ' + weeksStr + '. Notes: ' + notesForLog,
       'plan_generation', null);
     closeGenerate();
     showToast(label + ' loaded', null);
@@ -3073,25 +3100,18 @@ async function submitSwapRequest() {
   if (!swapState) return;
   var reasonEl = document.getElementById('swapReasonInput');
   if (reasonEl) swapState.reason = (reasonEl.value || '').trim();
-  // Log the request itself so the durable history captures both why the
-  // swap was asked and (below) what Claude suggested. Reason defaults to
-  // "no reason given" rather than empty so the log is self-explanatory.
-  var exName = swapState.snapshot.name;
-  var reasonText = swapState.reason || 'no reason given';
-  logCoachMessage('user',
-    'Requesting replacement for ' + exName + '. Reason: ' + reasonText,
-    'swap', exName);
+  // Option L: no pre-outcome logging. The accept row in acceptSwap
+  // captures the whole flow (from → to, reason, coach's rationale).
+  // Cancelled swaps leave no trace.
   await fireSwapFetch();
 }
 
 async function retrySwapRequest() {
   if (!swapState) return;
-  // Reject log fires before the new fetch so the conversation order
-  // reads naturally: request → suggestion → reject → next suggestion.
-  var exName = swapState.snapshot.name;
-  logCoachMessage('user',
-    'Rejected suggestion, requesting another',
-    'swap', exName);
+  // Option L: retries aren't logged — only the final accepted
+  // replacement gets a single outcome row. Intermediate suggestions
+  // and the user's "try again" action are session-scoped exploration
+  // that Claude doesn't need in durable history.
   await fireSwapFetch();
 }
 
@@ -3140,15 +3160,10 @@ async function fireSwapFetch() {
     swapState.replacement = body.replacement;
     swapState.view = 'review';
     renderSwapModal();
-    // Log Claude's suggestion. Note is the "why this replacement"
-    // string the swap prompt requires (≤20 words) — perfect summary
-    // content for the durable log.
-    var exName = swapState.snapshot.name;
-    var rep = body.replacement;
-    var noteSuffix = rep.note ? (': ' + rep.note) : '';
-    logCoachMessage('assistant',
-      'Suggested replacing ' + exName + ' with ' + rep.name + noteSuffix,
-      'swap', exName);
+    // Option L: suggestions aren't persisted in isolation. On accept,
+    // the acceptSwap log folds repl.note into the outcome row as
+    // "Coach's rationale". On retry/cancel, the suggestion content
+    // was session-scoped exploration — not durable.
   } catch(err) {
     if (err && err.name === 'AbortError') return;
     console.error('fireSwapFetch error:', err);
@@ -3187,12 +3202,20 @@ async function acceptSwap() {
     var up = await sb.from('plans').update({ data: plan }).eq('id', activePlanId);
     if (up.error) throw up.error;
     planCache[activePlanId] = plan;
-    // Log the accept on success only — failures revert the in-memory
-    // mutation below and shouldn't pollute the durable history with a
-    // swap that didn't actually happen.
-    logCoachMessage('user',
-      'Accepted: replaced ' + oldName + ' with ' + repl.name,
-      'swap', oldName);
+    // Option L: one outcome row per accepted swap, captures the full
+    // exchange so retries and suggestion-level exploration collapse
+    // cleanly. Format:
+    //   "Accepted swap: <from> → <to> (reason: <reason>). Coach's
+    //   rationale: <≤20 word note>"
+    // Failures fall through to the catch below and revert in-memory
+    // state; the log doesn't fire so we don't persist a swap that
+    // didn't actually happen.
+    var reasonText = (swapState.reason && swapState.reason.trim()) || 'no reason given';
+    var rationale = (repl.note && repl.note.trim()) ? repl.note.trim() : '';
+    var swapLog = 'Accepted swap: ' + oldName + ' → ' + repl.name +
+      ' (reason: ' + reasonText + ')';
+    if (rationale) swapLog += ". Coach's rationale: " + rationale;
+    logCoachMessage('user', swapLog, 'swap', oldName);
     closeSwapModal();
     buildTabs();
     buildDay(currentDay);
