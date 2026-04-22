@@ -2125,6 +2125,27 @@ async function deleteTemplate(templateId) {
   if (r.error) throw new Error(r.error.message);
 }
 
+// Rename a template. Updates both the `template_name` column (source of
+// truth for the Templates list + start-screen picker) and the embedded
+// data.title (used downstream by createAdHocFromTemplate when seeding the
+// generated session's title). Keeps the two in sync so historical uses
+// of the template remain labeled consistently with its new name.
+async function renameTemplate(templateId, newName) {
+  if (!userId) throw new Error('Not signed in');
+  var trimmed = (newName || '').trim();
+  if (!trimmed) throw new Error('Template name required');
+  var row = await sb.from('plans').select('data').eq('id', templateId).single();
+  if (row.error) throw new Error(row.error.message);
+  var blob = row.data.data || {};
+  blob.title = trimmed;
+  var r = await sb.from('plans').update({
+    template_name: trimmed,
+    title: trimmed,
+    data: blob,
+  }).eq('id', templateId);
+  if (r.error) throw new Error(r.error.message);
+}
+
 // Create a new ad-hoc workout pre-populated from a template day. Mirrors
 // createAdHocSession's insert + state-init, then loads the template's
 // exercises into the state with resolved library ids. plan_id stays null

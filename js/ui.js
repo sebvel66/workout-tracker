@@ -3137,12 +3137,36 @@ function renderTemplates() {
     h += '<div class="plans-row-meta">' + dayLabel + ' · ' + escapeHtml(dateLabel) + '</div>';
     h += '</div>';
     h += '<div class="plans-row-actions">';
+    h += '<button type="button" class="plans-btn rename" data-template-id="' + escapeAttr(t.id) + '">Rename</button>';
     h += '<button type="button" class="plans-btn delete" data-template-id="' + escapeAttr(t.id) + '">Delete</button>';
     h += '</div>';
     h += '</div>';
   }
   h += '</div>';
   body.innerHTML = h;
+}
+
+async function onRenameTemplate(templateId) {
+  var t = null;
+  for (var i = 0; i < templatesList.length; i++) {
+    if (templatesList[i].id === templateId) { t = templatesList[i]; break; }
+  }
+  if (!t) return;
+  var current = t.template_name || '';
+  var next = prompt('Rename template', current);
+  if (next === null) return;          // user hit Cancel
+  var trimmed = (next || '').trim();
+  if (!trimmed) { showToast('Template name required', null); return; }
+  if (trimmed === current) return;    // no change
+  try {
+    await renameTemplate(templateId, trimmed);
+    await loadTemplatesIntoState();
+    renderTemplates();
+    showToast('Template renamed', null);
+  } catch(err) {
+    console.error('onRenameTemplate error:', err);
+    showToast("Couldn't rename: " + (err.message || 'unknown error'), null);
+  }
 }
 
 async function onDeleteTemplate(templateId) {
@@ -3648,6 +3672,12 @@ document.getElementById('templatesBody').addEventListener('click', function(e) {
   var saveBtn = e.target.closest('#btnTemplatesSaveCurrent');
   if (saveBtn && !saveBtn.disabled) {
     openSaveAsTemplateFromMenu();
+    return;
+  }
+  var renameBtn = e.target.closest('.plans-btn.rename');
+  if (renameBtn && !renameBtn.disabled) {
+    var rid = renameBtn.getAttribute('data-template-id');
+    if (rid) onRenameTemplate(rid);
     return;
   }
   var deleteBtn = e.target.closest('.plans-btn.delete');
