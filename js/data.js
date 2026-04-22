@@ -1600,10 +1600,15 @@ async function deleteExerciseCard(di, ei) {
 async function createAdHocSession() {
   if (!userId) return;
   var now = new Date().toISOString();
+  // Default title = short date (e.g. "Wed, Apr 22") so unnamed ad-hoc
+  // sessions still carry a useful label in the dropdown, history list,
+  // and coach/export surfaces. User can overwrite freely via the title
+  // input in the ad-hoc header. Format matches the .adhoc-date row
+  // rendered immediately below so both reference points agree.
+  var defaultTitle = new Date().toLocaleDateString(undefined, {
+    weekday: 'short', month: 'short', day: 'numeric',
+  });
   try {
-    // title is omitted from the insert so this works even if the title
-    // column migration hasn't been applied yet. Postgres defaults unspecified
-    // nullable columns to NULL, which matches the intended initial state.
     // performed_on uses the user-local date so the row's calendar date
     // lines up with what the app considers "today" for hydration.
     var res = await sb.from('workouts').insert({
@@ -1611,12 +1616,13 @@ async function createAdHocSession() {
       performed_at: now, started_at: now,
       performed_on: sessionTodayDateString(),
       location_id: recentLocationId || null,
+      title: defaultTitle,
     }).select().single();
     if (res.error) throw res.error;
     var adState = {
       workoutId: res.data.id, planId: null, dayIndex: null,
       startedAt: now, endedAt: null,
-      title: null, isAdHoc: true,
+      title: res.data.title || defaultTitle, isAdHoc: true,
       notes: '', notesExpanded: false,
       locationId: res.data.location_id || null,
       exercises: {},
