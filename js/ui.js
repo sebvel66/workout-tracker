@@ -1904,6 +1904,20 @@ async function submitGenerateInputs(mode) {
   generatedPlan = null;
   generatedAnalysis = null;
   renderGenerate();
+  // Log the request itself. Both modes use the 'plan_generation' bucket
+  // (the schema's CHECK constraint is fixed at three values; analyze
+  // is plan-adjacent enough to share the bucket — the prefix in content
+  // disambiguates). Notes default to "none" so the log reads cleanly.
+  var notesText = notes ? notes : 'none';
+  if (mode === 'analyze') {
+    logCoachMessage('user',
+      'Requested training analysis. Weeks of history: ' + historyWeeks + '. Notes: ' + notesText,
+      'plan_generation', null);
+  } else {
+    logCoachMessage('user',
+      'Generated new plan. Weeks of history: ' + historyWeeks + '. Notes: ' + notesText,
+      'plan_generation', null);
+  }
 
   try {
     var sessionRes = await sb.auth.getSession();
@@ -1928,6 +1942,14 @@ async function submitGenerateInputs(mode) {
     var body = result.body;
     if (mode === 'analyze') {
       generatedAnalysis = body.analysis;
+      // Log the rich four-section assessment as the assistant message.
+      // This is the analog of the (now-removed) coaching_notes — the
+      // textual coaching content the user sees and Claude can reference
+      // in future calls. Plan-gen has no equivalent (structure-only
+      // since v2.3.0), so plan-gen logs only request + accept.
+      logCoachMessage('assistant',
+        formatAnalysisForLog(body.analysis),
+        'plan_generation', null);
     } else {
       generatedPlan = body.plan;
     }
@@ -2147,6 +2169,21 @@ function renderGenerateReview(body) {
   body.innerHTML = h;
 }
 
+// Format the four-section analysis as plain-text labeled blocks for the
+// durable coach_messages log. Mirrors the "Use for next plan" formatter
+// shape since both serve the same purpose: condense the analysis into a
+// text block Claude can read in future calls. Sections with empty values
+// are omitted so the log doesn't carry empty headers.
+function formatAnalysisForLog(a) {
+  if (!a) return '';
+  var parts = [];
+  if (a.trends) parts.push('TRENDS: ' + a.trends);
+  if (a.progressing) parts.push('PROGRESSING: ' + a.progressing);
+  if (a.concerns) parts.push('CONCERNS: ' + a.concerns);
+  if (a.next_week) parts.push('NEXT WEEK: ' + a.next_week);
+  return parts.join('\n\n');
+}
+
 // Render the four-section written analysis plus a "Use for next plan"
 // button that carries the analysis forward into plan-gen's notes field.
 function renderAnalyzeReview(body) {
@@ -2290,6 +2327,11 @@ async function onAcceptGeneratedPlan() {
   try {
     await savePlanAsActive(generatedPlan);
     var label = generatedPlan.week || generatedPlan.title || 'New plan';
+    // Log on success so the durable history shows accept-only outcomes
+    // (cancels and failed saves stay out of the conversation thread).
+    logCoachMessage('user',
+      'Accepted plan: ' + label,
+      'plan_generation', null);
     closeGenerate();
     showToast(label + ' loaded', null);
   } catch(err) {
@@ -2673,6 +2715,10 @@ async function sendCoachMessage() {
     appendCoachMessage(reply);
     chatHistory.push({ role: 'user', content: userMsg });
     chatHistory.push({ role: 'assistant', content: reply });
+    // Durable log alongside the in-memory ring buffer. Survives sign-out
+    // and powers cross-session continuity in Claude prompts (v2.5+ B3).
+    logCoachMessage('user', userMsg, 'chat', null);
+    logCoachMessage('assistant', reply, 'chat', null);
     if (chatHistory.length > CHAT_HISTORY_MAX) {
       // Drop the two oldest entries (one Q/A pair). Keep length aligned on
       // pair boundaries so context ordering stays user/assistant/user/...
@@ -2877,11 +2923,25 @@ async function submitSwapRequest() {
   if (!swapState) return;
   var reasonEl = document.getElementById('swapReasonInput');
   if (reasonEl) swapState.reason = (reasonEl.value || '').trim();
+  // Log the request itself so the durable history captures both why the
+  // swap was asked and (below) what Claude suggested. Reason defaults to
+  // "no reason given" rather than empty so the log is self-explanatory.
+  var exName = swapState.snapshot.name;
+  var reasonText = swapState.reason || 'no reason given';
+  logCoachMessage('user',
+    'Requesting replacement for ' + exName + '. Reason: ' + reasonText,
+    'swap', exName);
   await fireSwapFetch();
 }
 
 async function retrySwapRequest() {
   if (!swapState) return;
+  // Reject log fires before the new fetch so the conversation order
+  // reads naturally: request → suggestion → reject → next suggestion.
+  var exName = swapState.snapshot.name;
+  logCoachMessage('user',
+    'Rejected suggestion, requesting another',
+    'swap', exName);
   await fireSwapFetch();
 }
 
@@ -2930,6 +2990,15 @@ async function fireSwapFetch() {
     swapState.replacement = body.replacement;
     swapState.view = 'review';
     renderSwapModal();
+    // Log Claude's suggestion. Note is the "why this replacement"
+    // string the swap prompt requires (≤20 words) — perfect summary
+    // content for the durable log.
+    var exName = swapState.snapshot.name;
+    var rep = body.replacement;
+    var noteSuffix = rep.note ? (': ' + rep.note) : '';
+    logCoachMessage('assistant',
+      'Suggested replacing ' + exName + ' with ' + rep.name + noteSuffix,
+      'swap', exName);
   } catch(err) {
     if (err && err.name === 'AbortError') return;
     console.error('fireSwapFetch error:', err);
@@ -2968,6 +3037,12 @@ async function acceptSwap() {
     var up = await sb.from('plans').update({ data: plan }).eq('id', activePlanId);
     if (up.error) throw up.error;
     planCache[activePlanId] = plan;
+    // Log the accept on success only — failures revert the in-memory
+    // mutation below and shouldn't pollute the durable history with a
+    // swap that didn't actually happen.
+    logCoachMessage('user',
+      'Accepted: replaced ' + oldName + ' with ' + repl.name,
+      'swap', oldName);
     closeSwapModal();
     buildTabs();
     buildDay(currentDay);

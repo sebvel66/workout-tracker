@@ -2103,6 +2103,38 @@ async function resumeSession() {
   invalidateHistoryCache();
 }
 
+// ---- Coach message persistence ----
+// Fire-and-forget insert into coach_messages. Used by chat send, swap
+// request/accept, and plan-gen submit/accept so all three coaching
+// surfaces share one durable log. Failures are non-fatal and never
+// surface to the user — the chat / swap / plan flows must keep working
+// even if the persistence layer is degraded. Edge Functions read this
+// table with the service role to inject "RECENT COACHING CONVERSATIONS"
+// into Claude's user message on every call (B3).
+//
+// contextType: 'chat' | 'swap' | 'plan_generation' (constrained by the
+// CHECK on the table — anything else throws at the DB layer).
+// exerciseName: populated for 'swap' rows so the prompt can render
+// "[exercise swap: Cable Row]" inline. Null for chat / plan_generation.
+function logCoachMessage(role, content, contextType, exerciseName) {
+  if (!userId || !content) return;
+  try {
+    sb.from('coach_messages').insert({
+      user_id: userId,
+      role: role,
+      content: content,
+      context_type: contextType || null,
+      exercise_name: exerciseName || null,
+    }).then(function(r) {
+      if (r && r.error) {
+        console.warn('coach_messages insert failed:', r.error.message);
+      }
+    });
+  } catch (err) {
+    console.warn('coach_messages insert exception:', err);
+  }
+}
+
 // ---- Import ----
 // Historical workouts and sets rows are NEVER modified on import.
 // See DECISIONS.md → "No more log wipes".
