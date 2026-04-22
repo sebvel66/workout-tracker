@@ -1517,6 +1517,48 @@ function addExerciseToSession(exerciseRow) {
   buildDay(currentDay);
 }
 
+// Add an exercise to the current session with set schemes preserved
+// from a template-exercise blob (template.data.days[i].exercises[j]).
+// Creates N extra sets matching the template's count; pre-fills weight
+// per set as a suggestion; leaves reps blank so the user logs actual
+// reps as they work. Carries the template's exercise note through.
+// Used by the add-from-template picker. No-op (except isExtra: true)
+// semantics match addExerciseToSession — just with more sets.
+function addTemplateExerciseToSession(exerciseRow, templateExerciseBlob) {
+  if (!exerciseRow) return;
+  if (viewModeFor(currentDay) !== 'editable') return;
+  var st = getOrInitToday(currentDay);
+  if (!st) return;
+  var templateSets = (templateExerciseBlob && Array.isArray(templateExerciseBlob.sets))
+    ? templateExerciseBlob.sets : [];
+  var sets = [];
+  if (templateSets.length) {
+    for (var j = 0; j < templateSets.length; j++) {
+      var s = templateSets[j] || {};
+      var setEntry = { isExtra: true };
+      // Pre-fill weight only when the template actually had one — null /
+      // 0 is treated as "no suggestion" so the input placeholder shows —.
+      if (s.weight != null && s.weight !== 0) setEntry.weight = Number(s.weight);
+      sets.push(setEntry);
+    }
+  } else {
+    sets.push({ isExtra: true });
+  }
+  var ei = nextExerciseIndex();
+  var ek = 'ex_' + ei;
+  st.exercises[ek] = {
+    rpe: null,
+    note: (templateExerciseBlob && templateExerciseBlob.note) || '',
+    sub: '',
+    sets: sets,
+    isExtra: !st.isAdHoc,
+    exerciseId: exerciseRow.id,
+    exerciseMeta: exerciseRow,
+  };
+  exerciseIdCache[exerciseRow.name] = exerciseRow.id;
+  buildDay(currentDay);
+}
+
 function addExtraSet(ei) {
   if (viewModeFor(currentDay) !== 'editable') return;
   if (!todayState || !todayState.exercises['ex_' + ei]) return;

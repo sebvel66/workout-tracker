@@ -565,6 +565,7 @@ function buildDay(di) {
 
   if (mode === 'editable') {
     h += '<button class="add-exercise-btn" id="btnAddExercise" type="button">+ Add Exercise</button>';
+    h += '<button class="add-exercise-btn" id="btnAddFromTemplate" type="button">+ Add from template</button>';
   }
 
   c.innerHTML = h;
@@ -663,6 +664,7 @@ function buildAdHocDay(di) {
   if (keys.length) h += '</div>';  // close ad-hoc sort-zone
 
   h += '<button class="add-exercise-btn" id="btnAddExercise" type="button">+ Add Exercise</button>';
+  h += '<button class="add-exercise-btn" id="btnAddFromTemplate" type="button">+ Add from template</button>';
   h += '<button class="delete-session-btn" id="btnDeleteAdHoc" type="button">Delete session</button>';
 
   c.innerHTML = h;
@@ -3721,6 +3723,225 @@ async function saveTemplateEdits() {
   }
 }
 
+// ---- Add-from-template picker ----
+// Mid-session flow: pick exercises from a saved template and add them
+// to the current session as extras. Each selected exercise comes in
+// with its template set schemes preserved (count + weight pre-filled;
+// reps left empty for in-session logging). Only callable when the
+// current session view is editable.
+var atfTemplates = [];             // loaded template list (reuses loadTemplates result)
+var atfSelectedTemplateId = null;  // currently-chosen template row id
+var atfSelectedDayIdx = 0;         // currently-chosen day within that template
+var atfCheckedIdx = {};            // { exerciseIndexInDay: true } within the current day
+
+async function openAddFromTemplate() {
+  if (viewModeFor(currentDay) !== 'editable') {
+    showToast('Current session is read-only', null);
+    return;
+  }
+  // Reset state. Load templates fresh each time so new templates saved
+  // earlier this session show up.
+  atfTemplates = [];
+  atfSelectedTemplateId = null;
+  atfSelectedDayIdx = 0;
+  atfCheckedIdx = {};
+  document.getElementById('addFromTemplateOverlay').classList.add('show');
+  var body = document.getElementById('addFromTemplateBody');
+  body.innerHTML = '<div class="history-empty">Loading…</div>';
+  try {
+    atfTemplates = await loadTemplates();
+  } catch(err) {
+    console.error('openAddFromTemplate load error:', err);
+    atfTemplates = [];
+  }
+  if (!atfTemplates.length) {
+    body.innerHTML = '<div class="history-empty">No templates saved yet.<br>Create one via Templates in the hamburger menu.</div>';
+    document.getElementById('btnAddFromTemplateSubmit').disabled = true;
+    return;
+  }
+  atfSelectedTemplateId = atfTemplates[0].id;
+  atfSelectedDayIdx = 0;
+  renderAddFromTemplate();
+}
+
+function closeAddFromTemplate() {
+  document.getElementById('addFromTemplateOverlay').classList.remove('show');
+  atfTemplates = [];
+  atfSelectedTemplateId = null;
+  atfCheckedIdx = {};
+  var submitBtn = document.getElementById('btnAddFromTemplateSubmit');
+  if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Add selected'; }
+}
+
+function atfCurrentTemplate() {
+  for (var i = 0; i < atfTemplates.length; i++) {
+    if (atfTemplates[i].id === atfSelectedTemplateId) return atfTemplates[i];
+  }
+  return null;
+}
+
+function atfCurrentDay() {
+  var t = atfCurrentTemplate();
+  if (!t) return null;
+  var days = (t.data && Array.isArray(t.data.days)) ? t.data.days : [];
+  return days[atfSelectedDayIdx] || null;
+}
+
+function renderAddFromTemplate() {
+  var body = document.getElementById('addFromTemplateBody');
+  if (!body) return;
+  var t = atfCurrentTemplate();
+  if (!t) return;
+  var days = (t.data && Array.isArray(t.data.days)) ? t.data.days : [];
+  var day = days[atfSelectedDayIdx];
+  var exs = day && Array.isArray(day.exercises) ? day.exercises : [];
+
+  var h = '';
+  // Selectors
+  h += '<div class="atf-picker-selectors">';
+  h += '<div class="atf-picker-field">';
+  h += '<label>Template</label>';
+  h += '<select id="atfTemplateSelect">';
+  for (var i = 0; i < atfTemplates.length; i++) {
+    var tt = atfTemplates[i];
+    h += '<option value="' + escapeAttr(tt.id) + '"' + (tt.id === atfSelectedTemplateId ? ' selected' : '') + '>' +
+         escapeHtml(tt.template_name || tt.title || 'Untitled') + '</option>';
+  }
+  h += '</select>';
+  h += '</div>';
+  // Day selector (only if multi-day)
+  if (days.length > 1) {
+    h += '<div class="atf-picker-field">';
+    h += '<label>Day</label>';
+    h += '<select id="atfDaySelect">';
+    for (var di = 0; di < days.length; di++) {
+      var dn = days[di].name || ('Day ' + (di + 1));
+      h += '<option value="' + di + '"' + (di === atfSelectedDayIdx ? ' selected' : '') + '>' +
+           escapeHtml(dn) + '</option>';
+    }
+    h += '</select>';
+    h += '</div>';
+  }
+  h += '</div>';
+
+  // Select-all row + count
+  var resolvedCount = 0;
+  for (var c = 0; c < exs.length; c++) {
+    if (exs[c] && exs[c].name && resolveLibraryRow(exs[c].name)) resolvedCount++;
+  }
+  var checkedCount = 0;
+  for (var k in atfCheckedIdx) { if (atfCheckedIdx[k]) checkedCount++; }
+  h += '<div class="atf-select-all-row">';
+  h += '<span>' + exs.length + ' exercise' + (exs.length === 1 ? '' : 's') +
+       (resolvedCount < exs.length ? ' (' + (exs.length - resolvedCount) + ' unavailable)' : '') +
+       '</span>';
+  h += '<button type="button" class="atf-select-all-btn" id="atfSelectAllBtn">' +
+       (checkedCount === resolvedCount && resolvedCount > 0 ? 'Clear all' : 'Select all') + '</button>';
+  h += '</div>';
+
+  // Exercise list
+  h += '<div class="atf-ex-list">';
+  if (!exs.length) {
+    h += '<div class="history-empty">This day has no exercises.</div>';
+  } else {
+    for (var ei = 0; ei < exs.length; ei++) {
+      var ex = exs[ei];
+      var resolvable = !!(ex && ex.name && resolveLibraryRow(ex.name));
+      var checked = !!atfCheckedIdx[ei];
+      var sets = Array.isArray(ex.sets) ? ex.sets : [];
+      var first = sets[0] || {};
+      var reps = first.reps_range || (first.reps_target != null ? String(first.reps_target) : '?');
+      var weight = (first.weight != null && first.weight !== 0) ? ' @' + first.weight : '';
+      var meta = sets.length + ' × ' + reps + weight;
+      h += '<div class="atf-ex-row' + (checked ? ' checked' : '') + (resolvable ? '' : ' unresolved') +
+           '" data-atf-idx="' + ei + '">';
+      h += '<div class="atf-ex-check"></div>';
+      h += '<div class="atf-ex-main">';
+      h += '<div class="atf-ex-name">' + escapeHtml(ex.name || '—') +
+           (resolvable ? '' : '<span class="atf-ex-unresolved-tag">not in library</span>') + '</div>';
+      h += '<div class="atf-ex-meta">' + escapeHtml(meta) + '</div>';
+      h += '</div>';
+      h += '</div>';
+    }
+  }
+  h += '</div>';
+
+  body.innerHTML = h;
+
+  // Update submit button state + label
+  var submitBtn = document.getElementById('btnAddFromTemplateSubmit');
+  if (submitBtn) {
+    submitBtn.disabled = checkedCount === 0;
+    submitBtn.textContent = checkedCount
+      ? 'Add ' + checkedCount + ' exercise' + (checkedCount === 1 ? '' : 's')
+      : 'Add selected';
+  }
+}
+
+function onAtfTemplateChange(newId) {
+  atfSelectedTemplateId = newId;
+  atfSelectedDayIdx = 0;
+  atfCheckedIdx = {};
+  renderAddFromTemplate();
+}
+
+function onAtfDayChange(newIdx) {
+  atfSelectedDayIdx = parseInt(newIdx, 10) || 0;
+  atfCheckedIdx = {};
+  renderAddFromTemplate();
+}
+
+function onAtfToggle(idx) {
+  var day = atfCurrentDay();
+  if (!day) return;
+  var exs = Array.isArray(day.exercises) ? day.exercises : [];
+  var ex = exs[idx];
+  if (!ex || !resolveLibraryRow(ex.name)) return;  // unresolved rows don't toggle
+  if (atfCheckedIdx[idx]) delete atfCheckedIdx[idx];
+  else atfCheckedIdx[idx] = true;
+  renderAddFromTemplate();
+}
+
+function onAtfSelectAll() {
+  var day = atfCurrentDay();
+  if (!day) return;
+  var exs = Array.isArray(day.exercises) ? day.exercises : [];
+  // Count resolvable + currently-checked resolvables to decide toggle direction.
+  var resolvableIdx = [];
+  for (var i = 0; i < exs.length; i++) {
+    if (exs[i] && exs[i].name && resolveLibraryRow(exs[i].name)) resolvableIdx.push(i);
+  }
+  var allChecked = resolvableIdx.every(function(i) { return atfCheckedIdx[i]; });
+  atfCheckedIdx = {};
+  if (!allChecked) {
+    resolvableIdx.forEach(function(i) { atfCheckedIdx[i] = true; });
+  }
+  renderAddFromTemplate();
+}
+
+function onAtfSubmit() {
+  var day = atfCurrentDay();
+  if (!day) return;
+  var exs = Array.isArray(day.exercises) ? day.exercises : [];
+  var toAdd = [];
+  for (var i = 0; i < exs.length; i++) {
+    if (atfCheckedIdx[i]) toAdd.push(exs[i]);
+  }
+  if (!toAdd.length) return;
+  var added = 0, skipped = 0;
+  for (var j = 0; j < toAdd.length; j++) {
+    var ex = toAdd[j];
+    var libRow = resolveLibraryRow(ex.name);
+    if (!libRow) { skipped++; continue; }
+    addTemplateExerciseToSession(libRow, ex);
+    added++;
+  }
+  closeAddFromTemplate();
+  var msg = 'Added ' + added + ' exercise' + (added === 1 ? '' : 's');
+  if (skipped) msg += ' · ' + skipped + ' skipped (not in library)';
+  showToast(msg, null);
+}
+
 async function onDeleteTemplate(templateId) {
   var t = null;
   for (var i = 0; i < templatesList.length; i++) {
@@ -4260,6 +4481,28 @@ document.getElementById('btnSaveTemplateClose').addEventListener('click', closeS
 document.getElementById('btnSaveTemplateCancel').addEventListener('click', closeSaveTemplate);
 document.getElementById('btnSaveTemplateSubmit').addEventListener('click', submitSaveTemplate);
 
+// Add-from-template picker (mid-session exercise import from a template).
+document.getElementById('btnAddFromTemplateClose').addEventListener('click', closeAddFromTemplate);
+document.getElementById('btnAddFromTemplateCancel').addEventListener('click', closeAddFromTemplate);
+document.getElementById('btnAddFromTemplateSubmit').addEventListener('click', onAtfSubmit);
+document.getElementById('addFromTemplateOverlay').addEventListener('click', function(e) {
+  if (e.target === this) closeAddFromTemplate();
+});
+document.getElementById('addFromTemplateBody').addEventListener('change', function(e) {
+  if (!e.target) return;
+  if (e.target.id === 'atfTemplateSelect') { onAtfTemplateChange(e.target.value); return; }
+  if (e.target.id === 'atfDaySelect') { onAtfDayChange(e.target.value); return; }
+});
+document.getElementById('addFromTemplateBody').addEventListener('click', function(e) {
+  if (!e.target || !e.target.closest) return;
+  if (e.target.closest('#atfSelectAllBtn')) { onAtfSelectAll(); return; }
+  var row = e.target.closest('.atf-ex-row');
+  if (row) {
+    var idx = parseInt(row.getAttribute('data-atf-idx'), 10);
+    if (!isNaN(idx)) onAtfToggle(idx);
+  }
+});
+
 // Template editor (Phase 2): inline rename + exercise-level edits.
 document.getElementById('btnTemplateEditorClose').addEventListener('click', closeTemplateEditor);
 document.getElementById('btnTemplateEditorCancel').addEventListener('click', closeTemplateEditor);
@@ -4793,6 +5036,13 @@ document.getElementById('workoutContainer').addEventListener('click', function(e
   if (addExBtn) {
     if (addExBtn.disabled) return;
     openPicker();
+    return;
+  }
+  // Add from template (opens the template-exercise picker)
+  var addTplBtn = target.closest ? target.closest('#btnAddFromTemplate') : null;
+  if (addTplBtn) {
+    if (addTplBtn.disabled) return;
+    openAddFromTemplate();
     return;
   }
   // Delete whole ad-hoc session

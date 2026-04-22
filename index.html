@@ -1395,6 +1395,61 @@ body.unauthed #emptyState { display: none !important; }
   align-items: center; padding: 4px 2px; font-size: 13px; color: var(--text1);
 }
 .template-editor-view-set-row .template-editor-set-label { color: var(--text2); }
+
+/* Add-from-template picker: template + day selectors at top, checkbox
+   list of exercises below, footer with Cancel / Add. */
+.atf-picker-selectors {
+  padding: 12px 14px; border-bottom: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 10px;
+}
+.atf-picker-field { display: flex; flex-direction: column; gap: 4px; }
+.atf-picker-field label { font-size: 11px; color: var(--text3); font-weight: 500; }
+.atf-picker-field select {
+  background: var(--surface2); color: var(--text1);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; font-family: 'Outfit', sans-serif; font-size: 14px;
+  -webkit-appearance: none; -moz-appearance: none; appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path fill='%23999' d='M0 0l6 8 6-8z'/></svg>");
+  background-repeat: no-repeat; background-position: right 12px center; padding-right: 30px;
+}
+.atf-select-all-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 8px 14px; font-size: 12px; color: var(--text3);
+  border-bottom: 1px solid var(--border);
+}
+.atf-select-all-btn {
+  background: transparent; color: var(--accent);
+  border: 1px solid var(--accent); border-radius: 6px;
+  padding: 4px 10px; font-family: 'Outfit', sans-serif;
+  font-size: 11px; font-weight: 500; cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.atf-ex-list { padding: 4px 0; }
+.atf-ex-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; border-bottom: 1px solid var(--border);
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.atf-ex-row:active { background: var(--surface2); }
+.atf-ex-row.unresolved { opacity: 0.5; cursor: not-allowed; }
+.atf-ex-check {
+  width: 18px; height: 18px; border-radius: 4px;
+  border: 1.5px solid var(--border); flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; color: #000;
+  background: var(--surface2);
+}
+.atf-ex-row.checked .atf-ex-check {
+  background: var(--accent2); border-color: var(--accent2);
+}
+.atf-ex-row.checked .atf-ex-check::after { content: '✓'; }
+.atf-ex-main { flex: 1; min-width: 0; }
+.atf-ex-name { font-size: 13px; font-weight: 500; color: var(--text1); }
+.atf-ex-meta { font-size: 11px; color: var(--text3); margin-top: 2px; }
+.atf-ex-unresolved-tag {
+  font-size: 10px; color: var(--danger); font-weight: 500;
+  text-transform: uppercase; margin-left: 8px;
+}
 .history-empty {
   text-align: center; padding: 40px 20px;
   color: var(--text3); font-size: 13px;
@@ -2285,6 +2340,21 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
       <button class="history-close" id="btnTemplatesClose" type="button">×</button>
     </div>
     <div class="history-body" id="templatesBody"></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="addFromTemplateOverlay">
+  <div class="history-modal">
+    <div class="history-header">
+      <div style="width:32px"></div>
+      <div class="history-title">Add from template</div>
+      <button class="history-close" id="btnAddFromTemplateClose" type="button">×</button>
+    </div>
+    <div class="history-body" id="addFromTemplateBody"></div>
+    <div class="template-editor-footer">
+      <button type="button" class="generate-btn-cancel" id="btnAddFromTemplateCancel">Cancel</button>
+      <button type="button" class="generate-btn-accept" id="btnAddFromTemplateSubmit">Add selected</button>
+    </div>
   </div>
 </div>
 
