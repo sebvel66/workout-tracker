@@ -2226,7 +2226,12 @@ var coachContext = '';
 // Target: keep total under ~1500 tokens. These caps enforce the budget even
 // on users with big libraries or long histories.
 var COACH_CONTEXT_MAX_EXERCISES_RECENT = 18;
-var COACH_CONTEXT_RECENT_DAYS = 14;
+// Number of COMPLETE prior calendar weeks (Sun-Sat) the coach sees for
+// per-exercise recent performance + session notes. The current in-progress
+// week is always included additionally via the weekSummary + live-context
+// layers, regardless of this constant. So effective coverage is
+// COACH_CONTEXT_RECENT_WEEKS full prior weeks + current partial week.
+var COACH_CONTEXT_RECENT_WEEKS = 2;
 var COACH_CONTEXT_MAX_NOTES = 6;
 
 async function buildCoachContext() {
@@ -2235,7 +2240,10 @@ async function buildCoachContext() {
   var nowStr = sessionTodayDateString();
   var weekStart = weekStartForLocalDate(new Date(nowStr + 'T00:00:00'));
   var weekEnd = addDaysToDateString(weekStart, 6);
-  var recentCutoff = addDaysToDateString(nowStr, -COACH_CONTEXT_RECENT_DAYS);
+  // Sunday-anchored: cutoff is N complete weeks before the current week's
+  // Sunday. Current week's workouts still flow in via fetchWeekSummary +
+  // getLiveContext, so effective window = N full prior weeks + current partial.
+  var recentCutoff = addDaysToDateString(weekStart, -COACH_CONTEXT_RECENT_WEEKS * 7);
 
   try {
     // Three parallel fetches. Plan comes from in-memory (hydrate loads it);
@@ -2398,7 +2406,7 @@ function _formatRecentPerfForCoach(workouts) {
   // Rank by most-recently-trained — entries with later first workout sort first.
   // Cheap proxy: rely on workouts iteration order (already desc by performed_on).
   names = names.slice(0, COACH_CONTEXT_MAX_EXERCISES_RECENT);
-  var out = 'RECENT PERFORMANCE (last ' + COACH_CONTEXT_RECENT_DAYS + 'd):';
+  var out = 'RECENT PERFORMANCE (last ' + COACH_CONTEXT_RECENT_WEEKS + 'w + this week):';
   for (var n = 0; n < names.length; n++) {
     out += '\n  ' + names[n] + ': ' + perExercise[names[n]].join(', ');
   }

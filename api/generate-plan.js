@@ -318,8 +318,17 @@ async function fetchActivePlan(userId) {
 }
 
 async function fetchRecentWorkouts(userId, weeks) {
-  const start = new Date();
-  start.setDate(start.getDate() - weeks * 7);
+  // Sunday-anchored window: the last `weeks` COMPLETE prior calendar weeks
+  // (Sun-Sat) PLUS the in-progress current week. Keeps weekly groupings in
+  // the prompt aligned with planWeekLabel + the History browser (both
+  // Sun-Sat) rather than splitting older weeks mid-week on a rolling 28-day
+  // cutoff. getDay() returns 0 for Sunday in UTC on the Vercel runtime.
+  const today = new Date();
+  const weekSunday = new Date(today);
+  weekSunday.setUTCHours(0, 0, 0, 0);
+  weekSunday.setUTCDate(today.getUTCDate() - today.getUTCDay());
+  const start = new Date(weekSunday);
+  start.setUTCDate(start.getUTCDate() - weeks * 7);
   const startStr = start.toISOString().slice(0, 10);
   // PostgREST FK disambiguation (v2.2.1+): sets has two FKs to exercises
   // (exercise_id and prescribed_exercise_id). "!exercise_id" picks the
