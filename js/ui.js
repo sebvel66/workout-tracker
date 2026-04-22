@@ -118,7 +118,8 @@ function initSortableZones(di, isAdHoc) {
         animation: ANIM_MS,
         onEnd: function(evt) {
           if (evt.oldIndex === evt.newIndex) return;
-          reorderAdHocExtras(evt.oldIndex, evt.newIndex);
+          // Pure ad-hoc: zone covers all exercises (zoneStartEi = 0).
+          reorderAdHocExtras(evt.oldIndex, evt.newIndex, 0);
         },
       });
     }
@@ -153,9 +154,9 @@ function initSortableZones(di, isAdHoc) {
       animation: ANIM_MS,
       onEnd: function(evt) {
         if (evt.oldIndex === evt.newIndex) return;
-        // Extras positions are absolute exercise_order values; zone-local
-        // indices are offset by planLen.
-        reorderAdHocExtras(evt.oldIndex + planLen, evt.newIndex + planLen);
+        // Plan-day extras: zone-local DOM indices get translated inside
+        // reorderAdHocExtras; zoneStartEi = planLen anchors the boundary.
+        reorderAdHocExtras(evt.oldIndex, evt.newIndex, planLen);
       },
     });
   }
@@ -687,6 +688,10 @@ function openMenu() {
   var row = document.getElementById('menuWeightUnit');
   if (row) {
     row.textContent = 'Weight unit (' + getWeightUnit() + ')';
+  }
+  var restRow = document.getElementById('menuRestTimerAuto');
+  if (restRow) {
+    restRow.textContent = 'Auto rest timer (' + (getRestTimerAuto() ? 'on' : 'off') + ')';
   }
 
 
@@ -4636,6 +4641,11 @@ document.getElementById('menuWeightUnit').addEventListener('click', function() {
   setWeightUnit(getWeightUnit() === 'lbs' ? 'kg' : 'lbs');
   closeMenu();
   buildDay(currentDay);
+});
+document.getElementById('menuRestTimerAuto').addEventListener('click', function() {
+  setRestTimerAuto(!getRestTimerAuto());
+  closeMenu();
+  showToast('Auto rest timer ' + (getRestTimerAuto() ? 'on' : 'off'), null);
 });
 document.getElementById('menuSignOut').addEventListener('click', function() {
   closeMenu();

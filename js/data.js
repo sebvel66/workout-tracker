@@ -850,6 +850,19 @@ function setWeightUnit(unit) {
   localStorage.setItem('weightUnit', unit === 'kg' ? 'kg' : 'lbs');
 }
 
+// Auto-start the rest timer on every set-done tap. Default: on. Stored
+// device-locally; sync across devices (in user_settings) is a later
+// concern. Prescribed sets pull rest duration from plan.days[di].exercises[ei].rest;
+// everything else (ad-hoc, plan-day extras, template-imports) falls
+// back to 90s — matching the manual Rest Timer button.
+function getRestTimerAuto() {
+  try { return localStorage.getItem('restTimerAuto') !== 'false'; }
+  catch(_) { return true; }
+}
+function setRestTimerAuto(val) {
+  try { localStorage.setItem('restTimerAuto', val ? 'true' : 'false'); } catch(_) {}
+}
+
 function lbsToKg(lbs) {
   if (lbs == null) return null;
   return Math.round((lbs / LBS_PER_KG) * 10) / 10;
@@ -1346,8 +1359,17 @@ async function toggleSet(di, ei, si) {
   await persistSet(di, ei, si);
   buildTabs();
   buildDay(di);
-  if (sl.done && plan.days[di] && plan.days[di].exercises[ei]) {
-    startRestTimer(plan.days[di].exercises[ei].rest || 60);
+  // Auto-start rest timer on set-done (v2.4.14): fires for every set
+  // regardless of whether the exercise is prescribed, extras, ad-hoc,
+  // or template-imported. Prescribed sets use plan's per-exercise rest;
+  // everything else falls back to 90s. User can disable in hamburger →
+  // "Auto rest timer".
+  if (sl.done && getRestTimerAuto()) {
+    var prescribedRest =
+      (plan && plan.days && plan.days[di] && plan.days[di].exercises[ei])
+        ? plan.days[di].exercises[ei].rest
+        : null;
+    startRestTimer(prescribedRest || 90);
   }
 }
 
@@ -1812,14 +1834,67 @@ async function reorderPlanExercises(di, oldIndex, newIndex) {
 // representation). Just remaps exercise_order on sets + in-memory state
 // keys. Positions are absolute exercise_order values (include plan-length
 // offset when on a plan day). Scope: this session only.
-async function reorderAdHocExtras(oldIndex, newIndex) {
+// Reorder exercises within a drag zone (pure ad-hoc session OR plan-day
+// extras). Takes ZONE-LOCAL DOM indices (0-based within the zone) and a
+// `zoneStartEi` boundary: only exercises with ex_N >= zoneStartEi are
+// candidates. State is keyed by ex_N where N can be sparse after add/
+// delete cycles, so we must translate DOM index → actual ei before
+// computing the reorder map — doing arithmetic on DOM indices directly
+// (as pre-v2.4.14 did) moves the wrong exercise whenever gaps exist.
+async function reorderAdHocExtras(oldDomIdx, newDomIdx, zoneStartEi) {
   if (!todayState || !todayState.workoutId) return;
-  if (oldIndex === newIndex) return;
+  if (oldDomIdx === newDomIdx) return;
+  zoneStartEi = zoneStartEi | 0;
 
-  var mapping = computeReorderMap(oldIndex, newIndex);
+  // Translate DOM indices → zone-scoped (ei, data) entries sorted by ei,
+  // matching the order buildDay / buildAdHocDay use when painting cards.
+  var allKeys = Object.keys(todayState.exercises || {});
+  var zoneEntries = allKeys
+    .map(function(k) { return { ei: parseInt(k.slice(3), 10), data: todayState.exercises[k] }; })
+    .filter(function(e) { return e.ei >= zoneStartEi; })
+    .sort(function(a, b) { return a.ei - b.ei; });
+  if (oldDomIdx < 0 || oldDomIdx >= zoneEntries.length) return;
+  if (newDomIdx < 0 || newDomIdx >= zoneEntries.length) return;
+
+  // Capture out-of-zone ei values so we don't accidentally re-use them
+  // when packing the zone into a contiguous range after the move.
+  var usedOutOfZone = {};
+  for (var i = 0; i < allKeys.length; i++) {
+    var ei = parseInt(allKeys[i].slice(3), 10);
+    if (ei < zoneStartEi) usedOutOfZone[ei] = true;
+  }
+
+  // Perform the array splice to reflect the intended new order.
+  var moved = zoneEntries.splice(oldDomIdx, 1)[0];
+  zoneEntries.splice(newDomIdx, 0, moved);
+
+  // Assign new ei values sequentially starting at zoneStartEi, skipping
+  // any values that belong to an out-of-zone exercise. Build the
+  // oldEi → newEi mapping (skip no-op entries).
+  var nextEi = zoneStartEi;
+  var mapping = {};
+  var newAssignments = [];
+  for (var j = 0; j < zoneEntries.length; j++) {
+    while (usedOutOfZone[nextEi]) nextEi++;
+    newAssignments.push(nextEi);
+    if (zoneEntries[j].ei !== nextEi) mapping[zoneEntries[j].ei] = nextEi;
+    nextEi++;
+  }
+  if (!Object.keys(mapping).length) return;
+
   try {
     await persistExerciseReorder(todayState.workoutId, mapping);
-    remapStateExerciseKeys(todayState, mapping);
+    // Rebuild state.exercises: out-of-zone entries unchanged; zone
+    // entries re-keyed to their new ei values.
+    var newEx = {};
+    for (var k = 0; k < allKeys.length; k++) {
+      var key = allKeys[k];
+      if (parseInt(key.slice(3), 10) < zoneStartEi) newEx[key] = todayState.exercises[key];
+    }
+    for (var m = 0; m < zoneEntries.length; m++) {
+      newEx['ex_' + newAssignments[m]] = zoneEntries[m].data;
+    }
+    todayState.exercises = newEx;
   } catch(err) {
     console.error('reorderAdHocExtras error:', err);
     showToast("Couldn't save reorder: " + (err.message || 'unknown error'), null);
@@ -1828,7 +1903,7 @@ async function reorderAdHocExtras(oldIndex, newIndex) {
 
   buildTabs();
   buildDay(currentDay);
-  showToast('Reordered — this session only.', null);
+  showToast(todayState.isAdHoc ? 'Reordered — this session only.' : 'Extras reordered.', null);
 }
 
 // "Bring to today": move a historical or orphaned workout to the current
