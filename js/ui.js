@@ -2393,6 +2393,7 @@ function renderPlans() {
     h += '</div>';
     h += '<div class="plans-row-actions">';
     h += '<button type="button" class="plans-btn view" data-view-plan-id="' + escapeAttr(p.id) + '">View</button>';
+    h += '<button type="button" class="plans-btn rename" data-rename-plan-id="' + escapeAttr(p.id) + '">Rename</button>';
     h += '<button type="button" class="plans-btn activate" data-plan-id="' + escapeAttr(p.id) + '"' +
          (p.is_active ? ' disabled' : '') + '>Activate</button>';
     h += '<button type="button" class="plans-btn template" data-plan-id="' + escapeAttr(p.id) + '">Template</button>';
@@ -2419,6 +2420,38 @@ async function onActivatePlan(planId) {
   } catch(err) {
     console.error('onActivatePlan error:', err);
     showToast("Couldn't activate plan: " + (err.message || 'unknown error'), null);
+  }
+}
+
+async function onRenamePlan(planId) {
+  var p = null;
+  for (var i = 0; i < plansList.length; i++) {
+    if (plansList[i].id === planId) { p = plansList[i]; break; }
+  }
+  if (!p) return;
+  var current = p.title || '';
+  var next = prompt('Rename plan', current);
+  if (next === null) return;
+  var trimmed = (next || '').trim();
+  if (!trimmed) { showToast('Plan name required', null); return; }
+  if (trimmed === current) return;
+  try {
+    await renamePlan(planId, trimmed);
+    // If this is the active plan, keep in-memory state + tracker header
+    // + hydration cache in sync so the user sees the rename immediately
+    // without a reload.
+    if (p.is_active && plan && activePlanId === planId) {
+      plan.title = trimmed;
+      var titleEl = document.getElementById('planTitle');
+      if (titleEl) titleEl.textContent = trimmed;
+      if (typeof saveHydrationSnapshot === 'function') saveHydrationSnapshot();
+    }
+    await loadPlans();
+    renderPlans();
+    showToast('Plan renamed', null);
+  } catch(err) {
+    console.error('onRenamePlan error:', err);
+    showToast("Couldn't rename: " + (err.message || 'unknown error'), null);
   }
 }
 
@@ -4328,10 +4361,12 @@ document.getElementById('plansBody').addEventListener('click', function(e) {
   if (!e.target || !e.target.closest) return;
   var btn = e.target.closest('.plans-btn');
   if (!btn || btn.disabled) return;
-  // View button uses its own attribute so the click isn't confused with
-  // the action-id (activate/template/delete) attribute above.
+  // View + Rename buttons carry their own attributes so they're not
+  // confused with the action-id (activate/template/delete) attribute.
   var viewId = btn.getAttribute('data-view-plan-id');
   if (viewId) { openPlanOrTemplateViewer(viewId); return; }
+  var renameId = btn.getAttribute('data-rename-plan-id');
+  if (renameId) { onRenamePlan(renameId); return; }
   var planId = btn.getAttribute('data-plan-id');
   if (!planId) return;
   if (btn.classList.contains('activate')) onActivatePlan(planId);

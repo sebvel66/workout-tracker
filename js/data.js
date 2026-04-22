@@ -2131,6 +2131,27 @@ async function deleteTemplate(templateId) {
   if (r.error) throw new Error(r.error.message);
 }
 
+// Rename a non-template plan row. Updates both the top-level `title`
+// column (source of truth for Plans list + week-label renders) and the
+// embedded data.title (used by the in-memory `plan` global + downstream
+// references). If the renamed plan is the active one, the caller is
+// responsible for syncing the in-memory `plan` and header UI — this
+// function only touches the database.
+async function renamePlan(planId, newName) {
+  if (!userId) throw new Error('Not signed in');
+  var trimmed = (newName || '').trim();
+  if (!trimmed) throw new Error('Plan name required');
+  var row = await sb.from('plans').select('data').eq('id', planId).eq('is_template', false).single();
+  if (row.error) throw new Error(row.error.message);
+  var blob = row.data.data || {};
+  blob.title = trimmed;
+  var r = await sb.from('plans').update({
+    title: trimmed,
+    data: blob,
+  }).eq('id', planId).eq('is_template', false);
+  if (r.error) throw new Error(r.error.message);
+}
+
 // Rename a template. Updates both the `template_name` column (source of
 // truth for the Templates list + start-screen picker) and the embedded
 // data.title (used downstream by createAdHocFromTemplate when seeding the
