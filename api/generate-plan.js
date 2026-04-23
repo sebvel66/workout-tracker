@@ -795,7 +795,7 @@ function formatExerciseLibrary(exercises) {
 // but narrower output — ~500-800 tokens of structured JSON with trends /
 // progressing / concerns / next_week sections. User can copy next_week
 // forward into plan-gen's notes field to chain analysis → plan.
-const ANALYZE_MAX_TOKENS = 1000;
+const ANALYZE_MAX_TOKENS = 1400;  // 400 headroom vs the pre-profile-updates budget
 // Analyze mode pulls more progress photos than plan-gen so Claude can
 // compare them chronologically for over-time observations. 4 keeps token
 // cost bounded (~6-8K image tokens at this count) while giving a useful
@@ -983,6 +983,73 @@ function validateAnalysis(a) {
   for (const key of required) {
     if (typeof a[key] !== 'string' || !a[key].trim()) return `missing or empty ${key}`;
   }
+  // profile_updates is a new optional field (v2.5 layer 3). Prompt says
+  // "return as empty array when nothing warrants a proposal", but we
+  // tolerate a missing field for backward compat with any in-flight
+  // cached prompts from before the spec extension. When present, it
+  // must be an array of valid update objects.
+  if (a.profile_updates != null) {
+    if (!Array.isArray(a.profile_updates)) return 'profile_updates must be an array';
+    for (let i = 0; i < a.profile_updates.length; i++) {
+      const err = validateProfileUpdate(a.profile_updates[i]);
+      if (err) return `profile_updates[${i}]: ${err}`;
+    }
+  } else {
+    // Normalize missing to empty so downstream (frontend + response) never
+    // has to null-check.
+    a.profile_updates = [];
+  }
+  return null;
+}
+
+// Valid field names per the system-prompt-analyze.md spec. Fields not in
+// this list (sex, height, experience_level) are explicitly off-limits to
+// Claude per the prompt — if one slips through, reject the whole response
+// rather than silently applying a forbidden update.
+const PROFILE_UPDATE_FIELDS = new Set([
+  'weight_lbs', 'phase', 'phase_start_date', 'phase_notes',
+  'goal_type', 'goal_detail', 'split_preference', 'environment',
+  'special_instructions',
+  'injury_add', 'injury_remove', 'injury_update',
+]);
+
+function validateProfileUpdate(u) {
+  if (!u || typeof u !== 'object') return 'not an object';
+  if (typeof u.field !== 'string' || !PROFILE_UPDATE_FIELDS.has(u.field)) {
+    return `invalid field "${u.field}"`;
+  }
+  if (typeof u.reasoning !== 'string' || !u.reasoning.trim()) {
+    return 'missing or empty reasoning';
+  }
+  // Type rules per field:
+  //   injury_add:    current = null, proposed = { name, notes }
+  //   injury_remove: current = { name, notes }, proposed = null
+  //   injury_update: both { name, notes }, same name
+  //   scalar:        either current or proposed is defined; we don't
+  //                  require current (profile may be empty at first)
+  if (u.field === 'injury_add') {
+    if (u.current != null) return 'injury_add: current must be null';
+    if (!u.proposed || typeof u.proposed !== 'object' || !u.proposed.name) {
+      return 'injury_add: proposed must be { name, notes }';
+    }
+  } else if (u.field === 'injury_remove') {
+    if (!u.current || typeof u.current !== 'object' || !u.current.name) {
+      return 'injury_remove: current must be { name, notes }';
+    }
+    if (u.proposed !== null && u.proposed !== undefined) {
+      return 'injury_remove: proposed must be null';
+    }
+  } else if (u.field === 'injury_update') {
+    if (!u.current || !u.current.name || !u.proposed || !u.proposed.name) {
+      return 'injury_update: current and proposed must both be { name, notes }';
+    }
+    if (u.current.name !== u.proposed.name) {
+      return 'injury_update: current.name and proposed.name must match';
+    }
+  }
+  // Scalars: no further validation here. Frontend renders current -> proposed
+  // and applies by field name. Null proposed on a scalar means "clear the
+  // field" which is valid.
   return null;
 }
 

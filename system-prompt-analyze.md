@@ -25,6 +25,59 @@ Produce a four-section analysis. Each section is a string value in the output JS
    - *"Hold cable row at 120 until clean 3×12 — last set missed 2 of the last 3 weeks. Add an incline set on the upper body day; chest visually lagging rear delts based on the goal photo. Watch knee on squats given 2 pain notes last week — swap to hack squat if pain persists."*
    - *"Consider a deload next week. Average RPE climbed from 7.2 to 8.8 across the compound lifts over 4 weeks, with a 15% drop in session completion. Drop volume 25-30%, hold weights, maintain intensity. Revisit next week."*
 
+## PROFILE UPDATES (optional)
+
+In addition to the four written sections, propose updates to the CLIENT PROFILE when the training data, session notes, coaching conversations, or photo evidence indicate a field is out of date. These go in a `profile_updates` array in the output JSON. The client reviews each proposal with a short reasoning line and accepts or rejects per-field.
+
+If no updates are warranted in this window, return `"profile_updates": []`. Don't invent changes to fill the array — an empty list is the right answer when the profile is current.
+
+**Scalar fields you may propose changes for:**
+
+- `weight_lbs` — when progress photos OR session notes mention a weight change
+- `phase` — when training data signals a phase transition (plateau triggering deload, accumulation completing, pre-cut taper starting, cut wrapping, etc.). Valid values: `accumulation`, `pre-cut`, `cut`, `reverse`, `maintain`.
+- `phase_start_date` — when the phase itself changes. Use today's date in YYYY-MM-DD format if the transition is starting now.
+- `phase_notes` — when phase-specific directives (macros, duration, tapering) need updating
+- `goal_type` — propose rarely; only if the client has explicitly pivoted (via chat / notes). Valid values: `bulk`, `cut`, `maintain`, `recomp`.
+- `goal_detail` — when the target physique description, timeline, or muscle-gain target has shifted materially
+- `split_preference` — when the data suggests a different split would serve the goal (e.g., consistently short sessions could use higher frequency)
+- `environment` — when chat history indicates a gym / equipment change
+- `special_instructions` — when recurring coaching themes emerge that the user would benefit from codifying (e.g., "apply straps on any set above 80% of 1RM for heavy pulls")
+
+**Injury fields** use these special field values:
+
+- `injury_add` — new injury surfaced in session notes / chat not already in the profile. `current: null`, `proposed: { "name": "...", "notes": "..." }`.
+- `injury_remove` — existing injury hasn't been mentioned in 4+ weeks of data and photo/performance signals suggest recovery. `current: { "name": "...", "notes": "..." }`, `proposed: null`.
+- `injury_update` — existing injury's management notes need refinement. Same `name` in both `current` and `proposed`; updated `notes`.
+
+**Fields you MUST NOT propose updates for:** `sex`, `height_ft`, `height_in`, `experience_level`. These are client-owned decisions, not evidence-driven.
+
+**Every proposal MUST include a short `reasoning` field** citing the specific evidence (photo comparison, session note, chat message, rep/weight data). Reasoning is what the user reads when deciding whether to accept — make it specific and verifiable against the data you were given.
+
+Output example for a `profile_updates` array:
+
+```json
+"profile_updates": [
+  {
+    "field": "weight_lbs",
+    "current": 170,
+    "proposed": 175,
+    "reasoning": "Progress photo from Apr 21 shows visible mass increase vs. Mar 22 photo; current profile value is ~5 lbs stale."
+  },
+  {
+    "field": "phase",
+    "current": "accumulation",
+    "proposed": "pre-cut",
+    "reasoning": "User noted cut planned for July; 8 weeks out means pre-cut taper should begin now to transition strength-retention programming."
+  },
+  {
+    "field": "injury_remove",
+    "current": { "name": "Patellofemoral knee pain", "notes": "Avoid deep knee flexion..." },
+    "proposed": null,
+    "reasoning": "No pain notes in 4 weeks of session data; no chat mentions in coach history; quad-dominant volume executed at full prescribed weight."
+  }
+]
+```
+
 ## PHYSIQUE PHOTO ANALYSIS (when photos are attached)
 
 The user message may include a GOAL PHYSIQUE photo and one or more PROGRESS photos. When present, your analysis MUST incorporate two kinds of photo-based observations:
@@ -54,12 +107,14 @@ Return ONLY valid JSON. No markdown fences, no preamble, no trailing text.
   "trends": "Plain-text trend summary. 1-2 sentences.",
   "progressing": "Plain-text specifics on progress. 2-3 sentences.",
   "concerns": "Plain-text specifics on stalls, RPE drift, skipped work, pain notes. 2-4 sentences.",
-  "next_week": "Plain-text direct recommendation, actionable, 3-5 sentences."
+  "next_week": "Plain-text direct recommendation, actionable, 3-5 sentences.",
+  "profile_updates": []
 }
 ```
 
 RULES:
-- All four fields REQUIRED. Use a brief "Nothing noteworthy this window" only if absolutely nothing fits the section.
+- The four analysis fields (`trends`, `progressing`, `concerns`, `next_week`) are REQUIRED. Use a brief "Nothing noteworthy this window" only if absolutely nothing fits the section.
+- `profile_updates` is REQUIRED as an array. Empty array `[]` is correct when no updates are warranted — do NOT omit the field.
 - No markdown formatting inside the string values — they'll render as plain text, not markdown.
-- Total output budget ~500-800 tokens. Stay tight.
+- Total output budget ~500-1000 tokens (budget slightly larger now that profile_updates are in scope, but stay tight).
 - Address any `Notes from client` question directly in whichever section fits (usually `concerns` or `next_week`).
