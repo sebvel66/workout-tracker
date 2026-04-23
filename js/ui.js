@@ -2351,8 +2351,12 @@ function formatAnalysisForLog(a) {
   return parts.join('\n\n');
 }
 
-// Render the four-section written analysis plus a "Use for next plan"
-// button that carries the analysis forward into plan-gen's notes field.
+// Render the four-section written analysis, any profile-update proposals
+// (v2.5 layer 3), and sibling actions. Profile updates render as cards
+// with per-field checkboxes + an "Apply selected" button that writes
+// accepted changes to coaching_profile via saveCoachingProfile. "Use for
+// next plan" is the existing ephemeral path that pastes the 4-section
+// text into plan-gen's notes field.
 function renderAnalyzeReview(body) {
   if (!generatedAnalysis) { body.innerHTML = ''; return; }
   var a = generatedAnalysis;
@@ -2381,12 +2385,209 @@ function renderAnalyzeReview(body) {
     h += '</div>';
   }
 
+  // Profile update proposals. Server validator normalizes to [] when the
+  // field is absent, so guarded Array check covers both old and new shapes.
+  // Empty array = nothing to propose this window; we skip the section
+  // entirely to avoid visual noise when the profile is current.
+  var updates = Array.isArray(a.profile_updates) ? a.profile_updates : [];
+  if (updates.length > 0) {
+    h += '<div class="profile-updates-section">';
+    h += '<div class="analyze-section-label">PROPOSED PROFILE UPDATES</div>';
+    for (var ui = 0; ui < updates.length; ui++) {
+      h += renderProfileUpdateCard(updates[ui], ui);
+    }
+    h += '</div>';
+  }
+
   h += '<div class="generate-actions">';
   h += '<button class="generate-btn-cancel" id="btnGenerateCancel" type="button">Close</button>';
+  if (updates.length > 0) {
+    h += '<button class="generate-btn-secondary" id="btnAnalyzeApplyProfile" type="button">Apply selected</button>';
+  }
   h += '<button class="generate-btn-accept" id="btnAnalyzeUseForPlan" type="button">Use for next plan</button>';
   h += '</div>';
   h += '</div>';
   body.innerHTML = h;
+}
+
+// Build one proposal card. Shape depends on field type: scalars get an
+// inline "old → new" diff; long free-text fields + injury operations get
+// stacked current / proposed blocks for readability. Checkbox is keyed
+// by the index so readSelectedProfileUpdates() can match on it.
+function renderProfileUpdateCard(u, idx) {
+  var label = profileUpdateLabel(u);
+  var diff = renderProfileUpdateDiff(u);
+  var reasoning = u.reasoning ? escapeHtml(u.reasoning) : '';
+  var h = '<div class="pu-card">';
+  h += '<input type="checkbox" class="pu-checkbox" data-pu-idx="' + idx + '" checked>';
+  h += '<div class="pu-body">';
+  h += '<div class="pu-field">' + escapeHtml(label) + '</div>';
+  h += diff;
+  if (reasoning) h += '<div class="pu-reasoning">' + reasoning + '</div>';
+  h += '</div>';
+  h += '</div>';
+  return h;
+}
+
+// Human-readable label shown at the top of the proposal card. Appends the
+// injury name for injury_* ops so the user can see which injury the card
+// refers to without opening the stacked diff.
+function profileUpdateLabel(u) {
+  switch (u.field) {
+    case 'weight_lbs': return 'Current weight';
+    case 'phase': return 'Training phase';
+    case 'phase_start_date': return 'Phase start date';
+    case 'phase_notes': return 'Phase notes';
+    case 'goal_type': return 'Goal type';
+    case 'goal_detail': return 'Goal detail';
+    case 'split_preference': return 'Split preference';
+    case 'environment': return 'Training environment';
+    case 'special_instructions': return 'Special instructions';
+    case 'injury_add':
+      return 'New injury: ' + ((u.proposed && u.proposed.name) || '(unnamed)');
+    case 'injury_remove':
+      return 'Mark resolved: ' + ((u.current && u.current.name) || '(unnamed)');
+    case 'injury_update':
+      return 'Update injury: ' + ((u.current && u.current.name) || '(unnamed)');
+    default: return u.field || 'Profile change';
+  }
+}
+
+// Render the current → proposed diff. Short scalars render inline with
+// strikethrough on old + bold on new; long text / injuries render stacked
+// so pre-wrap doesn't get squashed into a single line.
+function renderProfileUpdateDiff(u) {
+  var inlineScalars = { weight_lbs: 1, phase: 1, goal_type: 1, phase_start_date: 1 };
+  var asStr = function(v) {
+    if (v == null || v === '') return '—';
+    if (u.field === 'weight_lbs' && typeof v === 'number') return v + ' lbs';
+    return String(v);
+  };
+  if (inlineScalars[u.field]) {
+    return '<div class="pu-diff-inline">' +
+      '<span class="pu-old">' + escapeHtml(asStr(u.current)) + '</span>' +
+      ' → ' +
+      '<span class="pu-new">' + escapeHtml(asStr(u.proposed)) + '</span>' +
+      '</div>';
+  }
+  if (u.field === 'injury_add') {
+    var p = u.proposed || {};
+    return '<div class="pu-stacked">' +
+      '<div class="pu-stacked-label">Proposed notes</div>' +
+      '<div class="pu-new-block">' + escapeHtml(p.notes || '(no notes)') + '</div>' +
+      '</div>';
+  }
+  if (u.field === 'injury_remove') {
+    var c = u.current || {};
+    return '<div class="pu-stacked">' +
+      '<div class="pu-stacked-label">Current notes (will be removed)</div>' +
+      '<div class="pu-old-block">' + escapeHtml(c.notes || '(no notes)') + '</div>' +
+      '</div>';
+  }
+  if (u.field === 'injury_update') {
+    var cc = u.current || {}, pp = u.proposed || {};
+    return '<div class="pu-stacked">' +
+      '<div class="pu-stacked-label">Current notes</div>' +
+      '<div class="pu-old-block">' + escapeHtml(cc.notes || '(no notes)') + '</div>' +
+      '<div class="pu-stacked-label">Proposed notes</div>' +
+      '<div class="pu-new-block">' + escapeHtml(pp.notes || '(no notes)') + '</div>' +
+      '</div>';
+  }
+  // Long free-text scalars: stacked blocks.
+  return '<div class="pu-stacked">' +
+    '<div class="pu-stacked-label">Current</div>' +
+    '<div class="pu-old-block">' + escapeHtml(u.current == null || u.current === '' ? '(empty)' : String(u.current)) + '</div>' +
+    '<div class="pu-stacked-label">Proposed</div>' +
+    '<div class="pu-new-block">' + escapeHtml(u.proposed == null || u.proposed === '' ? '(empty)' : String(u.proposed)) + '</div>' +
+    '</div>';
+}
+
+// Return the proposals whose checkboxes are currently checked. Reads from
+// the live DOM so the user's last-moment tick/untick is respected (no need
+// to maintain a separate selected-state array).
+function readSelectedProfileUpdates() {
+  if (!generatedAnalysis || !Array.isArray(generatedAnalysis.profile_updates)) return [];
+  var out = [];
+  var boxes = document.querySelectorAll('#generateBody .pu-checkbox');
+  for (var i = 0; i < boxes.length; i++) {
+    if (!boxes[i].checked) continue;
+    var idx = parseInt(boxes[i].getAttribute('data-pu-idx'), 10);
+    if (Number.isFinite(idx) && generatedAnalysis.profile_updates[idx]) {
+      out.push(generatedAnalysis.profile_updates[idx]);
+    }
+  }
+  return out;
+}
+
+// Merge accepted updates into the current profile, returning a new object.
+// Does NOT mutate the input. Scalars overwrite by field name; injury_* ops
+// mutate the injuries array in place on the copy.
+function applyProfileUpdatesFrom(profile, updates) {
+  var next = Object.assign({}, profile || {});
+  next.injuries = Array.isArray(profile && profile.injuries) ? profile.injuries.slice() : [];
+  for (var i = 0; i < updates.length; i++) {
+    var u = updates[i];
+    if (u.field === 'injury_add') {
+      next.injuries.push({
+        name: (u.proposed && u.proposed.name) || '',
+        notes: (u.proposed && u.proposed.notes) || '',
+      });
+    } else if (u.field === 'injury_remove') {
+      var removeName = u.current && u.current.name;
+      next.injuries = next.injuries.filter(function(inj) {
+        return !inj || inj.name !== removeName;
+      });
+    } else if (u.field === 'injury_update') {
+      var updateName = u.current && u.current.name;
+      next.injuries = next.injuries.map(function(inj) {
+        if (!inj || inj.name !== updateName) return inj;
+        return {
+          name: (u.proposed && u.proposed.name) || inj.name,
+          notes: (u.proposed && u.proposed.notes) || '',
+        };
+      });
+    } else {
+      // Scalar field: assign proposed directly. null proposed clears it.
+      next[u.field] = u.proposed == null ? null : u.proposed;
+    }
+  }
+  return next;
+}
+
+// Apply-selected handler. Load profile if needed, merge accepted updates,
+// upsert, then re-render the review with the accepted entries removed so
+// remaining (unchecked) proposals stay visible for another look.
+async function onAnalyzeApplyProfileUpdates() {
+  var selected = readSelectedProfileUpdates();
+  if (!selected.length) {
+    showToast('Select at least one update to apply', null);
+    return;
+  }
+  var btn = document.getElementById('btnAnalyzeApplyProfile');
+  if (btn) { btn.disabled = true; btn.textContent = 'Applying…'; }
+  try {
+    if (coachingProfile === null && typeof loadCoachingProfile === 'function') {
+      await loadCoachingProfile();
+    }
+    var nextProfile = applyProfileUpdatesFrom(coachingProfile || {}, selected);
+    await saveCoachingProfile(nextProfile);
+    // Drop accepted entries from the in-memory analysis so the re-render
+    // hides them. Unchecked entries remain visible for reconsideration.
+    // Identity match is safe because readSelectedProfileUpdates returns
+    // the same object references held in generatedAnalysis.profile_updates.
+    generatedAnalysis.profile_updates = generatedAnalysis.profile_updates.filter(function(u) {
+      return selected.indexOf(u) === -1;
+    });
+    renderAnalyzeReview(document.getElementById('generateBody'));
+    showToast(
+      selected.length + ' profile update' + (selected.length === 1 ? '' : 's') + ' applied',
+      null
+    );
+  } catch (err) {
+    console.error('onAnalyzeApplyProfileUpdates error:', err);
+    showToast("Couldn't apply updates: " + (err.message || 'unknown error'), null);
+    if (btn) { btn.disabled = false; btn.textContent = 'Apply selected'; }
+  }
 }
 
 // Carry the four-section analysis into plan-gen's notes field and return
@@ -5097,6 +5298,7 @@ document.getElementById('generateBody').addEventListener('click', function(e) {
   if (e.target.closest('#btnGenerateAccept')) { onAcceptGeneratedPlan(); return; }
   if (e.target.closest('#btnGenerateSaveTemplate')) { onSaveGeneratedPlanAsTemplate(); return; }
   if (e.target.closest('#btnAnalyzeUseForPlan')) { useAnalysisForNextPlan(); return; }
+  if (e.target.closest('#btnAnalyzeApplyProfile')) { onAnalyzeApplyProfileUpdates(); return; }
   if (e.target.closest('#btnGenerateCancel')) { closeGenerate(); return; }
   if (e.target.closest('#btnGenerateAbort')) { cancelGenerate(); return; }
 });

@@ -1112,6 +1112,67 @@ body.unauthed #emptyState { display: none !important; }
   background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
   white-space: pre-wrap; word-wrap: break-word;
 }
+/* Profile update proposal cards (v2.5 layer 3). Rendered inside the analyze
+ * review below the 4 analysis sections when profile_updates is non-empty.
+ * Each card has a checkbox, field label, current -> proposed diff, and
+ * Claude's reasoning. Left accent border marks them as actionable (vs. the
+ * informational analysis sections above). Accept is opt-in per field; user
+ * ticks boxes + clicks "Apply selected" in the footer. */
+.profile-updates-section { margin: 12px 0 6px; }
+.pu-card {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent2);
+  border-radius: 8px;
+  margin-bottom: 8px;
+}
+.pu-checkbox {
+  width: 18px; height: 18px;
+  accent-color: var(--accent2);
+  cursor: pointer;
+  margin-top: 2px;
+}
+.pu-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.pu-field {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; color: var(--accent);
+  text-transform: uppercase; letter-spacing: 0.3px;
+  font-weight: 600;
+}
+.pu-diff-inline { font-size: 14px; line-height: 1.4; color: var(--text); word-wrap: break-word; }
+.pu-old { color: var(--text3); text-decoration: line-through; }
+.pu-new { color: var(--text); font-weight: 600; }
+.pu-stacked { display: flex; flex-direction: column; gap: 4px; }
+.pu-stacked-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px; color: var(--text3);
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.pu-old-block, .pu-new-block {
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 13px; line-height: 1.4;
+  white-space: pre-wrap; word-wrap: break-word;
+}
+.pu-old-block {
+  background: var(--surface); color: var(--text3);
+  border: 1px solid var(--border);
+}
+.pu-new-block {
+  background: rgba(74, 222, 128, 0.08);
+  color: var(--text);
+  border: 1px solid rgba(74, 222, 128, 0.3);
+}
+.pu-reasoning {
+  font-size: 12px; color: var(--text2);
+  font-style: italic;
+  padding: 2px 0;
+  line-height: 1.4;
+}
 .generate-inputs {
   padding: 16px;
   display: flex; flex-direction: column; gap: 14px;
