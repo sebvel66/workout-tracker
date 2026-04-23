@@ -2152,6 +2152,44 @@ async function saveCoachingProfile(profile) {
   return coachingProfile;
 }
 
+// Merge accepted profile updates (from the analyze review's "Apply selected"
+// flow, v2.5 layer 3) into a profile object, returning a new object — does
+// NOT mutate the input. Scalar fields overwrite by field name; injury_*
+// ops operate on a copy of the injuries array. Pure transform: no DB, no
+// globals. Lives in data.js alongside load/save so the profile-shape logic
+// is colocated; ui.js invokes it from onAnalyzeApplyProfileUpdates.
+function applyProfileUpdatesFrom(profile, updates) {
+  var next = Object.assign({}, profile || {});
+  next.injuries = Array.isArray(profile && profile.injuries) ? profile.injuries.slice() : [];
+  for (var i = 0; i < updates.length; i++) {
+    var u = updates[i];
+    if (u.field === 'injury_add') {
+      next.injuries.push({
+        name: (u.proposed && u.proposed.name) || '',
+        notes: (u.proposed && u.proposed.notes) || '',
+      });
+    } else if (u.field === 'injury_remove') {
+      var removeName = u.current && u.current.name;
+      next.injuries = next.injuries.filter(function(inj) {
+        return !inj || inj.name !== removeName;
+      });
+    } else if (u.field === 'injury_update') {
+      var updateName = u.current && u.current.name;
+      next.injuries = next.injuries.map(function(inj) {
+        if (!inj || inj.name !== updateName) return inj;
+        return {
+          name: (u.proposed && u.proposed.name) || inj.name,
+          notes: (u.proposed && u.proposed.notes) || '',
+        };
+      });
+    } else {
+      // Scalar field: assign proposed directly. null proposed clears it.
+      next[u.field] = u.proposed == null ? null : u.proposed;
+    }
+  }
+  return next;
+}
+
 // ---- Coach message persistence ----
 // Fire-and-forget insert into coach_messages. Used by chat send, swap
 // request/accept, and plan-gen submit/accept so all three coaching

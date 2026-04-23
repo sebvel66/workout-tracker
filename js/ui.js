@@ -2519,41 +2519,6 @@ function readSelectedProfileUpdates() {
   return out;
 }
 
-// Merge accepted updates into the current profile, returning a new object.
-// Does NOT mutate the input. Scalars overwrite by field name; injury_* ops
-// mutate the injuries array in place on the copy.
-function applyProfileUpdatesFrom(profile, updates) {
-  var next = Object.assign({}, profile || {});
-  next.injuries = Array.isArray(profile && profile.injuries) ? profile.injuries.slice() : [];
-  for (var i = 0; i < updates.length; i++) {
-    var u = updates[i];
-    if (u.field === 'injury_add') {
-      next.injuries.push({
-        name: (u.proposed && u.proposed.name) || '',
-        notes: (u.proposed && u.proposed.notes) || '',
-      });
-    } else if (u.field === 'injury_remove') {
-      var removeName = u.current && u.current.name;
-      next.injuries = next.injuries.filter(function(inj) {
-        return !inj || inj.name !== removeName;
-      });
-    } else if (u.field === 'injury_update') {
-      var updateName = u.current && u.current.name;
-      next.injuries = next.injuries.map(function(inj) {
-        if (!inj || inj.name !== updateName) return inj;
-        return {
-          name: (u.proposed && u.proposed.name) || inj.name,
-          notes: (u.proposed && u.proposed.notes) || '',
-        };
-      });
-    } else {
-      // Scalar field: assign proposed directly. null proposed clears it.
-      next[u.field] = u.proposed == null ? null : u.proposed;
-    }
-  }
-  return next;
-}
-
 // Apply-selected handler. Load profile if needed, merge accepted updates,
 // upsert, then re-render the review with the accepted entries removed so
 // remaining (unchecked) proposals stay visible for another look.
