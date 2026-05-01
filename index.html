@@ -579,32 +579,55 @@ html, body {
 .empty-state h3 { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
 .empty-state p { font-size: 14px; color: var(--text2); line-height: 1.6; }
 
+/* Rest timer — non-blocking floating pill (v2.5.9). Replaces the
+ * pre-v2.5.9 centered modal + backdrop overlay that blocked the whole
+ * app while resting. Now fixed at bottom-center as a compact horizontal
+ * pill so the user can keep logging sets, scrolling history, opening
+ * the picker, etc. while the countdown runs. The countdown is still
+ * visible at all times; tapping anywhere on the pill body (not the
+ * adjust / skip buttons) skips the rest. The completion chime + vibrate
+ * + auto-dismiss behavior is unchanged. */
 .rest-timer {
-  position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-  background: var(--surface); border: 2px solid var(--accent); border-radius: 20px;
-  padding: 32px; text-align: center; z-index: 300; display: none;
-  box-shadow: 0 0 60px rgba(74, 222, 128, 0.2); min-width: 220px;
+  position: fixed; bottom: 88px; left: 50%; transform: translateX(-50%);
+  background: var(--surface);
+  border: 1.5px solid var(--accent);
+  border-radius: 999px;
+  padding: 6px 8px 6px 14px;
+  display: none; z-index: 200;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  align-items: center;
+  gap: 8px;
 }
-.rest-timer.show { display: block; }
-.rest-timer-time { font-family: 'JetBrains Mono', monospace; font-size: 48px; font-weight: 700; color: var(--accent); margin-bottom: 8px; }
-.rest-timer-label { font-size: 13px; color: var(--text2); margin-bottom: 16px; }
+.rest-timer.show { display: flex; }
+.rest-timer-time {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 22px; font-weight: 700; color: var(--accent);
+  min-width: 56px; text-align: center;
+  letter-spacing: 0.5px;
+}
+.rest-timer-label { display: none; }  /* "Rest Period" label retired in compact form */
 .rest-timer-btn {
-  background: var(--surface3); border: 1px solid var(--border); color: var(--text2);
-  font-family: 'Outfit', sans-serif; font-size: 13px; padding: 8px 20px; border-radius: 8px; cursor: pointer;
+  background: transparent; border: 1px solid var(--border); color: var(--text2);
+  font-family: 'Outfit', sans-serif; font-size: 12px; font-weight: 600;
+  padding: 6px 12px; border-radius: 999px; cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
 }
+.rest-timer-btn:active { background: var(--surface2); color: var(--text); }
 .rest-timer-controls {
-  display: flex; gap: 10px; align-items: center; justify-content: center;
+  display: flex; gap: 6px; align-items: center;
 }
 .rest-timer-adjust {
   background: transparent; border: 1px solid var(--border); color: var(--text2);
-  font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600;
-  padding: 8px 12px; border-radius: 8px; cursor: pointer; min-width: 56px;
+  font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600;
+  padding: 5px 9px; border-radius: 999px; cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
 .rest-timer-adjust:active { background: var(--surface2); color: var(--text); }
 
-.rest-timer-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 299; display: none; }
-.rest-timer-overlay.show { display: block; }
+/* Backdrop element retained in DOM for backward compat with any external
+ * styles, but never shown — startRestTimer no longer toggles its .show
+ * class so the app stays interactive during rest. */
+.rest-timer-overlay { display: none; }
 
 @media (min-width: 500px) {
   .workout-container { max-width: 500px; margin: 0 auto; }

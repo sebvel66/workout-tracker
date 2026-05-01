@@ -4967,8 +4967,11 @@ function startRestTimer(sec) {
   stopRestTimer();
   restTargetMs = Date.now() + sec * 1000;
   restCompleted = false;
+  // Floating pill (v2.5.9) — only the pill itself shows. The backdrop
+  // overlay is intentionally NOT toggled so the app stays interactive
+  // while the user rests; CSS keeps .rest-timer-overlay { display: none }
+  // unconditionally regardless of any .show class.
   document.getElementById('restTimer').classList.add('show');
-  document.getElementById('restOverlay').classList.add('show');
   updateRestDisplay();
   // 250ms tick so catch-up after backgrounding feels snappy; the callback
   // itself is cheap (one DOM read, one Date.now(), one DOM write).
@@ -4983,6 +4986,10 @@ function stopRestTimer() {
   restTargetMs = 0;
   restCompleted = false;
   document.getElementById('restTimer').classList.remove('show');
+  // Backdrop overlay no longer toggled (kept hidden via CSS) — see
+  // startRestTimer for the rationale. Removing the class is a no-op
+  // visually but keeps state hygienic if some future change re-enables
+  // the overlay style.
   document.getElementById('restOverlay').classList.remove('show');
 }
 
