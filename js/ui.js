@@ -1084,6 +1084,13 @@ function openStartScreen() {
   }
 
   var hasPlan = !!(plan && plan.days && plan.days.length);
+  // Generate path. Promoted to primary styling when there's no active
+  // plan (the typical first-time-ever path), demoted to the standard
+  // de-emphasized card otherwise (generation is rare vs. starting
+  // today's session). Title text flips so the no-plan state reads as
+  // "this is what you should do next".
+  var generateBtn = document.getElementById('startPathGenerate');
+  var generateTitle = document.getElementById('startPathGenerateTitle');
   if (hasPlan) {
     suggestedBtn.style.display = '';
     pickDayBtn.style.display = '';
@@ -1096,10 +1103,14 @@ function openStartScreen() {
     // Keep it terse — empty when no prior completion known to the client.
     document.getElementById('startPathSuggestedHint').textContent = '';
     suggestedBtn.setAttribute('data-di', String(si));
+    generateBtn.classList.remove('primary');
+    generateTitle.textContent = 'Generate a new plan';
   } else {
     suggestedBtn.style.display = 'none';
     pickDayBtn.style.display = 'none';
     emptyHint.classList.remove('hidden');
+    generateBtn.classList.add('primary');
+    generateTitle.textContent = 'Generate a plan';
   }
 
   // Close affordance: only allowed when there is a fallback state to land on.
@@ -5478,6 +5489,10 @@ document.getElementById('startPathTemplateList').addEventListener('click', funct
 document.getElementById('startPathBlank').addEventListener('click', function() {
   closeStartScreen();
   createAdHocSession();
+});
+document.getElementById('startPathGenerate').addEventListener('click', function() {
+  closeStartScreen();
+  openGenerate();
 });
 document.getElementById('startPathImportLink').addEventListener('click', function() {
   closeStartScreen();
