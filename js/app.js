@@ -7,7 +7,7 @@
 
 // Bump this on every deploy. Displayed at the bottom of the app so stale-
 // cache issues can be diagnosed from the client ("which version am I on?").
-var APP_VERSION = 'v2.5.4';
+var APP_VERSION = 'v2.5.5';
 
 // Paint the version tag in the bottom-right as soon as APP_VERSION is declared.
 // DOM is already parsed here (all the script tags sit at the end of <body>).
@@ -136,18 +136,51 @@ async function hydrate() {
     document.getElementById('planTitle').textContent = plan.title || 'Workout Tracker';
     document.getElementById('planWeek').textContent = planWeekLabel(plan) || plan.week || '';
 
-    await loadExerciseLibrary();
-    await loadRecentExercises();
-    await loadLocations();
-    await loadSuggestedDayIndex();
-    await loadDaysWithHistory();
-
+    // Phase 1 (parallel) — fire ALL post-plan queries simultaneously.
+    // Pre-v2.5.5 these awaited sequentially; aggregate latency was ~6×
+    // the slowest query, dominated by serial round-trip costs. Now the
+    // bound is just max(query times), typically ~300-500ms.
+    //
+    // Three queries are awaited inline because their results gate the
+    // first render:
+    //   - today's workouts: drives focus hierarchy + populates today-states
+    //   - exercise library: needed by seedExerciseIdCache so set-done writes
+    //     hit the cache instead of falling through to a per-name lookup
+    //   - daysWithHistory: drives the completion dot in buildTabs
+    //
+    // Three queries fire in parallel but are NOT awaited for first paint
+    // (Phase 2). They re-render their consumers when they complete:
+    //   - locations: re-renders buildDay so the session-location dropdown
+    //     fills in
+    //   - suggestedDayIndex: gates openStartScreen, which we delay until
+    //     this resolves so the modal's "Suggested" badge is correct
+    //   - loadRecentExercises: only consumed by the picker on open;
+    //     no re-render needed (the picker reads fresh state when opened)
+    //
+    // Errors inside loadX helpers are non-fatal: each shows a toast and
+    // returns silently. So the awaits below never throw.
     var bounds = sessionBounds();
-    var wRes = await sb.from('workouts').select('*, sets(*)')
+    var pWorkouts = sb.from('workouts').select('*, sets(*)')
       .eq('user_id', userId)
       .gte('performed_at', bounds.start.toISOString())
       .lt('performed_at', bounds.end.toISOString())
       .order('performed_at', { ascending: true });
+    var pLibrary = loadExerciseLibrary();
+    var pDaysWithHistory = loadDaysWithHistory();
+    // Phase 2 (background, non-blocking).
+    var pLocations = loadLocations();
+    var pSuggestedDay = loadSuggestedDayIndex();
+
+    // Await Phase 1 essentials. Promise.all collapses to max(query times)
+    // since all three are already in flight.
+    var wRes;
+    try {
+      var phase1 = await Promise.all([pWorkouts, pLibrary, pDaysWithHistory]);
+      wRes = phase1[0];
+    } catch (err) {
+      console.error('Hydrate phase 1 error:', err);
+      wRes = { error: err };
+    }
     if (wRes.error) { showToast("Failed to load today's workouts", null); }
     else {
       // Reconcile: replace cached today-state with fresh DB state.
@@ -227,15 +260,10 @@ async function hydrate() {
     }
     focusTab(currentDay);
 
-    // If the focused plan-day has no today-state yet, auto-load its
-    // most recent historical workout so the tracker shows the user's
-    // last attempt at that day instead of an empty template. Mirrors
-    // the day-picker change handler. Only fires for plan days — ad-hoc
-    // tabs have no historical equivalent.
-    if (!isAdHocKey(currentDay) && !todayPlanStates[currentDay] && !historicalCache[currentDay]) {
-      try { await loadHistorical(currentDay); } catch (e) { /* non-fatal */ }
-    }
-
+    // First paint as soon as Phase 1 essentials are in. The focused day's
+    // historical fetch (if needed) used to await here; v2.5.5 moved it to
+    // Phase 2 so the day cards paint immediately and historical fills in
+    // ~300-500ms later for cold-cache cases.
     buildTabs();
     buildDay(currentDay);
 
@@ -246,10 +274,39 @@ async function hydrate() {
     // Snapshot the now-fresh state for next boot's paintFromCache.
     saveHydrationSnapshot();
 
-    // Auto-open the start modal when no session is in-progress. Completed
-    // sessions do not block the modal.
+    // Phase 2 (background). Don't await — the user is already looking at
+    // the day cards. Each branch re-renders only the part it touches when
+    // its query lands. Capture currentDay so a mid-flight day-tab change
+    // doesn't make us re-render the wrong day.
+    var phase2Day = currentDay;
+
+    // Locations: drives the session-location dropdown in buildDay. Re-
+    // render the focused day when the load finishes. If the user has
+    // navigated to a different day in the meantime, buildDay(currentDay)
+    // is still correct — it just paints whichever day is focused now.
+    pLocations.then(function() { buildDay(currentDay); }).catch(function(){});
+
+    // loadRecentExercises depends on exerciseLibraryById (populated by
+    // pLibrary which already resolved in Phase 1). It's only consumed by
+    // the picker on open, so no re-render needed.
+    loadRecentExercises().catch(function(){});
+
+    // Historical for the focused day (if there's no today-state). Lazy
+    // because it's the same fetch the day-picker handler uses on demand.
+    // Re-render guarded by phase2Day so a mid-flight day change doesn't
+    // re-paint stale state on top of the user's selection.
+    if (!isAdHocKey(phase2Day) && !todayPlanStates[phase2Day] && !historicalCache[phase2Day]) {
+      loadHistorical(phase2Day).then(function() {
+        if (currentDay === phase2Day) buildDay(currentDay);
+      }).catch(function(){});
+    }
+
+    // Auto-open the start modal when no session is in-progress. Wait for
+    // suggestedDayIndex so the modal's "Suggested" badge points at the
+    // right day. Completed sessions do not block the modal.
     if (inProgressKey == null) {
-      openStartScreen();
+      pSuggestedDay.then(function() { openStartScreen(); })
+                   .catch(function() { openStartScreen(); });
     }
   } catch(err) {
     console.error('Hydrate error:', err);

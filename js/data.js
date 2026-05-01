@@ -135,6 +135,17 @@ function saveHydrationSnapshot() {
   if (!userId || hydratedForUser !== userId) return;
   if (!activePlanId || !plan) return;
   try {
+    // todayPlanStates + todayAdHocs are intentionally cached alongside the
+    // plan structure even though a strict reading of "cache plan only,
+    // workout state always from Supabase" might suggest stripping them.
+    // The reason: a user mid-workout closing/reopening the app needs the
+    // running session timer + logged sets visible at 0ms — not blank-then-
+    // populated ~1s later when hydrate completes. Cross-midnight stale
+    // entries are filtered on restore (see paintFromCache in app.js, the
+    // savedAt-vs-today-midnight gate from v2.4.17). Hydrate also reconciles
+    // by clearing todayPlanStates = {} before re-populating from DB rows,
+    // so any stale entries that slip through are corrected within the
+    // hydrate window.
     var blob = {
       schemaVersion: HYDRATION_SCHEMA_VERSION,
       userId: userId,
