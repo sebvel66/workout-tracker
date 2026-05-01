@@ -359,6 +359,11 @@ function stateFromWorkout(row) {
       // Cardio columns (v2.5 Phase 1). Null on resistance rows.
       duration_seconds: s.duration_seconds != null ? s.duration_seconds : null,
       distance: s.distance != null ? s.distance : null,
+      // Drop set chains (v2.5 Phase 1). setType='drop' rows link to a
+      // parent via parent_set_id (UUID); we resolve to parentSetIdx
+      // (array index in this exercise's sets[]) below after the loop.
+      setType: s.set_type || 'standard',
+      parentSetId: s.parent_set_id || null,
       startedAt: s.started_at, completedAt: s.completed_at,
     };
     if (setIsExtra) state.exercises[ek].sets[s.set_order].isExtra = true;
@@ -376,6 +381,22 @@ function stateFromWorkout(row) {
         && !state.exercises[ek].subExercise) {
       var subRow = exerciseLibraryById && exerciseLibraryById[s.exercise_id];
       if (subRow) state.exercises[ek].subExercise = subRow;
+    }
+  }
+  // Drop set linkage: walk each exercise's sets array and resolve
+  // parentSetId (UUID, persistent) -> parentSetIdx (array index, used
+  // by in-memory ops like "find this drop's parent for cascade-done").
+  for (var ekResolve in state.exercises) {
+    var setsArr = state.exercises[ekResolve].sets || [];
+    var idxBySetId = {};
+    for (var ix = 0; ix < setsArr.length; ix++) {
+      if (setsArr[ix] && setsArr[ix].setId) idxBySetId[setsArr[ix].setId] = ix;
+    }
+    for (var iy = 0; iy < setsArr.length; iy++) {
+      var srow = setsArr[iy];
+      if (srow && srow.parentSetId && idxBySetId[srow.parentSetId] != null) {
+        srow.parentSetIdx = idxBySetId[srow.parentSetId];
+      }
     }
   }
   return state;
@@ -1284,6 +1305,21 @@ function buildSetPayload(di, ei, si) {
     prescribedWeight = set.weight != null ? set.weight : null;
     prescribedReps = set.reps_target != null ? set.reps_target : null;
   }
+  // Drop set linkage: child segments carry set_type='drop' and a
+  // parent_set_id pointing at the parent's persisted UUID. Parent's
+  // setId must already be set by the time we persist a child (see
+  // addDropSet which force-persists the parent first), otherwise
+  // the FK insert fails. parentSetIdx in memory resolves to the
+  // parent's setId at payload-build time.
+  var setType = sl.setType || 'standard';
+  var parentSetId = null;
+  if (setType === 'drop' && sl.parentSetIdx != null) {
+    var parentSet = exState.sets[sl.parentSetIdx];
+    if (parentSet && parentSet.setId) parentSetId = parentSet.setId;
+  } else if (sl.parentSetId) {
+    // Hydrated-from-DB rows already have parentSetId; trust it.
+    parentSetId = sl.parentSetId;
+  }
   return {
     user_id: userId,
     workout_id: todayState.workoutId,
@@ -1300,6 +1336,9 @@ function buildSetPayload(di, ei, si) {
     // populated when the set is on a muscle_group='cardio' exercise.
     duration_seconds: sl.duration_seconds != null ? sl.duration_seconds : null,
     distance: sl.distance != null ? sl.distance : null,
+    // Drop-set chain columns (v2.5 Phase 1). 'standard' on independent sets.
+    set_type: setType,
+    parent_set_id: parentSetId,
     // Legacy free-text column — we no longer populate it on new writes;
     // substitution is now carried structurally via exercise_id mismatch.
     substitution: null,
@@ -1453,6 +1492,32 @@ async function _toggleSetCommit(di, ei, si, sl, wasDone) {
     }
   }
   await persistSet(di, ei, si);
+
+  // Drop set cascade (v2.5 Phase 1): when marking a parent (non-drop)
+  // done, also mark all of its drop children done with the same
+  // completedAt. Children are entries in this exercise's sets array
+  // with setType='drop' AND parentSetIdx === si. The parent persists
+  // first (above) so its setId is available for the child's
+  // parent_set_id at buildSetPayload time. Cascade only fires on
+  // false→true transitions (un-toggling a parent does NOT cascade-undo
+  // children — historical truth wins on edit).
+  if (sl.done && sl.setType !== 'drop') {
+    var st = todayState && todayState.exercises['ex_' + ei];
+    if (st && Array.isArray(st.sets)) {
+      for (var ci = 0; ci < st.sets.length; ci++) {
+        var child = st.sets[ci];
+        if (!child) continue;
+        if (child.setType !== 'drop') continue;
+        if (child.parentSetIdx !== si) continue;
+        if (child.done) continue;
+        child.done = true;
+        child.completedAt = sl.completedAt;
+        if (!child.startedAt) child.startedAt = child.completedAt;
+        await persistSet(di, ei, ci);
+      }
+    }
+  }
+
   buildTabs();
   buildDay(di);
   // Auto-start rest timer on set-done (v2.4.14): fires for every set
@@ -1460,6 +1525,10 @@ async function _toggleSetCommit(di, ei, si, sl, wasDone) {
   // or template-imported. Prescribed sets use plan's per-exercise rest;
   // everything else falls back to 90s. User can disable in hamburger →
   // "Auto rest timer".
+  //
+  // For drop-set chains, the rest timer fires once -- when the parent
+  // is marked done, the cascade finishes synchronously above, and
+  // we hit this block once for the whole chain.
   if (sl.done && getRestTimerAuto()) {
     var prescribedRest =
       (plan && plan.days && plan.days[di] && plan.days[di].exercises[ei])
@@ -1716,6 +1785,78 @@ function addExtraSet(ei) {
     exState.sets.push(newSet);
     buildDay(currentDay);
   });
+}
+
+// Drop set: a chained segment of the previous set, performed at a
+// reduced weight back-to-back with no full rest. v1 always attaches
+// to the LAST set in the array. If the LAST set is itself a drop,
+// the new entry becomes a SIBLING drop (same parent) -- chains stack
+// arbitrarily deep (double / triple / etc).
+//
+// Persistence: drops have a parent_set_id FK to sets.id, which means
+// the parent must already be persisted before we can insert the child.
+// We force-persist the parent here (even if not yet marked done) so
+// the child's INSERT has a valid FK target. Parent persists with
+// done=false initially; the cascade in toggleSet later UPDATEs it
+// to done=true and the child to done=true with the same completed_at.
+function addDropSet(ei) {
+  if (viewModeFor(currentDay) !== 'editable') return;
+  if (!todayState || !todayState.exercises['ex_' + ei]) return;
+  var exState = todayState.exercises['ex_' + ei];
+  if (!exState.sets || exState.sets.length === 0) return;
+  promptResumeIfEnded(function() {
+    _addDropSetInner(ei).catch(function(err) {
+      console.error('addDropSet error:', err);
+      showToast("Couldn't add drop set", null);
+    });
+  });
+}
+
+async function _addDropSetInner(ei) {
+  var exState = todayState.exercises['ex_' + ei];
+  var lastIdx = exState.sets.length - 1;
+  var lastSet = exState.sets[lastIdx];
+  // Determine parent: if last is a drop, link to its parent (sibling
+  // drop). If last is a parent (standard), link directly to it.
+  var parentIdx = (lastSet.setType === 'drop' && lastSet.parentSetIdx != null)
+    ? lastSet.parentSetIdx : lastIdx;
+  var parent = exState.sets[parentIdx];
+  if (!parent) return;
+
+  // Workout must exist before any sets persist.
+  await ensureWorkout(currentDay);
+
+  // Force-persist parent if it's not yet in DB. The child INSERT below
+  // needs parent.setId for the parent_set_id FK; otherwise the row
+  // can't be inserted. Parent goes in with whatever values it has
+  // (likely null weight/reps for an untouched prescribed set);
+  // toggleSet's cascade later UPDATEs to done + auto-filled values.
+  if (!parent.setId) {
+    await persistSet(currentDay, ei, parentIdx);
+    if (!parent.setId) {
+      // persistSet either succeeded (sets parent.setId) or surfaced its
+      // own toast on failure. Bail out without adding the drop.
+      return;
+    }
+  }
+
+  // Carry forward weight + reps (or cardio fields) from the last set
+  // in the chain so user doesn't retype. User can edit before tapping
+  // done. Drop default IS the parent's weight per Q3 -- we explicitly
+  // don't auto-reduce here; reductions are an explicit edit by the
+  // user when they actually drop the load on the rack.
+  var newSet = {
+    setType: 'drop',
+    parentSetIdx: parentIdx,
+    isExtra: true,  // Render with delete affordance + persist as extra (no prescribed link).
+  };
+  if (lastSet.weight != null) newSet.weight = lastSet.weight;
+  if (lastSet.reps != null) newSet.reps = lastSet.reps;
+  if (lastSet.duration_seconds != null) newSet.duration_seconds = lastSet.duration_seconds;
+  if (lastSet.distance != null) newSet.distance = lastSet.distance;
+
+  exState.sets.push(newSet);
+  buildDay(currentDay);
 }
 
 // Delete a single set from an extras-on-plan-day exercise or an ad-hoc

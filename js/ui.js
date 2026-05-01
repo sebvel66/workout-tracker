@@ -191,13 +191,24 @@ function renderDurationEditBtn(workoutId, currentMs, endedAt, ctx) {
 }
 
 // ---- Render helpers ----
-function renderSetRow(di, ei, si, sl, prescribedSet, weightMode, disabledAttr, prText, deletable, isCardio) {
+function renderSetRow(di, ei, si, sl, prescribedSet, weightMode, disabledAttr, prText, deletable, isCardio, displaySetNum) {
   var currentUnit = getWeightUnit();
+  var isDropChild = sl && sl.setType === 'drop';
 
   var out = '';
   var extraCls = sl && sl.isExtra ? ' set-extra' : '';
-  out += '<div class="set-row' + (deletable ? ' deletable' : '') + extraCls + '">';
-  out += '<div class="set-label">S' + (si+1) + '</div>';
+  var dropCls = isDropChild ? ' set-drop' : '';
+  out += '<div class="set-row' + (deletable ? ' deletable' : '') + extraCls + dropCls + '">';
+  // Drop segments use → as the label instead of S#. displaySetNum is
+  // computed by the caller as a running count of standard sets only,
+  // so a chain of drops doesn't shift downstream numbering. Falls
+  // back to si+1 for legacy callers that don't pass it.
+  if (isDropChild) {
+    out += '<div class="set-label set-label-drop">→</div>';
+  } else {
+    var labelNum = (displaySetNum != null) ? displaySetNum : (si + 1);
+    out += '<div class="set-label">S' + labelNum + '</div>';
+  }
   out += '<div class="set-prescribed">' + (prText || '—') + '</div>';
   out += '<div class="set-actual">';
 
@@ -508,6 +519,10 @@ function buildDay(di) {
     if (ex.note) h += '<div class="exercise-note">' + escapeHtml(ex.note) + '</div>';
     h += '<div class="sets-container">';
 
+    // Running count of standard (non-drop) sets so the S# label stays
+    // sequential across the prescribed → extras boundary even when
+    // drops are interspersed at the end of the array.
+    var stdSetNum = 0;
     for (var si = 0; si < ex.sets.length; si++) {
       var set = ex.sets[si];
       var sl = exState.sets[si] || {};
@@ -520,7 +535,9 @@ function buildDay(di) {
         ? { reps_target: set && set.reps_target, reps_range: set && set.reps_range }
         : set;
       var pr = fmtP(effectiveSet);
-      h += renderSetRow(di, ei, si, sl, effectiveSet, weightMode, dis, pr, false, isCardioRow);
+      // Prescribed rows are always standard; increment counter unconditionally.
+      stdSetNum++;
+      h += renderSetRow(di, ei, si, sl, effectiveSet, weightMode, dis, pr, false, isCardioRow, stdSetNum);
     }
 
     // Extras on this prescribed exercise: sets past the plan-defined count.
@@ -529,10 +546,21 @@ function buildDay(di) {
     // immutable.
     for (var siExtra = ex.sets.length; siExtra < exState.sets.length; siExtra++) {
       var slExtra = exState.sets[siExtra] || {};
-      h += renderSetRow(di, ei, siExtra, slExtra, null, weightMode, dis, '—', !readOnly, isCardioRow);
+      // Drops use → label; standard extras get the next sequential S#.
+      var slExtraNum;
+      if (slExtra && slExtra.setType !== 'drop') {
+        stdSetNum++;
+        slExtraNum = stdSetNum;
+      }
+      h += renderSetRow(di, ei, siExtra, slExtra, null, weightMode, dis, '—', !readOnly, isCardioRow, slExtraNum);
     }
     if (mode === 'editable') {
       h += '<button class="add-set-btn" data-add-set-ei="' + ei + '">+ Add Set</button>';
+      // Drop Set affordance — only when there's a set to chain off of and
+      // the exercise isn't cardio (drops don't apply to duration-based work).
+      if (!isCardioRow && exState.sets && exState.sets.length > 0) {
+        h += '<button class="add-set-btn add-drop-btn" data-add-drop-ei="' + ei + '">+ Drop Set</button>';
+      }
     }
 
     h += '<div class="rpe-row"><div class="rpe-label">RPE</div><div class="rpe-buttons">';
@@ -606,12 +634,21 @@ function buildDay(di) {
     h += '<div class="exercise-card' + xcc + '">';
     h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + escapeHtml(xMeta.name) + '<span class="extras-badge">added</span></div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(xMeta.name) + '">view recent</button></div><div class="exercise-status ' + xsc + '">' + xstat + '</div>' + (readOnly ? '' : '<button class="card-delete" data-di="' + di + '" data-ei="' + xei + '" aria-label="Delete exercise" type="button">×</button>') + '</div>';
     h += '<div class="sets-container">';
+    var xStdSetNum = 0;
     for (var xsi2 = 0; xsi2 < xSetCount; xsi2++) {
       var xsl = xState.sets[xsi2] || {};
-      h += renderSetRow(di, xei, xsi2, xsl, null, xWeightMode, dis, '—', !readOnly, xIsCardio);
+      var xLabelNum;
+      if (!xsl || xsl.setType !== 'drop') {
+        xStdSetNum++;
+        xLabelNum = xStdSetNum;
+      }
+      h += renderSetRow(di, xei, xsi2, xsl, null, xWeightMode, dis, '—', !readOnly, xIsCardio, xLabelNum);
     }
     if (mode === 'editable') {
       h += '<button class="add-set-btn" data-add-set-ei="' + xei + '">+ Add Set</button>';
+      if (!xIsCardio && xState.sets && xState.sets.length > 0) {
+        h += '<button class="add-set-btn add-drop-btn" data-add-drop-ei="' + xei + '">+ Drop Set</button>';
+      }
     }
     h += '</div>';
     h += '<div class="rpe-row"><div class="rpe-label">RPE</div><div class="rpe-buttons">';
@@ -708,11 +745,20 @@ function buildAdHocDay(di) {
     h += '<div class="exercise-card' + cc + '">';
     h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + escapeHtml(meta.name) + '</div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(meta.name) + '">view recent</button></div><div class="exercise-status ' + sc + '">' + stat + '</div><button class="card-delete" data-di="' + di + '" data-ei="' + ei + '" aria-label="Delete exercise" type="button">×</button></div>';
     h += '<div class="sets-container">';
+    var adStdSetNum = 0;
     for (var si = 0; si < setCount; si++) {
       var sl = exState.sets[si] || {};
-      h += renderSetRow(di, ei, si, sl, null, weightMode, dis, '—', true, isCardioRow);
+      var adLabelNum;
+      if (!sl || sl.setType !== 'drop') {
+        adStdSetNum++;
+        adLabelNum = adStdSetNum;
+      }
+      h += renderSetRow(di, ei, si, sl, null, weightMode, dis, '—', true, isCardioRow, adLabelNum);
     }
     h += '<button class="add-set-btn" data-add-set-ei="' + ei + '">+ Add Set</button>';
+    if (!isCardioRow && exState.sets && exState.sets.length > 0) {
+      h += '<button class="add-set-btn add-drop-btn" data-add-drop-ei="' + ei + '">+ Drop Set</button>';
+    }
     h += '</div>';
     h += '<div class="rpe-row"><div class="rpe-label">RPE</div><div class="rpe-buttons">';
     var rv = [6,7,8,9,10];
@@ -1810,11 +1856,17 @@ function renderHistoryExerciseCard(ei, exState, name, weightMode, prescribedSets
   h += '<div class="exercise-card' + cc + '">';
   h += '<div class="exercise-header"><div class="exercise-name">' + escapeHtml(name) + '</div><div class="exercise-status ' + sc + '">' + stat + '</div></div>';
   h += '<div class="sets-container">';
+  var histStdSetNum = 0;
   for (var si = 0; si < setCount; si++) {
     var sl = exState.sets[si] || {};
     var prescribed = prescribedSets ? prescribedSets[si] : null;
     var prText = prescribed ? fmtP(prescribed) : '—';
-    h += renderSetRow('history', ei, si, sl, prescribed, weightMode, ' disabled', prText, false, isCardioRow);
+    var histLabelNum;
+    if (!sl || sl.setType !== 'drop') {
+      histStdSetNum++;
+      histLabelNum = histStdSetNum;
+    }
+    h += renderSetRow('history', ei, si, sl, prescribed, weightMode, ' disabled', prText, false, isCardioRow, histLabelNum);
   }
   h += '</div>';
   if (exState.rpe != null) {
@@ -5931,7 +5983,14 @@ document.getElementById('workoutContainer').addEventListener('click', function(e
     deleteAdHocSession();
     return;
   }
-  // Add Set on an extras exercise
+  // Add Set / Add Drop Set on an exercise. Drop Set has a distinct
+  // data attribute so it doesn't accidentally fall through to addExtraSet.
+  var addDropBtn = target.closest ? target.closest('[data-add-drop-ei]') : null;
+  if (addDropBtn) {
+    if (addDropBtn.disabled) return;
+    addDropSet(parseInt(addDropBtn.getAttribute('data-add-drop-ei'), 10));
+    return;
+  }
   var addSetBtn = target.closest ? target.closest('.add-set-btn') : null;
   if (addSetBtn) {
     if (addSetBtn.disabled) return;

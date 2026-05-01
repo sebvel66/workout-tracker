@@ -2107,6 +2107,35 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
   letter-spacing: 0.5px;
 }
 .add-set-btn:active { background: var(--surface2); color: var(--text); }
+/* Drop Set button -- visually distinguished from + Add Set so the user
+ * can tell the two apart. Subtle accent border instead of dashed gray. */
+.add-set-btn.add-drop-btn {
+  border-style: solid;
+  border-color: rgba(74, 222, 128, 0.35);
+  color: var(--accent);
+}
+.add-set-btn.add-drop-btn:active {
+  background: rgba(74, 222, 128, 0.08);
+  color: var(--text);
+}
+
+/* Drop set chain segments (v2.5 Phase 1). Indented + arrow-prefixed so
+ * the chain reads as one unit visually:
+ *     S2  100 lbs x 10
+ *     →    80 lbs x 8
+ *     →    60 lbs x 6
+ * The arrow label inherits the accent color so the chain is easy to
+ * scan from the parent down. */
+.set-row.set-drop {
+  margin-left: 24px;
+  border-left: 2px solid rgba(74, 222, 128, 0.4);
+  padding-left: 8px;
+}
+.set-label.set-label-drop {
+  color: var(--accent);
+  font-size: 16px;
+  font-weight: 700;
+}
 
 .set-row.deletable { grid-template-columns: 32px 1fr 1fr 40px 28px; }
 .set-delete {
