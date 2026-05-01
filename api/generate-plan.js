@@ -1366,7 +1366,13 @@ async function handleRefine(res, userId, rawInputs) {
     return jsonError(res, 422, 'Refine response missing plan field', { raw: rawText });
   }
 
-  const validationError = validatePlan(revisedPlan, userInputs.trainingDays);
+  // Day-count strictness is intentionally skipped in refine mode. User
+  // feedback IS the source of truth for what they want — if they ask to
+  // change "5 days to 1 day", Claude correctly emits a 1-day plan and
+  // validating against the original trainingDays would wrongly reject it.
+  // Every other structural check (days exist, names present, sets non-
+  // empty, etc.) still runs via validatePlan(plan, null).
+  const validationError = validatePlan(revisedPlan, null);
   if (validationError) {
     return jsonError(res, 422, 'Refined plan validation failed: ' + validationError, { raw: rawText });
   }
