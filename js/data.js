@@ -356,6 +356,9 @@ function stateFromWorkout(row) {
       // rows inserted before the v2.2.1 migration backfill.
       exerciseId: s.exercise_id,
       prescribedExerciseId: s.prescribed_exercise_id || null,
+      // Cardio columns (v2.5 Phase 1). Null on resistance rows.
+      duration_seconds: s.duration_seconds != null ? s.duration_seconds : null,
+      distance: s.distance != null ? s.distance : null,
       startedAt: s.started_at, completedAt: s.completed_at,
     };
     if (setIsExtra) state.exercises[ek].sets[s.set_order].isExtra = true;
@@ -1030,6 +1033,48 @@ function weightModeForName(name) {
   return row && row.weight_mode ? row.weight_mode : 'total';
 }
 
+// Cardio detection from the library — single source of truth (per the
+// Q2 design decision: derive cardio from muscle_group rather than adding
+// a redundant type field on plan JSON). Returns true for treadmill, run,
+// bike, rower, etc.; false for resistance work.
+function isCardioExerciseName(name) {
+  var row = exerciseLibraryByName[normName(name)];
+  return !!(row && row.muscle_group === 'cardio');
+}
+
+// Duration helpers for cardio set inputs. We persist seconds so any
+// downstream analysis (volume/hr/etc.) is uniform; the UI shows mm:ss.
+//
+// Parser tolerates two shapes:
+//   "MM:SS" -> exact (with seconds clamped 0-59)
+//   "MM"    -> bare minutes (so iPhone numeric keypad without colon
+//              still works for whole-minute entries)
+function formatDurationMSS(seconds) {
+  if (seconds == null || !Number.isFinite(seconds)) return '';
+  var s = Math.max(0, Math.round(seconds));
+  var m = Math.floor(s / 60);
+  var sec = s % 60;
+  return m + ':' + (sec < 10 ? '0' : '') + sec;
+}
+
+function parseDurationMSS(text) {
+  if (text == null) return null;
+  var t = String(text).trim();
+  if (!t) return null;
+  if (t.indexOf(':') > -1) {
+    var parts = t.split(':');
+    var m = parseInt(parts[0], 10);
+    var s = parseInt(parts[1], 10);
+    if (!Number.isFinite(m) || m < 0) return null;
+    if (!Number.isFinite(s)) s = 0;
+    if (s < 0 || s > 59) return null;
+    return m * 60 + s;
+  }
+  var min = parseFloat(t);
+  if (!Number.isFinite(min) || min < 0) return null;
+  return Math.round(min * 60);
+}
+
 // ---- Gym profile mutations ----
 async function persistLocationAdd(name) {
   var trimmed = (name || '').trim();
@@ -1251,6 +1296,10 @@ function buildSetPayload(di, ei, si) {
     rpe: exState.rpe != null ? exState.rpe : null,
     prescribed_weight: prescribedWeight,
     prescribed_reps: prescribedReps,
+    // Cardio columns (v2.5 Phase 1, lean). Null on resistance rows;
+    // populated when the set is on a muscle_group='cardio' exercise.
+    duration_seconds: sl.duration_seconds != null ? sl.duration_seconds : null,
+    distance: sl.distance != null ? sl.distance : null,
     // Legacy free-text column — we no longer populate it on new writes;
     // substitution is now carried structurally via exercise_id mismatch.
     substitution: null,
@@ -1349,6 +1398,9 @@ async function logSet(di, ei, si, field, val) {
     parsed = null;
   } else if (field === 'weight') {
     parsed = parseWeightInput(val, getWeightUnit());
+  } else if (field === 'duration_seconds') {
+    // Cardio duration accepts "MM:SS" or bare minutes (parseDurationMSS).
+    parsed = parseDurationMSS(val);
   } else {
     parsed = parseFloat(val);
     if (isNaN(parsed)) parsed = null;
@@ -1388,10 +1440,16 @@ async function _toggleSetCommit(di, ei, si, sl, wasDone) {
     sl.completedAt = new Date().toISOString();
     if (!sl.startedAt) sl.startedAt = sl.completedAt;
     // Auto-fill empty fields from prescribed values; never overwrite user input.
+    // Resistance fields (weight, reps) and cardio fields (duration_seconds,
+    // distance) are mutually-exclusive in practice but the auto-fill is
+    // unconditional on field type — a cardio prescribed set just has
+    // weight/reps null, so the resistance branches no-op.
     var prescribed = plan.days[di] && plan.days[di].exercises[ei] && plan.days[di].exercises[ei].sets[si];
     if (prescribed) {
       if (sl.weight == null && prescribed.weight != null) sl.weight = prescribed.weight;
       if (sl.reps == null && prescribed.reps_target != null) sl.reps = prescribed.reps_target;
+      if (sl.duration_seconds == null && prescribed.duration_seconds != null) sl.duration_seconds = prescribed.duration_seconds;
+      if (sl.distance == null && prescribed.distance != null) sl.distance = prescribed.distance;
     }
   }
   await persistSet(di, ei, si);

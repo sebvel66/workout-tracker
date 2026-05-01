@@ -191,13 +191,8 @@ function renderDurationEditBtn(workoutId, currentMs, endedAt, ctx) {
 }
 
 // ---- Render helpers ----
-function renderSetRow(di, ei, si, sl, prescribedSet, weightMode, disabledAttr, prText, deletable) {
+function renderSetRow(di, ei, si, sl, prescribedSet, weightMode, disabledAttr, prText, deletable, isCardio) {
   var currentUnit = getWeightUnit();
-  var prescribedLbs = normalizePrescribedLbs(prescribedSet);
-  var weightCls = prescribedLbs != null ? inputCls(sl.weight, prescribedLbs) : '';
-  var repsCls = prescribedSet ? inputCls(sl.reps, prescribedSet.reps_target) : '';
-  var weightPlaceholder = prescribedLbs != null ? displayWeight(prescribedLbs, currentUnit) : '—';
-  var repsPlaceholder = prescribedSet && prescribedSet.reps_target ? prescribedSet.reps_target : '—';
 
   var out = '';
   var extraCls = sl && sl.isExtra ? ' set-extra' : '';
@@ -205,21 +200,56 @@ function renderSetRow(di, ei, si, sl, prescribedSet, weightMode, disabledAttr, p
   out += '<div class="set-label">S' + (si+1) + '</div>';
   out += '<div class="set-prescribed">' + (prText || '—') + '</div>';
   out += '<div class="set-actual">';
-  if (weightMode !== 'none') {
-    var lbl;
-    if (weightMode === 'bodyweight') {
-      lbl = 'ADD WT';
-    } else {
-      lbl = currentUnit === 'kg' ? 'KG' : 'LBS';
+
+  if (isCardio) {
+    // Cardio (v2.5 Phase 1, lean): duration + distance, no weight/reps.
+    // Detection per Q2: muscle_group === 'cardio' from the library.
+    // Duration field accepts mm:ss OR bare minutes (parseDurationMSS),
+    // formats display as mm:ss. Distance is miles (distance_unit
+    // defaults to 'mi' globally for v1; per-row unit toggle deferred
+    // to Phase 1.5).
+    var durValue = formatDurationMSS(sl.duration_seconds);
+    var durPlaceholder = (prescribedSet && prescribedSet.duration_seconds != null)
+      ? formatDurationMSS(prescribedSet.duration_seconds) : 'mm:ss';
+    out += '<div class="input-group"><label class="input-label">DURATION</label>';
+    out += '<input type="text" inputmode="text" class="set-input" value="' + escapeAttr(durValue) +
+      '" placeholder="' + escapeAttr(durPlaceholder) +
+      '" data-di="' + di + '" data-ei="' + ei + '" data-si="' + si + '" data-field="duration_seconds" onfocus="this.select()"' + disabledAttr + '>';
+    out += '</div>';
+    var distValue = (sl.distance != null) ? sl.distance : '';
+    var distPlaceholder = (prescribedSet && prescribedSet.distance != null)
+      ? prescribedSet.distance : '—';
+    out += '<div class="input-group"><label class="input-label">DIST</label>';
+    out += '<input type="number" inputmode="decimal" step="0.01" class="set-input" value="' + escapeAttr(distValue) +
+      '" placeholder="' + escapeAttr(distPlaceholder) +
+      '" data-di="' + di + '" data-ei="' + ei + '" data-si="' + si + '" data-field="distance" onfocus="this.select()"' + disabledAttr + '>';
+    out += '<div class="weight-mode-hint">mi</div>';
+    out += '</div>';
+  } else {
+    // Resistance path (unchanged from pre-cardio behavior).
+    var prescribedLbs = normalizePrescribedLbs(prescribedSet);
+    var weightCls = prescribedLbs != null ? inputCls(sl.weight, prescribedLbs) : '';
+    var repsCls = prescribedSet ? inputCls(sl.reps, prescribedSet.reps_target) : '';
+    var weightPlaceholder = prescribedLbs != null ? displayWeight(prescribedLbs, currentUnit) : '—';
+    var repsPlaceholder = prescribedSet && prescribedSet.reps_target ? prescribedSet.reps_target : '—';
+
+    if (weightMode !== 'none') {
+      var lbl;
+      if (weightMode === 'bodyweight') {
+        lbl = 'ADD WT';
+      } else {
+        lbl = currentUnit === 'kg' ? 'KG' : 'LBS';
+      }
+      out += '<div class="input-group"><label class="input-label">' + lbl + '</label>';
+      out += '<input type="number" inputmode="decimal" class="set-input ' + weightCls + '" value="' + displayWeight(sl.weight, currentUnit) + '" placeholder="' + weightPlaceholder + '" data-di="' + di + '" data-ei="' + ei + '" data-si="' + si + '" data-field="weight" onfocus="this.select()"' + disabledAttr + '>';
+      if (weightMode === 'per_side') out += '<div class="weight-mode-hint">per side</div>';
+      out += '</div>';
     }
-    out += '<div class="input-group"><label class="input-label">' + lbl + '</label>';
-    out += '<input type="number" inputmode="decimal" class="set-input ' + weightCls + '" value="' + displayWeight(sl.weight, currentUnit) + '" placeholder="' + weightPlaceholder + '" data-di="' + di + '" data-ei="' + ei + '" data-si="' + si + '" data-field="weight" onfocus="this.select()"' + disabledAttr + '>';
-    if (weightMode === 'per_side') out += '<div class="weight-mode-hint">per side</div>';
+    out += '<div class="input-group"><label class="input-label">REPS</label>';
+    out += '<input type="number" inputmode="numeric" class="set-input ' + repsCls + '" value="' + (sl.reps != null ? sl.reps : '') + '" placeholder="' + repsPlaceholder + '" data-di="' + di + '" data-ei="' + ei + '" data-si="' + si + '" data-field="reps" onfocus="this.select()"' + disabledAttr + '>';
     out += '</div>';
   }
-  out += '<div class="input-group"><label class="input-label">REPS</label>';
-  out += '<input type="number" inputmode="numeric" class="set-input ' + repsCls + '" value="' + (sl.reps != null ? sl.reps : '') + '" placeholder="' + repsPlaceholder + '" data-di="' + di + '" data-ei="' + ei + '" data-si="' + si + '" data-field="reps" onfocus="this.select()"' + disabledAttr + '>';
-  out += '</div>';
+
   out += '</div>';
   out += '<button class="set-check ' + (sl.done ? 'done' : '') + '" data-di="' + di + '" data-ei="' + ei + '" data-si="' + si + '"' + disabledAttr + '>' + (sl.done ? '✓' : '·') + '</button>';
   if (deletable) {
@@ -230,6 +260,16 @@ function renderSetRow(di, ei, si, sl, prescribedSet, weightMode, disabledAttr, p
 }
 
 function fmtP(s) {
+  if (s == null) return '—';
+  // Cardio prescription: duration-first format, drops weight + reps.
+  // Detection by field presence (duration_seconds populated) rather
+  // than library lookup — we don't always have the exercise name in
+  // scope here. Plan-emitted cardio sets always carry duration_seconds.
+  if (s.duration_seconds != null) {
+    var parts = [formatDurationMSS(s.duration_seconds)];
+    if (s.distance != null) parts.push(s.distance + 'mi');
+    return parts.join(', ');
+  }
   var p = [];
   var lbsP = normalizePrescribedLbs(s);
   if (lbsP != null) {
@@ -452,6 +492,11 @@ function buildDay(di) {
     var weightMode = (exState.subExercise && exState.subExercise.weight_mode)
       ? exState.subExercise.weight_mode
       : weightModeForName(ex.name);
+    // Cardio detection follows the displayed exercise name — substitutes
+    // can flip a resistance prescription into a cardio one (e.g., user
+    // subs incline treadmill walk for a stalled accessory).
+    var displayNameForCardio = exState.subExercise ? exState.subExercise.name : ex.name;
+    var isCardioRow = isCardioExerciseName(displayNameForCardio);
     var displayName = exState.subExercise ? exState.subExercise.name : ex.name;
     var prescribedBadge = exState.subExercise
       ? '<span class="exercise-sub-origin">was: ' + escapeHtml(ex.name) + '</span>'
@@ -475,7 +520,7 @@ function buildDay(di) {
         ? { reps_target: set && set.reps_target, reps_range: set && set.reps_range }
         : set;
       var pr = fmtP(effectiveSet);
-      h += renderSetRow(di, ei, si, sl, effectiveSet, weightMode, dis, pr);
+      h += renderSetRow(di, ei, si, sl, effectiveSet, weightMode, dis, pr, false, isCardioRow);
     }
 
     // Extras on this prescribed exercise: sets past the plan-defined count.
@@ -484,7 +529,7 @@ function buildDay(di) {
     // immutable.
     for (var siExtra = ex.sets.length; siExtra < exState.sets.length; siExtra++) {
       var slExtra = exState.sets[siExtra] || {};
-      h += renderSetRow(di, ei, siExtra, slExtra, null, weightMode, dis, '—', !readOnly);
+      h += renderSetRow(di, ei, siExtra, slExtra, null, weightMode, dis, '—', !readOnly, isCardioRow);
     }
     if (mode === 'editable') {
       h += '<button class="add-set-btn" data-add-set-ei="' + ei + '">+ Add Set</button>';
@@ -545,6 +590,7 @@ function buildDay(di) {
     var xState = state.exercises[xek];
     var xMeta = xState.exerciseMeta || { name: 'Exercise', weight_mode: 'total' };
     var xWeightMode = xMeta.weight_mode || 'total';
+    var xIsCardio = xMeta.muscle_group === 'cardio';
     var xSetCount = xState.sets.length || 1;
     ts += xSetCount;
     var xdn = 0;
@@ -562,7 +608,7 @@ function buildDay(di) {
     h += '<div class="sets-container">';
     for (var xsi2 = 0; xsi2 < xSetCount; xsi2++) {
       var xsl = xState.sets[xsi2] || {};
-      h += renderSetRow(di, xei, xsi2, xsl, null, xWeightMode, dis, '—', !readOnly);
+      h += renderSetRow(di, xei, xsi2, xsl, null, xWeightMode, dis, '—', !readOnly, xIsCardio);
     }
     if (mode === 'editable') {
       h += '<button class="add-set-btn" data-add-set-ei="' + xei + '">+ Add Set</button>';
@@ -646,6 +692,7 @@ function buildAdHocDay(di) {
     var exState = state.exercises[ek];
     var meta = exState.exerciseMeta || { name: 'Exercise', weight_mode: 'total' };
     var weightMode = meta.weight_mode || 'total';
+    var isCardioRow = meta.muscle_group === 'cardio';
     var setCount = exState.sets.length || 1;
     ts += setCount;
     var dn = 0;
@@ -663,7 +710,7 @@ function buildAdHocDay(di) {
     h += '<div class="sets-container">';
     for (var si = 0; si < setCount; si++) {
       var sl = exState.sets[si] || {};
-      h += renderSetRow(di, ei, si, sl, null, weightMode, dis, '—', true);
+      h += renderSetRow(di, ei, si, sl, null, weightMode, dis, '—', true, isCardioRow);
     }
     h += '<button class="add-set-btn" data-add-set-ei="' + ei + '">+ Add Set</button>';
     h += '</div>';
@@ -1170,7 +1217,7 @@ async function openExerciseHistory(exerciseName) {
 
   try {
     var res = await sb.from('sets')
-      .select('id, weight, reps, rpe, set_order, done, note, workout_id, workouts(performed_at, plan_id, day_index, title, location_id)')
+      .select('id, weight, reps, rpe, set_order, done, note, duration_seconds, distance, workout_id, workouts(performed_at, plan_id, day_index, title, location_id)')
       .eq('user_id', userId)
       .eq('exercise_id', row.id)
       .eq('done', true)
@@ -1246,7 +1293,17 @@ async function openExerciseHistory(exerciseName) {
       }
       sess.sets.sort(function(a, b) { return a.set_order - b.set_order; });
       var recentUnit = getWeightUnit();
+      // Cardio rows render as "30:00 / 0.5mi" instead of weight × reps.
+      // Detection by exercise (resolved via library) — historical pre-
+      // cardio rows stay on the resistance format because library
+      // wasn't yet 'cardio' when those sets were logged.
+      var rowIsCardio = isCardioExerciseName(exerciseName);
       var setStrs = sess.sets.map(function(s) {
+        if (rowIsCardio || s.duration_seconds != null) {
+          var dur = s.duration_seconds != null ? formatDurationMSS(s.duration_seconds) : '—';
+          if (s.distance != null) return dur + ' · ' + s.distance + 'mi';
+          return dur;
+        }
         var w = s.weight != null ? displayWeight(s.weight, recentUnit) : '—';
         var r = s.reps != null ? s.reps : '—';
         return w + ' × ' + r;
@@ -1743,6 +1800,11 @@ function renderHistoryExerciseCard(ei, exState, name, weightMode, prescribedSets
   var sc = ad ? 'complete' : sd ? 'partial' : 'pending';
   var stat = setCount > 0 ? (ad ? dn + '/' + setCount + ' ✓' : dn + '/' + setCount) : '';
   var cc = ad ? ' complete' : sd ? ' partial' : '';
+  // Cardio detection for history rows: look the name up in the library.
+  // Exercises imported pre-cardio-feature have weight/reps logged with
+  // duration_seconds null, so the history row falls back to the
+  // resistance render even when name says "treadmill walk" — accurate.
+  var isCardioRow = isCardioExerciseName(name);
 
   var h = '';
   h += '<div class="exercise-card' + cc + '">';
@@ -1752,7 +1814,7 @@ function renderHistoryExerciseCard(ei, exState, name, weightMode, prescribedSets
     var sl = exState.sets[si] || {};
     var prescribed = prescribedSets ? prescribedSets[si] : null;
     var prText = prescribed ? fmtP(prescribed) : '—';
-    h += renderSetRow('history', ei, si, sl, prescribed, weightMode, ' disabled', prText, false);
+    h += renderSetRow('history', ei, si, sl, prescribed, weightMode, ' disabled', prText, false, isCardioRow);
   }
   h += '</div>';
   if (exState.rpe != null) {
