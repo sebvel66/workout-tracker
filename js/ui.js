@@ -53,6 +53,20 @@ var generateInFlight = false;       // prevents double-fire of the generate butt
 var generateAbortController = null; // wired to the in-flight fetch so Cancel can abort
 var generateAttempt = 0;            // 1 on first try, 2 on the silent retry (for loading-message swap)
 
+// Refine-mode state (v2.5.3): when the user iterates on a freshly-generated
+// plan via the "What would you change?" input on the review screen.
+//   iterationHistory: [{ plan, feedback }] — prior plans with the feedback
+//     that led to the next iteration. Empty after initial generate; one
+//     entry appended per refine call. Server reconstructs assistant turns
+//     from this and replays the multi-turn conversation each call.
+//   generatedChangeNotes: 2-4 sentence string returned alongside the
+//     revised plan explaining what changed. Null until the first refine.
+//   refineInFlight: gates double-fire of the Refine button; mirrors
+//     generateInFlight for the refine path.
+var iterationHistory = [];
+var generatedChangeNotes = null;
+var refineInFlight = false;
+
 // Plans management state — list view with activate/delete actions.
 var plansList = [];                 // [{id, title, week, is_active, created_at, start_date, workout_count}]
 var plansLoading = false;
@@ -2058,8 +2072,12 @@ async function submitGenerateInputs(mode) {
   generateAttempt = 1;
   generateAbortController = new AbortController();
   // Reset prior output so the review dispatcher renders the right mode.
+  // Iteration state also resets here — every fresh Generate / Analyze
+  // call starts a new refinement session.
   generatedPlan = null;
   generatedAnalysis = null;
+  iterationHistory = [];
+  generatedChangeNotes = null;
   renderGenerate();
   // Option L (2026-04-22): plan-gen doesn't log its submit anymore —
   // only the accept row persists (onAcceptGeneratedPlan). Cancelled
@@ -2194,6 +2212,9 @@ function closeGenerate() {
   generatedPlan = null;
   generatedAnalysis = null;
   generatedMeta = null;
+  iterationHistory = [];
+  generatedChangeNotes = null;
+  refineInFlight = false;
 }
 
 function renderGenerate() {
@@ -2297,15 +2318,28 @@ function renderGenerateReview(body) {
   if (!generatedPlan) { body.innerHTML = ''; return; }
   var p = generatedPlan;
   var meta = generatedMeta || {};
+  var revisionNum = iterationHistory.length;  // 0 on initial; increments per refine
 
   var h = '<div class="generate-review">';
 
   h += '<div class="generate-meta">' +
     escapeHtml(p.title || 'New plan') +
     (p.week ? ' · ' + escapeHtml(p.week) : '') +
+    (revisionNum > 0 ? ' · revision ' + revisionNum : '') +
     (meta.model ? ' · ' + escapeHtml(meta.model) : '') +
     (meta.elapsed_s ? ' · ' + meta.elapsed_s + 's' : '') +
     '</div>';
+
+  // Change-notes banner — only renders after at least one refinement.
+  // Plain-text label + Claude's 2-4 sentence explanation of the latest
+  // changes so the user knows what was modified relative to the prior
+  // iteration without having to diff visually.
+  if (generatedChangeNotes) {
+    h += '<div class="refine-change-notes">';
+    h += '<div class="refine-change-label">WHAT CHANGED</div>';
+    h += '<div class="refine-change-text">' + escapeHtml(generatedChangeNotes) + '</div>';
+    h += '</div>';
+  }
 
   var days = Array.isArray(p.days) ? p.days : [];
   for (var di = 0; di < days.length; di++) {
@@ -2327,6 +2361,19 @@ function renderGenerateReview(body) {
     h += '</div>';
   }
 
+  // Refine input: textarea below the day cards. User types one or more
+  // requested changes; Refine button fires the refine API call. Hard cap
+  // matches MAX_REFINE_FEEDBACK_LENGTH on the server (2000 chars).
+  h += '<div class="refine-input-block">';
+  h += '<label class="generate-form-row">';
+  h += '<span class="generate-form-label">What would you change?</span>';
+  h += '<textarea id="refineFeedbackInput" class="generate-form-textarea" rows="3" maxlength="2000" ' +
+       'placeholder="e.g., move pull-ups to Day 3, less quad volume, swap cable row for machine row, add rear delt work to Day 1"></textarea>';
+  h += '<span class="generate-form-hint">Keep iterating until happy. Each refinement takes ~20-30s. Iterations cache against prior turns so cost stays low.</span>';
+  h += '</label>';
+  h += '<button class="generate-btn-secondary" id="btnRefinePlan" type="button" style="width:100%; padding:12px;">Refine plan</button>';
+  h += '</div>';
+
   h += '<div class="generate-actions">';
   h += '<button class="generate-btn-cancel" id="btnGenerateCancel" type="button">Cancel</button>';
   h += '<button class="generate-btn-secondary" id="btnGenerateSaveTemplate" type="button">Save as template</button>';
@@ -2334,6 +2381,98 @@ function renderGenerateReview(body) {
   h += '</div>';
   h += '</div>';
   body.innerHTML = h;
+}
+
+// Iterative plan refinement (v2.5.3). Reads the textarea, fires
+// /api/generate-plan with mode=refine, replaces the displayed plan
+// with the revised one + change_notes banner. Server caches against
+// the prior turns so per-iteration cost stays low; on success we
+// append the (now-prior) plan + feedback into iterationHistory so
+// the next refine call replays the full conversation.
+async function submitRefinePlan() {
+  if (refineInFlight) return;
+  if (!generatedPlan) {
+    showToast('No plan to refine', null);
+    return;
+  }
+  var input = document.getElementById('refineFeedbackInput');
+  var feedback = (input && input.value || '').trim();
+  if (!feedback) {
+    showToast('Type what you would change', null);
+    if (input) input.focus();
+    return;
+  }
+
+  refineInFlight = true;
+  // Disable the button and swap loading copy. Don't tear down the review
+  // view -- the user keeps seeing the current plan while the refine call
+  // is in flight, which makes the typical 20-30s wait feel less jarring.
+  var btn = document.getElementById('btnRefinePlan');
+  if (btn) { btn.disabled = true; btn.textContent = 'Refining…'; }
+
+  // Capture the plan that's about to become "previous" for the iteration
+  // history. We push it after the call succeeds so a failed refine leaves
+  // history intact.
+  var planBeforeThisRefine = generatedPlan;
+
+  try {
+    var sessionRes = await sb.auth.getSession();
+    var token = sessionRes.data && sessionRes.data.session && sessionRes.data.session.access_token;
+    if (!token) throw new Error('Not signed in');
+
+    var inputs = generatedInputs || {};
+    var payload = {
+      mode: 'refine',
+      current_plan: generatedPlan,
+      iteration_history: iterationHistory,
+      new_feedback: feedback,
+      // Echo the original inputs so the server reconstructs the exact
+      // first-user-message from the initial generate (cache hit).
+      start_date: inputs.start_date || null,
+      target_duration: inputs.target_duration || null,
+      training_days: inputs.training_days,
+      history_weeks: inputs.history_weeks,
+      include_photos: inputs.include_photos,
+      notes: inputs.notes || null,
+    };
+
+    var startedAt = Date.now();
+    var res = await fetch('/api/generate-plan', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + token,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+    var body = await res.json().catch(function() { return null; });
+
+    if (res.status !== 200 || !body || !body.plan) {
+      var msg = (body && body.error) || ('HTTP ' + res.status);
+      showToast('Refine failed: ' + msg, null);
+      if (btn) { btn.disabled = false; btn.textContent = 'Refine plan'; }
+      return;
+    }
+
+    // Success: append (previous plan + feedback) to iterationHistory,
+    // then swap in the revised plan + notes and re-render.
+    iterationHistory.push({ plan: planBeforeThisRefine, feedback: feedback });
+    generatedPlan = body.plan;
+    generatedChangeNotes = body.change_notes || '';
+    generatedMeta = {
+      model: body.model || 'unknown',
+      generated_at: body.generated_at,
+      elapsed_s: Math.round((Date.now() - startedAt) / 1000),
+    };
+    renderGenerate();
+    if (input) input.value = '';
+  } catch (err) {
+    console.error('submitRefinePlan error:', err);
+    showToast('Refine failed: ' + (err.message || 'network error'), null);
+    if (btn) { btn.disabled = false; btn.textContent = 'Refine plan'; }
+  } finally {
+    refineInFlight = false;
+  }
 }
 
 // Format the four-section analysis as plain-text labeled blocks for the
@@ -5262,6 +5401,7 @@ document.getElementById('generateBody').addEventListener('click', function(e) {
   if (e.target.closest('#btnGenerateInputCancel')) { closeGenerate(); return; }
   if (e.target.closest('#btnGenerateAccept')) { onAcceptGeneratedPlan(); return; }
   if (e.target.closest('#btnGenerateSaveTemplate')) { onSaveGeneratedPlanAsTemplate(); return; }
+  if (e.target.closest('#btnRefinePlan')) { submitRefinePlan(); return; }
   if (e.target.closest('#btnAnalyzeUseForPlan')) { useAnalysisForNextPlan(); return; }
   if (e.target.closest('#btnAnalyzeApplyProfile')) { onAnalyzeApplyProfileUpdates(); return; }
   if (e.target.closest('#btnGenerateCancel')) { closeGenerate(); return; }

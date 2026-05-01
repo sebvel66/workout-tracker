@@ -1112,6 +1112,36 @@ body.unauthed #emptyState { display: none !important; }
   background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
   white-space: pre-wrap; word-wrap: break-word;
 }
+/* Iterative plan refinement (v2.5.3). The plan review now includes a
+ * "What would you change?" textarea and a Refine button below the day
+ * cards, plus a change-notes banner above them after the first refine.
+ * Visual goal: change-notes banner reads as Claude's voice (subtle accent
+ * border, italic-ish text); refine block reads as input/action. */
+.refine-change-notes {
+  margin: 12px 0;
+  padding: 10px 12px;
+  background: rgba(74, 222, 128, 0.06);
+  border-left: 3px solid var(--accent2);
+  border-radius: 6px;
+}
+.refine-change-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px; color: var(--accent);
+  text-transform: uppercase; letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+.refine-change-text {
+  font-size: 13px; line-height: 1.5; color: var(--text);
+  white-space: pre-wrap; word-wrap: break-word;
+}
+.refine-input-block {
+  margin: 14px 0 6px;
+  padding: 12px;
+  background: var(--surface2);
+  border: 1px solid var(--border); border-radius: 8px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+
 /* Profile update proposal cards (v2.5 layer 3). Rendered inside the analyze
  * review below the 4 analysis sections when profile_updates is non-empty.
  * Each card has a checkbox, field label, current -> proposed diff, and
