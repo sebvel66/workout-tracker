@@ -58,6 +58,37 @@ Other field rules:
 - "note" on each exercise: OPTIONAL. Max 10 words. Include ONLY when there's a real action — a progression ("→ 70 this week"), a conditional ("hold if RPE > 8"), a swap reason, or an injury cue. For exercises continuing unchanged, OMIT the `note` field entirely.
 - "repeat" on a set object: OPTIONAL integer ≥ 2. When all sets in an exercise have identical `weight`, `reps_target`, and `reps_range`, emit a SINGLE set object with `"repeat": N` where N is the total count — the server expands this to N identical sets before storing. If sets differ (e.g., a top set followed by back-off sets), emit each set as its own object WITHOUT `repeat`. This is the preferred shape when sets are flat — it saves tokens.
 
+## DROP SETS
+
+Drop sets — chained segments performed at reduced weight back-to-back with no full rest between them — are typically programmed as a finisher on the LAST working set of an isolation exercise to drive metabolic stress. Lateral raises, biceps curls, lateral pulldowns, hamstring curls, leg extensions, calf raises, and similar movements are good candidates. Avoid drop sets on heavy compound lifts.
+
+**Format**: drops live as additional set entries in the same `sets` array as the parent, marked with `"set_type": "drop"`. Order matters — each drop is a child of the most recent non-drop set immediately preceding it in the array.
+
+```json
+{
+  "name": "lateral raise",
+  "note": "Triple drop on the last set: 20 → 15 → 10.",
+  "rest": 90,
+  "sets": [
+    {"weight": 20, "reps_target": 12, "reps_range": "10-12", "repeat": 2},
+    {"weight": 20, "reps_target": 10, "reps_range": "8-10"},
+    {"weight": 15, "reps_target": 8, "set_type": "drop"},
+    {"weight": 10, "reps_target": 6, "set_type": "drop"}
+  ]
+}
+```
+
+- `set_type: "drop"` is the only marker; omit it for standard sets (default behavior).
+- Drops are CONTIGUOUS — chained drops follow their parent immediately. A standard set after a drop chain starts a NEW chain.
+- Each drop carries its own `weight` and `reps_target`. The app cascades the parent's done-tap to all drops, so the user logs the chain in one tap.
+- Use `repeat` on a drop entry too if multiple drops are identical (rare but valid).
+- Always include a brief `note` summarizing the drop pattern (e.g., "Triple drop on last set: 20→15→10") so the client knows what's coming before they read the JSON.
+
+When NOT to prescribe drops:
+- Bulk / accumulation phases without a metabolic-stress block in the program.
+- Compound movements (bench, row, squat, deadlift) — drops on these are injury-risky and rarely productive.
+- Beginner clients still establishing technique.
+
 ## CARDIO PRESCRIPTION
 
 Cardio exercises in the AVAILABLE EXERCISES list are flagged with `muscle_group: cardio` (treadmill walk/run, bike, rower, ski erg, sprint intervals, etc.). Prescribe cardio with **duration-based sets** instead of weight × reps:

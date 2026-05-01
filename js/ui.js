@@ -525,6 +525,25 @@ function buildDay(di) {
     var stdSetNum = 0;
     for (var si = 0; si < ex.sets.length; si++) {
       var set = ex.sets[si];
+      var setIsDrop = !!(set && set.set_type === 'drop');
+      // Seed prescribed drops in the in-memory state so cascade-on-done
+      // can find them via setType + parentSetIdx (parentSetIdx is the
+      // index of the most recent non-drop set in this exercise's
+      // prescribed sets array). Lazy: only seed if the user hasn't
+      // touched this set yet. Once seeded, the entry behaves like a
+      // manually-added drop for cascade / persist purposes.
+      if (setIsDrop && !exState.sets[si]) {
+        var prescribedParentIdx = si - 1;
+        while (prescribedParentIdx >= 0
+               && ex.sets[prescribedParentIdx]
+               && ex.sets[prescribedParentIdx].set_type === 'drop') {
+          prescribedParentIdx--;
+        }
+        exState.sets[si] = {
+          setType: 'drop',
+          parentSetIdx: prescribedParentIdx >= 0 ? prescribedParentIdx : null,
+        };
+      }
       var sl = exState.sets[si] || {};
       // When substituted, the prescribed weight doesn't port to the
       // substitute (different weight_mode, different strength curve, etc).
@@ -535,9 +554,13 @@ function buildDay(di) {
         ? { reps_target: set && set.reps_target, reps_range: set && set.reps_range }
         : set;
       var pr = fmtP(effectiveSet);
-      // Prescribed rows are always standard; increment counter unconditionally.
-      stdSetNum++;
-      h += renderSetRow(di, ei, si, sl, effectiveSet, weightMode, dis, pr, false, isCardioRow, stdSetNum);
+      // Drops use → label; standard sets get the next S#.
+      var pSetLabel;
+      if (!setIsDrop) {
+        stdSetNum++;
+        pSetLabel = stdSetNum;
+      }
+      h += renderSetRow(di, ei, si, sl, effectiveSet, weightMode, dis, pr, false, isCardioRow, pSetLabel);
     }
 
     // Extras on this prescribed exercise: sets past the plan-defined count.

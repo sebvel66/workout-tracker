@@ -1513,6 +1513,18 @@ async function _toggleSetCommit(di, ei, si, sl, wasDone) {
         child.done = true;
         child.completedAt = sl.completedAt;
         if (!child.startedAt) child.startedAt = child.completedAt;
+        // Auto-fill from the drop's OWN prescribed values (each drop
+        // segment can carry weight + reps_target in the plan blob).
+        // For manually-added drops past the prescribed count,
+        // plan.sets[ci] is undefined and carry-forward (set in
+        // addDropSet) already populated weight/reps.
+        var childPrescribed = plan.days && plan.days[di] && plan.days[di].exercises[ei] && plan.days[di].exercises[ei].sets[ci];
+        if (childPrescribed) {
+          if (child.weight == null && childPrescribed.weight != null) child.weight = childPrescribed.weight;
+          if (child.reps == null && childPrescribed.reps_target != null) child.reps = childPrescribed.reps_target;
+          if (child.duration_seconds == null && childPrescribed.duration_seconds != null) child.duration_seconds = childPrescribed.duration_seconds;
+          if (child.distance == null && childPrescribed.distance != null) child.distance = childPrescribed.distance;
+        }
         await persistSet(di, ei, ci);
       }
     }
