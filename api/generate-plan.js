@@ -149,6 +149,9 @@ export default async function handler(req, res) {
     if (rawInputs.mode === 'analyze') {
       return await handleAnalyze(res, userId, rawInputs);
     }
+    if (rawInputs.mode === 'refine') {
+      return await handleRefine(res, userId, rawInputs);
+    }
 
     const userInputs = {
       startDate: typeof rawInputs.start_date === 'string' ? rawInputs.start_date.slice(0, 10) : null,
@@ -1182,6 +1185,230 @@ async function handleSwap(res, userId, rawInputs) {
     usage: claudeData.usage || null,
     generated_at: new Date().toISOString(),
   });
+}
+
+// ---- Refine mode ----
+// Iterative plan refinement. Frontend keeps the multi-turn conversation in
+// memory and replays it to the server on each refine call. Server
+// reconstructs the SAME first-user-message that the original generate
+// produced (so the cached prefix hits), appends the prior iterations as
+// alternating assistant (plan JSON) / user (feedback) turns, then appends
+// the latest assistant turn (current plan) and the new user feedback.
+//
+// Cache strategy (4 breakpoints max):
+//   1. system prompt (SYSTEM_PROMPT_PLAN) — same as plan-gen
+//   2. library block in the first user message — same as plan-gen
+//   3. (iter ≥ 2) the previous assistant turn — caches the prior plan so
+//      iter N+1 reuses iter N's emission as part of the prefix
+//
+// Anthropic's prefix-based cache means iters 1+ within an hour pay only
+// the new user feedback + new assistant response in input tokens.
+//
+// Output shape (Claude returns this shape, server forwards):
+//   { plan: <revised plan JSON>, change_notes: "<2-4 sentence explanation>" }
+
+const REFINE_MAX_TOKENS = MAX_TOKENS;
+const MAX_REFINE_FEEDBACK_LENGTH = 2000;
+const MAX_REFINE_ITERATIONS = 10;  // Hard cap to bound payload size and token bloat
+
+async function handleRefine(res, userId, rawInputs) {
+  const currentPlan = rawInputs.current_plan;
+  if (!currentPlan || typeof currentPlan !== 'object') {
+    return jsonError(res, 400, 'current_plan required (full plan JSON from latest iteration)');
+  }
+  const newFeedback = (typeof rawInputs.new_feedback === 'string') ? rawInputs.new_feedback.trim() : '';
+  if (!newFeedback) return jsonError(res, 400, 'new_feedback required');
+  if (newFeedback.length > MAX_REFINE_FEEDBACK_LENGTH) {
+    return jsonError(res, 400, `new_feedback too long (max ${MAX_REFINE_FEEDBACK_LENGTH} chars)`);
+  }
+
+  // iteration_history: array of { plan, feedback } pairs from prior iters.
+  // [] on the first refine call. Each entry's `plan` is what was shown to
+  // the user before that feedback was given; `feedback` is what they said.
+  // Server reconstructs assistant turns from these.
+  const iterationHistory = Array.isArray(rawInputs.iteration_history) ? rawInputs.iteration_history : [];
+  if (iterationHistory.length > MAX_REFINE_ITERATIONS) {
+    return jsonError(res, 400, `too many iterations (max ${MAX_REFINE_ITERATIONS})`);
+  }
+
+  // Reconstruct the original user inputs so the FIRST user turn matches
+  // the initial plan-gen call exactly (cache hit on the cached prefix).
+  // Frontend sends these unchanged from the original generate.
+  const userInputs = {
+    startDate: typeof rawInputs.start_date === 'string' ? rawInputs.start_date.slice(0, 10) : null,
+    targetDuration: Number.isFinite(rawInputs.target_duration) ? rawInputs.target_duration : null,
+    notes: (typeof rawInputs.notes === 'string' && rawInputs.notes.trim()) ? rawInputs.notes.trim().slice(0, 500) : null,
+    trainingDays: clampInt(rawInputs.training_days, MIN_TRAINING_DAYS, MAX_TRAINING_DAYS, DEFAULT_TRAINING_DAYS),
+    historyWeeks: clampInt(rawInputs.history_weeks, MIN_HISTORY_WEEKS, MAX_HISTORY_WEEKS, DEFAULT_HISTORY_WEEKS),
+    includePhotos: rawInputs.include_photos === false ? false : true,
+  };
+  const verbatimWeeks = Math.min(MAX_VERBATIM_WEEKS, userInputs.historyWeeks);
+
+  // Same parallel fetch as the initial plan-gen path. We refetch on every
+  // refine call rather than trusting the frontend to send the prefix bytes
+  // verbatim — keeps the Edge Function the source of truth and means a
+  // workout logged between the initial generate and a refinement is
+  // visible to Claude on the next iteration.
+  const t0 = Date.now();
+  const [activePlan, history, exercises, photos, coachHistory, coachingProfile] = await Promise.all([
+    fetchActivePlan(userId),
+    fetchRecentWorkouts(userId, userInputs.historyWeeks),
+    fetchExerciseLibrary(userId),
+    userInputs.includePhotos ? fetchPhysiquePhotos(userId) : Promise.resolve({ goal: null, progress: [] }),
+    fetchRecentCoachHistory(userId, 2),
+    fetchCoachingProfile(userId),
+  ]);
+  console.log('[generate-plan:refine] data fetch:', Date.now() - t0, 'ms', '· iterations_so_far:', iterationHistory.length, '· coach_msgs:', coachHistory.length, '· profile:', coachingProfile ? 'yes' : 'no');
+
+  if (!activePlan) {
+    return jsonError(res, 400, 'No active plan. Refinement requires an existing plan context.');
+  }
+
+  // Build the FIRST user message exactly as the initial plan-gen call did.
+  // buildUserMessage returns an array of content blocks (library block has
+  // its own cache_control); we keep that shape so the cached prefix matches.
+  const t1 = Date.now();
+  const initialUserContent = await buildUserMessage({
+    activePlan, history, exercises, photos, userInputs, verbatimWeeks, coachHistory, coachingProfile,
+  });
+
+  // Assemble the messages array. Each prior iteration adds an assistant
+  // turn (the plan that was shown) and a user turn (the feedback that was
+  // given). The latest assistant turn is currentPlan; the latest user
+  // turn is the newFeedback wrapped in the refine instruction.
+  const messages = [
+    { role: 'user', content: initialUserContent },
+  ];
+  for (let i = 0; i < iterationHistory.length; i++) {
+    const turn = iterationHistory[i];
+    if (!turn || typeof turn !== 'object') continue;
+    const planJson = JSON.stringify(turn.plan || {});
+    const feedback = (typeof turn.feedback === 'string') ? turn.feedback : '';
+    messages.push({ role: 'assistant', content: planJson });
+    messages.push({ role: 'user', content: buildRefineUserText(feedback) });
+  }
+  // Latest pair: current plan as assistant turn, new feedback as user turn.
+  // Add cache_control on the latest assistant turn so iter N+1 reuses it.
+  messages.push({
+    role: 'assistant',
+    content: [
+      { type: 'text', text: JSON.stringify(currentPlan), cache_control: { type: 'ephemeral', ttl: '1h' } },
+    ],
+  });
+  messages.push({ role: 'user', content: buildRefineUserText(newFeedback) });
+  console.log('[generate-plan:refine] prompt build:', Date.now() - t1, 'ms · turns:', messages.length);
+
+  const t2 = Date.now();
+  const claudeAbort = new AbortController();
+  const claudeTimeout = setTimeout(() => claudeAbort.abort(), 55000);
+  let claudeRes;
+  try {
+    claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        max_tokens: REFINE_MAX_TOKENS,
+        temperature: TEMPERATURE,
+        system: [
+          {
+            type: 'text',
+            text: SYSTEM_PROMPT_PLAN,
+            cache_control: { type: 'ephemeral', ttl: '1h' },
+          },
+        ],
+        messages: messages,
+      }),
+      signal: claudeAbort.signal,
+    });
+  } catch (err) {
+    clearTimeout(claudeTimeout);
+    if (err && err.name === 'AbortError') {
+      console.error('[generate-plan:refine] TIMEOUT after', Date.now() - t2, 'ms');
+      return jsonError(res, 504, 'AI service timed out (55s). Try again.');
+    }
+    throw err;
+  }
+  clearTimeout(claudeTimeout);
+
+  if (!claudeRes.ok) {
+    const errBody = await claudeRes.text();
+    console.error('[generate-plan:refine] Claude API error', claudeRes.status, errBody);
+    return jsonError(res, 502, 'AI service unavailable', { detail: errBody });
+  }
+
+  const claudeData = await claudeRes.json();
+  console.log('[generate-plan:refine] claude call:', Date.now() - t2, 'ms · usage:', JSON.stringify(claudeData.usage || {}));
+
+  if (claudeData.stop_reason === 'max_tokens') {
+    return jsonError(res, 422, 'Response truncated (max_tokens hit). Refined plan may be incomplete.', { raw: claudeData });
+  }
+
+  const rawText = claudeData.content && claudeData.content[0] && claudeData.content[0].text;
+  if (!rawText) return jsonError(res, 422, 'No text in refine response', { raw: claudeData });
+
+  let parsed;
+  try {
+    parsed = JSON.parse(stripJsonFences(rawText));
+  } catch {
+    return jsonError(res, 422, 'Refine response was not valid JSON', { raw: rawText });
+  }
+
+  // Refine response shape: { plan, change_notes }. Extract and validate.
+  const revisedPlan = parsed && parsed.plan;
+  const changeNotes = (parsed && typeof parsed.change_notes === 'string')
+    ? parsed.change_notes.trim() : '';
+  if (!revisedPlan || typeof revisedPlan !== 'object') {
+    return jsonError(res, 422, 'Refine response missing plan field', { raw: rawText });
+  }
+
+  const validationError = validatePlan(revisedPlan, userInputs.trainingDays);
+  if (validationError) {
+    return jsonError(res, 422, 'Refined plan validation failed: ' + validationError, { raw: rawText });
+  }
+  expandSetRepeats(revisedPlan);
+
+  return res.status(200).json({
+    plan: revisedPlan,
+    change_notes: changeNotes,
+    weeks_analyzed: userInputs.historyWeeks,
+    training_days: userInputs.trainingDays,
+    include_photos: userInputs.includePhotos,
+    iterations: iterationHistory.length + 1,
+    model: MODEL,
+    usage: claudeData.usage || null,
+    generated_at: new Date().toISOString(),
+  });
+}
+
+// User-message text wrapping each refine feedback. Tells Claude what shape
+// to return (overrides the plan-only output of system-prompt-plan.md) and
+// frames the feedback as a focused revision request — keep everything the
+// client did NOT ask to change.
+function buildRefineUserText(feedback) {
+  return `REVISION REQUEST
+
+The client wants to revise the plan above. Their feedback for THIS revision:
+
+"${feedback}"
+
+Apply ONLY the requested changes. Keep everything else the client did NOT ask to change. The revised plan must satisfy ALL the same RULES as the original (USER INPUTS day count, exercise library names, weight_mode handling, set count rules, target session duration, no exercise duplicates per day, etc.).
+
+OUTPUT for revision mode (overrides the plain plan-only output of the original instructions):
+
+Return ONLY valid JSON in this exact shape:
+
+{
+  "plan": { /* full revised plan JSON, same shape as the original */ },
+  "change_notes": "2-4 sentence explanation of what you changed and why, conversational, referencing specific exercises by name. Example: 'Moved pull-ups from Day 1 to Day 3 to keep grip fresh for the heavy pulling. Reduced Day 2 quad volume by removing the second leg extension — total quad sets dropped from 16 to 12.'"
+}
+
+No markdown fences, no preamble, no trailing text.
+`;
 }
 
 function buildSwapUserMessage({ exercise, reason, dayName, otherToday, movementHistory, coachHistory, coachingProfile }) {
