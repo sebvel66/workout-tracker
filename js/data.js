@@ -1685,7 +1685,35 @@ function addExtraSet(ei) {
   if (viewModeFor(currentDay) !== 'editable') return;
   if (!todayState || !todayState.exercises['ex_' + ei]) return;
   promptResumeIfEnded(function() {
-    todayState.exercises['ex_' + ei].sets.push({ isExtra: true });
+    var exState = todayState.exercises['ex_' + ei];
+    var newSet = { isExtra: true };
+    // Carry forward values from the most-recent populated set in this
+    // exercise so the user doesn't have to retype the same weight/reps
+    // (or duration/distance for cardio) on stacking sets. Most-recent-
+    // first scan; first set with real values wins. The new set still
+    // has done=false so the user has to tap done to log it -- carrying
+    // values is auto-fill, not auto-completion.
+    var sets = exState.sets || [];
+    for (var i = sets.length - 1; i >= 0; i--) {
+      var prev = sets[i];
+      if (!prev) continue;
+      // Cardio path: copy duration_seconds + distance.
+      if (prev.duration_seconds != null) {
+        newSet.duration_seconds = prev.duration_seconds;
+        if (prev.distance != null) newSet.distance = prev.distance;
+        break;
+      }
+      // Resistance path: copy weight + reps when either is populated.
+      // weight or reps alone is enough -- no requirement that both be
+      // present (the user might have omitted weight on a bodyweight
+      // exercise, for example).
+      if (prev.weight != null || prev.reps != null) {
+        if (prev.weight != null) newSet.weight = prev.weight;
+        if (prev.reps != null) newSet.reps = prev.reps;
+        break;
+      }
+    }
+    exState.sets.push(newSet);
     buildDay(currentDay);
   });
 }
