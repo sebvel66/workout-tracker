@@ -6,7 +6,7 @@ Start here if you're picking up the project fresh.
 
 ## At a glance
 
-Mobile-first PWA for workout tracking, with an AI plan generator powered by Claude Sonnet 4.6. Frontend is a single HTML page + 5 plain JS modules, no build step. Backend is Supabase (persistence + auth + storage) plus one Vercel serverless function (`/api/generate-plan`) for AI generation. CSS lives inline in `index.html`. Verification is manual browser testing — no automated test suite.
+Mobile-first PWA for workout tracking, with an AI coach (Claude Sonnet 4.6 + Haiku 4.5) running across plan generation, training analysis, exercise swap, iterative plan refinement, and a real-time coach chat. Frontend is a single HTML page + 5 plain JS modules, no build step. Backend is Supabase (persistence + auth + storage) plus two Vercel serverless functions (`/api/generate-plan` for plan/analyze/swap/refine, `/api/coach-chat` for the floating chat). CSS lives inline in `index.html`. Verification is manual browser testing — no automated test suite.
 
 ## Repo layout
 
@@ -18,11 +18,14 @@ Mobile-first PWA for workout tracking, with an AI plan generator powered by Clau
 │   ├── data.js                      # Supabase client, state, queries, mutations
 │   ├── ui.js                        # Renderers, modals, event listeners, timers
 │   ├── auth.js                      # OTP sign-in, applySession
-│   └── app.js                       # APP_VERSION, paintVersion, hydrate, auth wiring
+│   └── app.js                       # APP_VERSION, paintFromCache, hydrate, auth wiring
 ├── api/
-│   └── generate-plan.js             # Vercel Node serverless function: AI plan generator
-├── system-prompt.md                 # Claude coaching prompt, bundled into the function
-├── vercel.json                      # Vercel config (includeFiles for system-prompt.md)
+│   ├── generate-plan.js             # 4-mode Edge Function: plan / analyze / swap / refine
+│   └── coach-chat.js                # Real-time chat (Haiku, ~1-2s warm)
+├── system-prompt-core.md            # Shared CLIENT PROFILE + COACHING PHILOSOPHY + EXERCISE LIBRARY
+├── system-prompt-plan.md            # Plan-mode suffix (USER INPUTS, output schema, cardio, drop sets)
+├── system-prompt-analyze.md         # Analyze-mode suffix (4-section assessment, profile_updates)
+├── vercel.json                      # Vercel config (includeFiles for system-prompt-*.md, crons)
 ├── package.json                     # { "type": "module" } — declares ESM for api/
 ├── supabase/
 │   └── migrations/                  # Forward-only Supabase SQL, timestamp-prefixed
@@ -32,7 +35,7 @@ Mobile-first PWA for workout tracking, with an AI plan generator powered by Clau
 │       └── plans/                   # Implementation plans, dated per-feature
 ├── HANDOFF.md                       # Current-state pickup doc; version + open items
 ├── DECISIONS.md                     # Running log of architecture/behavior decisions
-├── ROADMAP.md                       # Forward-looking scope
+├── ROADMAP.md                       # Forward-looking scope + Shipped log
 ├── ARCHITECTURE.md                  # This file
 ├── MAJOR-BUGS.md                    # Non-trivial bugs worth preserving for later
 └── BUG-TEST-13.md                   # One outstanding latent bug (emptyState crash)
@@ -46,32 +49,35 @@ Defined in `supabase/migrations/`. Tables:
 
 | Table | Purpose |
 |---|---|
-| `plans` | Imported/generated plan JSON (`data jsonb`). One `is_active = true` per user via partial unique index. Plan JSON stamps `start_date` (YYYY-MM-DD, client-side on save) for calendar-anchored phase-awareness reasoning. |
-| `exercises` | Seed library (`user_id IS NULL`) + user-custom rows. Case-insensitive name uniqueness per user for customs. |
-| `workouts` | One per session. `plan_id` null = ad-hoc. Nullable `location_id` FK. `performed_on date` + partial unique index on `(user_id, plan_id, day_index, performed_on)` for dedup. `paused_ms bigint` for pause/resume. `notes text` for session-level notes. |
-| `sets` | One per set. Per-set RPE, prescribed vs actual columns, `started_at` / `completed_at`, `CHECK (done = false or completed_at is not null)`. |
+| `plans` | Imported / generated plan JSON (`data jsonb`). One `is_active = true` per user via partial unique index. `is_template bool` + `template_name text` flag template rows (v2.1.0). Plan JSON stamps `start_date` (YYYY-MM-DD, client-side on save) for calendar-anchored phase-awareness reasoning. |
+| `exercises` | Seed library (`user_id IS NULL`) + user-custom rows. Case-insensitive name uniqueness per user for customs. `muscle_group='cardio'` flag drives the cardio set-row UI branch (v2.5.7). |
+| `workouts` | One per session. `plan_id` null = ad-hoc. Nullable `location_id` FK. `title` for ad-hoc names. `performed_on date` + partial unique index on `(user_id, plan_id, day_index, performed_on)` for dedup. `paused_ms bigint` for pause/resume. `notes text` for session-level notes. |
+| `sets` | One per set. Per-set RPE, prescribed vs actual columns, `started_at` / `completed_at`, `CHECK (done = false or completed_at is not null)`. v2.2.1 added `prescribed_exercise_id` (substitution: what the plan asked for vs `exercise_id` = what actually happened). v2.5.7 added `duration_seconds` + `distance` for cardio. v2.5.11 added `set_type text default 'standard'` (CHECK in 'standard','drop','superset','giant') + `parent_set_id uuid references sets(id) on delete cascade` for drop-set chains; partial index on `parent_set_id where parent_set_id is not null`. |
 | `locations` | User-defined gym names. Case-insensitive unique per user. |
 | `physique_photos` | Goal + progress photos. `storage_path` points into the `physique-photos` private bucket; rendering uses short-lived signed URLs. |
+| `coach_messages` | v2.4.19. Durable log of coaching interactions: chat sends, swap accept rows, plan-gen accept rows, analyze responses. Columns: `role` ('user' or 'assistant'), `content`, `context_type` ('chat' / 'swap' / 'plan_generation'), `exercise_name` (for swap rows), `created_at`. Read by all four Claude call paths — last 2 weeks + current week injected as RECENT COACHING CONVERSATIONS in the user message. |
+| `coaching_profile` | v2.5.0. One row per user, jsonb `data` column holds the full profile (sex / height / weight / experience / environment / split preference / goal_type+detail / phase+notes+start_date / injuries-as-list / special_instructions). Read by all four Claude call paths and injected as a CLIENT PROFILE block at the top of the user message. Replaces the hardcoded CLIENT PROFILE / Injury / Phase blocks that used to live in `system-prompt-core.md`. |
 
 **Supabase Storage:**
 - `physique-photos` (private bucket) — photo files stored under `{user_id}/{uuid}.{ext}`. Storage RLS policies scope read/insert/delete by path prefix via `storage.foldername(name)[1] = auth.uid()::text`.
 
-RLS on every table: `auth.uid() = user_id` (exercises has a split policy for seed reads). FK deletes are either `CASCADE` (sets on workout delete) or `SET NULL` (`workouts.location_id` on gym delete).
+RLS on every table: `auth.uid() = user_id` (exercises has a split policy for seed reads; coach_messages and coaching_profile are owner-only select+insert+update). FK deletes are either `CASCADE` (sets on workout delete; sets on parent-set delete; coach_messages / coaching_profile on user delete) or `SET NULL` (`workouts.location_id` on gym delete).
 
 See `DECISIONS.md` for why each schema choice was made (partial unique index semantics, `paused_ms` offset, `completed_at` immutability, case-insensitive name uniqueness, path-prefix storage RLS, etc.).
 
 ## JS module layout
 
-Total ~4,500 lines split across 5 frontend files + 1 server file. Rough sizes:
+Total ~11,800 lines split across 5 frontend files + 2 server files. Rough sizes (as of v2.5.12):
 
 | File | ~Lines | What lives here |
 |---|---|---|
-| `js/resolver.js` | 68 | `normName`, `EXERCISE_ALIASES`, `resolveLibraryRow`. Pure string/lookup utility. |
-| `js/data.js` | 1700 | Supabase client (`sb`), cross-cutting state, queries, persistence, session lifecycle, plan activation/import, `fetchWeekSummary`, photo CRUD, week/date helpers. |
-| `js/ui.js` | 2400 | Renderers, modals (History, Photos, Plans, Generate), event listeners, toast, session/rest timers, export. |
-| `js/auth.js` | 165 | OTP form state + handlers, `applySession` (sign-in → cache reset → hydrate). |
-| `js/app.js` | 135 | `APP_VERSION`, `paintVersion` IIFE, `hydrate` (with auto-load historical), `sb.auth.getSession` + `onAuthStateChange`. |
-| `api/generate-plan.js` | 500 | Vercel Node serverless function: JWT verify → Supabase queries → build prompt → Claude API → validate + expand → return. |
+| `js/resolver.js` | 70 | `normName`, `EXERCISE_ALIASES`, `resolveLibraryRow`. Pure string/lookup utility. |
+| `js/data.js` | 3200 | Supabase client (`sb`), cross-cutting state, queries, persistence, session lifecycle, plan activation/import, `fetchWeekSummary`, photo CRUD, coach message persistence, coaching profile load/save, drop-set state model, cardio helpers (`isCardioExerciseName`, `formatDurationMSS`, `parseDurationMSS`), week/date helpers, hydration cache (`paintFromCache` snapshot helpers). |
+| `js/ui.js` | 6100 | Renderers, modals (History, Photos, Plans, Templates, Generate, Coaching Profile, Coach Chat panel, Resume-Session prompt), event listeners, toast, session timer, rest-timer pill, export, refine flow, profile-update diff cards, drop-set UI. |
+| `js/auth.js` | 168 | OTP form state + handlers, `applySession` (sign-in → cache reset → hydrate). |
+| `js/app.js` | 325 | `APP_VERSION`, `paintVersion` IIFE, `paintFromCache` IIFE (warm-boot from localStorage), `hydrate` (parallelized phase 1 + deferred phase 2), `sb.auth.getSession` + `onAuthStateChange`. |
+| `api/generate-plan.js` | 1560 | Vercel Node serverless function with 4 dispatched modes: `plan` (default), `analyze`, `swap`, `refine`. JWT verify → parallel Supabase queries (active plan, history, library, photos, coach history, coaching profile) → mode-specific prompt build → Claude API with cache_control breakpoints → validate + expand → return. |
+| `api/coach-chat.js` | 360 | Real-time coach chat (Haiku 4.5, 500 max tokens, ~1-2s warm). JWT verify → side-channel queries (coach_messages, coaching_profile, both via service role) → splice CLIENT PROFILE + RECENT COACHING CONVERSATIONS into messages[0] → forward to Anthropic. Inline COACH_SYSTEM_PROMPT (cached) covers response style, progression rules, COACHING CONTINUITY, cardio Q&A guidance. |
 
 ### Load order and why
 
@@ -118,19 +124,30 @@ Every top-level `var` is declared in exactly one file. Cross-file reads are via 
 | `exerciseLibrary*` | data.js | Array + by-name + by-id maps of exercise rows. |
 | `recentExercises` | data.js | Up to 10 most-recently-logged, for picker top. |
 | `locations`, `locationById`, `recentLocationId` | data.js | Gym profiles + hydrate-computed default. |
-| `restInterval`, `restTargetMs`, `restCompleted`, `restAudioCtx` | ui.js | Wall-clock rest timer state. |
+| `daysWithHistory` | data.js | `{ [dayIndex]: true }` map populated at hydrate so the day-tab dropdown's completion `●` dot renders correctly on first paint without waiting for lazy `historicalCache` populate (v2.2.6 hotfix). |
+| `coachingProfile` | data.js | In-memory cache of the user's coaching_profile.data jsonb (v2.5.0). Null until first load; modal reads + writes it. |
+| `restInterval`, `restTargetMs`, `restCompleted`, `restAudioCtx` | ui.js | Wall-clock rest timer state. Renders as a non-blocking floating pill at bottom-center (v2.5.9). |
 | `sessionTimerInterval` | ui.js | Session-timer re-render interval. |
 | `pickerState` | ui.js | Search + filter state for the exercise picker. |
 | `historyView`, `historyWeekStart`, `historyWeekCache`, `historyWeekLoading`, `historyDetails` | ui.js | Weekly History browser state. `historyView` is `'week' \| 'detail'`. |
 | `photosView`, `photosPendingFile`, `photosPendingPreviewUrl`, `photosViewerId` | ui.js | Physique photos modal state. `photosView` is `'gallery' \| 'upload' \| 'viewer'`. |
 | `photosGoal`, `photosProgress`, `photosLoaded`, `photosSignedUrls` | data.js | Photo metadata + signed-URL cache (keyed by storage_path, 1h TTL). |
 | `earliestWorkoutDate` | data.js | YYYY-MM-DD cache for the user's first-ever workout; used by History to gate Prev-week navigation. |
-| `generateView`, `generatedPlan`, `generatedMeta`, `generatedInputs`, `generateStartedAt`, `generateInFlight`, `generateAbortController` | ui.js | AI plan generator modal state. `generateView` is `'inputs' \| 'loading' \| 'review'`. |
+| `generateMode`, `generateView`, `generatedPlan`, `generatedAnalysis`, `generatedMeta`, `generatedInputs`, `generateStartedAt`, `generateInFlight`, `generateAbortController`, `generateAttempt` | ui.js | Generate / analyze / refine modal state. `generateMode` is `'plan' \| 'analyze'`; `generateView` is `'inputs' \| 'loading' \| 'review'`. |
+| `iterationHistory`, `generatedChangeNotes`, `refineInFlight` | ui.js | Iterative plan refinement state (v2.5.3). Each refine call appends `{plan, feedback}` to `iterationHistory`; the server replays the multi-turn conversation each call. `generatedChangeNotes` is the latest "what changed" string for the WHAT CHANGED banner. |
+| `chatHistory`, `chatLoadedHistory`, `chatLoadedAt`, `chatLoadingHistory`, `chatPending`, `chatHasUnread`, `chatAttempt` | ui.js | Coach Chat panel state. `chatHistory` is the in-memory live conversation (capped at 20 messages, sent to `/api/coach-chat`); `chatLoadedHistory` is the durable past-messages strip loaded on panel open with 5-min cache. |
+| `coachContext` | data.js | Semi-static per-session coach chat context (plan + this-week status + 2-week per-exercise history). Built lazily on first chat send via `buildCoachContext`; cleared on session start/complete and sign-out. |
+| `swapState` | ui.js | AI exercise swap modal state. `view` is `'input' \| 'loading' \| 'review'`. |
+| `templatesList` | ui.js | Templates management modal state. |
+| `saveTemplateContext`, `saveTemplateActiveScope` | ui.js | Save-as-template modal state (scope picker). |
+| `atfCheckedIdx` | ui.js | Add-from-template checkbox state (which template exercises are selected). |
 | `plansList`, `plansLoading` | ui.js | Plans management modal state. |
 | `toastCounter` | ui.js | Monotonic id generator for toasts. |
 | `EQUIPMENT_OPTIONS`, `MUSCLE_OPTIONS` | ui.js | Picker filter chip constants. |
 | `EXERCISE_ALIASES` | resolver.js | Plan-name → canonical seed-name mapping. |
 | `authForm`, `authEmail`, ..., `authStep`, `authPendingEmail` | auth.js | Sign-in form DOM refs + form-stage state. |
+| `__hydratedFromCache` (file-local) | app.js | Flag set by the `paintFromCache` IIFE so hydrate's reconcile knows it's in warm-boot mode. |
+| `HYDRATION_CACHE_KEY`, `HYDRATION_SCHEMA_VERSION`, `HYDRATION_MAX_AGE_MS` | data.js | localStorage key + schema-version gate + 7d age gate for the hydration cache (v2.4.0). |
 
 ## Cross-module contract (function-level)
 
@@ -160,53 +177,116 @@ Plus `data.js` uses `normName` in several mutation paths. Nothing calls into `re
 
 Net shape: the hottest boundary is `ui.js ↔ data.js`. `auth.js` and `app.js` are thin glue layers.
 
-## Server-side: AI plan generator
+## Server-side: AI Edge Functions
 
-One serverless function at `api/generate-plan.js`. Deployed on Vercel, runs on Node runtime (not Edge), called from the frontend via `POST /api/generate-plan` with an `Authorization: Bearer <supabase-jwt>` header.
+Two serverless functions, both Node runtime:
 
-### Request lifecycle
+- **`api/generate-plan.js`** — 4 modes dispatched by request body's `mode` field: default plan generation, `analyze`, `swap`, `refine`. Sonnet 4.6, 16k max tokens, 55s timeout.
+- **`api/coach-chat.js`** — real-time chat with Haiku 4.5, 500 max tokens, ~1-2s warm. Frontend pre-assembles the messages array; server splices in side-channel context (CLIENT PROFILE + RECENT COACHING CONVERSATIONS) before forwarding to Anthropic.
+
+Both authenticated via `Authorization: Bearer <supabase-jwt>` → `/auth/v1/user` → user_id extraction. All downstream Supabase reads use `SUPABASE_SERVICE_ROLE_KEY` (bypasses RLS but each query still filters by user_id defensively).
+
+### Request lifecycle (plan / analyze / swap / refine)
 
 ```
-Browser (hamburger → Generate → inputs form → Submit)
-  │  POST /api/generate-plan  { start_date, target_duration, notes }
+Browser (Generate flow / Analyze button / Swap ⇄ icon / Refine textarea)
+  │  POST /api/generate-plan
+  │   { mode?: 'analyze' | 'swap' | 'refine', ...mode-specific inputs }
   │  Authorization: Bearer <jwt>
   ▼
-Edge Function
-  ├─ verifyUser(jwt) → /auth/v1/user → extract user_id
+Edge Function (api/generate-plan.js)
+  ├─ verifyUser(jwt) → user_id
+  ├─ Mode dispatch:
+  │     swap     → handleSwap
+  │     analyze  → handleAnalyze
+  │     refine   → handleRefine
+  │     default  → main plan-gen path
   ├─ Promise.all([
-  │     fetchActivePlan(userId),
-  │     fetchRecentWorkouts(userId, 4),   // 4 weeks history
-  │     fetchExerciseLibrary(userId),
-  │     fetchPhysiquePhotos(userId),      // latest goal + 1 progress
+  │     fetchActivePlan(user_id),
+  │     fetchRecentWorkouts(user_id, history_weeks),
+  │     fetchExerciseLibrary(user_id),
+  │     fetchPhysiquePhotos(user_id, ...) | { goal: null, progress: [] },
+  │     fetchRecentCoachHistory(user_id, 2),    // 2 weeks + current week
+  │     fetchCoachingProfile(user_id),          // jsonb data column
   │   ])
-  ├─ buildUserMessage(...)                 // dynText + photos as image blocks
+  ├─ buildUserMessage(...) — assembles dynText:
+  │     1. CLIENT PROFILE (formatCoachingProfile)
+  │     2. CURRENT PLAN snapshot
+  │     3. RECENT PERFORMANCE (verbatim + summarized)
+  │     4. RECENT COACHING CONVERSATIONS (formatCoachHistory)
+  │     5. USER INPUTS (mode-specific)
+  │     6. mode-specific instruction footer
   ├─ fetch('https://api.anthropic.com/v1/messages', {
   │     model: 'claude-sonnet-4-6',
-  │     max_tokens: 16000,
-  │     temperature: 0.3,
-  │     system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral', ttl: '1h' } }],
-  │     messages: [{ role: 'user', content: [exercise_library + cache_control, dynText, ...photos] }]
-  │   })   // 55s AbortController timeout
-  ├─ parse + validatePlan()
-  ├─ expandSetRepeats(plan)                // unroll repeat: N shorthand
+  │     max_tokens: ...mode-specific...,
+  │     system: [{ text: SYSTEM_PROMPT_PLAN | _ANALYZE | inline SWAP_SYSTEM_PROMPT,
+  │                cache_control: { ttl: '1h' } }],
+  │     messages: [
+  │       { role: 'user', content: [
+  │         { text: formatExerciseLibrary(...), cache_control: { ttl: '1h' } },
+  │         { text: dynText },
+  │         ...photo blocks (plan + analyze only)
+  │       ]},
+  │       // Refine mode only: alternating assistant (prior plan JSON) + user
+  │       // (prior feedback) turns from iteration_history; latest assistant
+  │       // turn gets cache_control so iter N+1 reuses iter N's prefix.
+  │     ]
+  │   })
+  ├─ parse + mode-specific validate (validatePlan / validateAnalysis /
+  │     validateSwapReplacement)
+  ├─ expandSetRepeats(plan)   // unroll `repeat: N` shorthand (plan / refine)
   ▼
-Response  { plan, coaching_notes, weeks_analyzed, model, usage, generated_at }
+Response  (mode-specific shape)
+  plan:    { plan, weeks_analyzed, training_days, include_photos, model, usage, generated_at }
+  analyze: { analysis: { trends, progressing, concerns, next_week, profile_updates: [] }, ... }
+  swap:    { replacement, replaced, reason, model, usage, generated_at }
+  refine:  { plan, change_notes, iterations, weeks_analyzed, training_days, ... }
 ```
 
-### Key design choices (see DECISIONS.md 2026-04-20 for rationale)
+### Coach-chat lifecycle (separate endpoint)
 
-- **Node runtime, not Edge runtime.** Needed for `fs.readFileSync` of the system prompt, longer timeouts, and standard SDK compatibility.
-- **Raw `fetch` for both Supabase PostgREST and Anthropic.** No npm dependencies.
-- **Service-role key for DB queries.** Bypasses RLS; `user_id` filter applied in code as defense in depth.
-- **Two prompt cache breakpoints with 1h TTL:** one on system prompt, one on exercise library. ~8500 tokens cached, ~90% input-cost savings on cache hits.
-- **`repeat: N` shorthand on set objects, server-expanded.** Claude emits compact; `expandSetRepeats(plan)` unrolls before returning to the frontend. Cuts output ~60%.
-- **55s `AbortController` timeout.** Under Vercel Hobby's 60s function cap, leaves time for clean 504 error envelope.
+```
+Browser (floating coach chat fab → send)
+  │  POST /api/coach-chat
+  │   { messages: [ {role:'user', content: COACHING CONTEXT block}, ack, ...history, new user msg ] }
+  ▼
+Edge Function (api/coach-chat.js)
+  ├─ verifyUser(jwt)
+  ├─ Promise.all([fetchRecentCoachHistory(2), fetchCoachingProfile()])
+  ├─ Splice into messages[0].content:
+  │     CLIENT PROFILE block (top, before existing COACHING CONTEXT)
+  │     RECENT COACHING CONVERSATIONS (before "Please acknowledge..." trailer)
+  ├─ fetch Anthropic — Haiku 4.5, 500 tokens, 25s timeout
+  │     system: [{ text: COACH_SYSTEM_PROMPT, cache_control: 1h }]
+  ▼
+Response  { reply, model, usage }
+```
 
-### System prompt
+### Key design choices (see DECISIONS.md for rationale)
 
-Lives at repo root (`system-prompt.md`), bundled into the function via `vercel.json` `includeFiles`, loaded once via `fs.readFileSync` at module cold start. Edit = commit = redeploy (Vercel auto-deploys on push). Git diffs are the primary iteration surface.
+- **Node runtime, not Edge runtime.** Needed for `fs.readFileSync` of the prompt files, longer timeouts, and standard SDK compatibility.
+- **Raw `fetch` for both Supabase PostgREST and Anthropic.** No npm dependencies; deployment is just the .js files.
+- **Service-role key for DB queries.** Bypasses RLS; each query still filters by `user_id` in code as defense in depth.
+- **Cache breakpoints with 1h TTL.** Plan + analyze: system prompt (cached) + exercise library (cached as first user-message content block) = ~8500 cached tokens, ~90% input-cost savings on cache hits. Swap + coach-chat: cached inline system prompt only. Refine: ALSO adds cache_control on the latest assistant turn so iter N+1 reuses iter N's emission as cached prefix (~$0.01-0.02 per iteration warm).
+- **Per-mode cache isolation.** Anthropic prefix-based caching means plan / analyze / swap / coach-chat each have their own cache entries — running analyze does NOT warm plan-gen, etc. See DECISIONS.md.
+- **Side-channel queries (coach_messages, coaching_profile).** All four call paths fetch these on every call. Coaching profile replaces the hardcoded CLIENT PROFILE block; coach history adds cross-session continuity. Both queries are non-fatal — a failed fetch returns null/empty and the call proceeds with fallback content (e.g., "client has not filled in their coaching profile yet").
+- **`repeat: N` shorthand on set objects, server-expanded.** Claude emits compact; `expandSetRepeats(plan)` unrolls before returning to the frontend. Works for cardio + drop sets too (the spread-copy preserves additional fields).
+- **Drop set flat format on plan JSON.** Drops live as additional set entries with `set_type: 'drop'`, contiguous after their parent. Keeps `plan.sets[]` and the in-memory `exState.sets[]` aligned at the same index — avoided the flat-vs-nested mismatch the original spec proposed.
+- **55s `AbortController` timeout.** Under Vercel Hobby's 60s function cap; leaves time for a clean 504 envelope. Coach-chat uses 25s (Haiku is fast).
 
-**`vercel dev` gotcha:** does NOT hot-reload on edits. Kill + restart required after `system-prompt.md` changes.
+### System prompt files
+
+Three files at the repo root, bundled into the plan-gen function via `vercel.json` `includeFiles: 'system-prompt-*.md'`:
+
+- **`system-prompt-core.md`** — shared across plan + analyze. Universal coaching philosophy, exercise library reference, COACHING CONTINUITY directive, points at `CLIENT PROFILE` in the user message.
+- **`system-prompt-plan.md`** — plan-mode suffix. USER INPUTS rules, plan-output schema, CRITICAL FORMAT RULES, CARDIO PRESCRIPTION, DROP SETS, HARD CONSTRAINTS.
+- **`system-prompt-analyze.md`** — analyze-mode suffix. ROLE / USER INPUTS / four-section assessment / PROFILE UPDATES (v2.5.2) / output JSON schema.
+
+Loaded once via `fs.readFileSync` at module cold start. `SYSTEM_PROMPT_PLAN = core + '\n\n' + plan_suffix`; `SYSTEM_PROMPT_ANALYZE = core + '\n\n' + analyze_suffix`. Each is sent with its own `cache_control` breakpoint.
+
+Swap and coach-chat use SEPARATE inline system prompts (no shared core) — they're focused workflows where the full coaching philosophy isn't needed and inline strings keep the deploy surface lean.
+
+**`vercel dev` gotcha:** does NOT hot-reload on edits to any prompt file. Kill + restart required after edits. Pushed deploys correctly pick up the changes.
 
 ### Environment variables
 
@@ -223,13 +303,18 @@ Local dev: `vercel env pull .env.local` to pull from Vercel, OR manually edit `.
 
 ### Performance characteristics (observed in production)
 
-| Scenario | Elapsed | Output tokens | Cost per call |
-|---|---|---|---|
-| Cache miss (first call of the hour) | 35-45s | 1500-2500 | ~$0.04 |
-| Cache hit (subsequent calls within 1h) | 22-30s | 1500-2500 | ~$0.01 |
-| Failed (Anthropic slow-spell) | 55s (timeout) | — | partial cost |
+| Endpoint / mode | Cache hit | Cache miss | Output tokens | Cost per call (warm) |
+|---|---|---|---|---|
+| `generate-plan` (plan) | 22-30s | 35-45s | 1500-2500 | ~$0.01 |
+| `generate-plan` (analyze) | 15-25s | 30-40s | 500-1000 | ~$0.01 |
+| `generate-plan` (swap) | 8-15s | 18-25s | ~300 | ~$0.005 |
+| `generate-plan` (refine, iter ≥ 2) | 18-25s | n/a | 1500-2500 | ~$0.01-0.02 |
+| `coach-chat` | 1-2s | 3-5s | 100-300 | ~$0.001 |
+| Hydrate (warm-cache cold-paint to fresh paint) | ~600-1000ms | — | — | — |
 
-Server-side timing logs at phase boundaries (`[generate-plan] data fetch: X ms`, `[generate-plan] prompt build: X ms`, `[generate-plan] claude call: X ms · usage: {...}`) show up in `vercel dev` terminal and Vercel Production logs.
+Per-mode cache isolation: each mode (plan / analyze / swap / refine / coach-chat) has its own Anthropic cache entry. Running analyze does NOT warm plan-gen and vice versa. The daily Vercel cron (`0 9 * * *`) keeps the Fluid Compute instance hot for ~15-45 min after the ping but does NOT touch the Anthropic prompt cache — see ROADMAP "GitHub Actions warmup workflow" for the deferred two-layer plan to fix that.
+
+Server-side timing logs at phase boundaries (`[generate-plan] data fetch: X ms`, `[generate-plan] prompt build: X ms`, `[generate-plan] claude call: X ms · usage: {...}`) show up in `vercel dev` terminal and Vercel Production logs. The mode tag (`[generate-plan:swap]`, `[generate-plan:analyze]`, `[generate-plan:refine]`, `[coach-chat]`) disambiguates the call path.
 
 ## UI patterns & conventions
 
@@ -248,6 +333,15 @@ Patterns established through earlier features. Reuse these when adding new UI ra
 - **AbortController for long-running fetches.** Both `api/generate-plan.js` (55s server-side) and `ui.js` (client-side, wired to Cancel button + modal close) use `AbortController` to cleanly terminate stuck or user-canceled LLM calls. Required pattern for any future LLM/long-call feature.
 - **`planWeekLabel(plan)` is the single source of truth for plan week labels.** Derives Sun-Sat range from `plan.start_date` (with `plans.created_at` fallback via `ensureStartDate`). Always prefer this over `plan.week` at render time.
 - **Plan-blob persistence rule:** `savePlanAsActive` creates a new row + flips `is_active`; `activateExistingPlan` flips `is_active` without a new row (preserves original `start_date`). Never conflate the two paths.
+- **Hydration cache (v2.4.0).** localStorage-backed snapshot painted synchronously on cold-paint via `paintFromCache()` IIFE in `app.js` BEFORE any network call. Saves running session timer + logged sets visible at 0ms on warm boot. Schema-versioned (`HYDRATION_SCHEMA_VERSION = 1`); 7d age gate; today-state restore additionally gated on `savedAt >= today's local midnight` so yesterday's stale cache doesn't shadow this-week historicals (v2.4.17 fix). Cleared on sign-out + on user-id mismatch + on plan-404 (cache-cached plan deleted on another device).
+- **Side-channel queries pattern (Edge Functions).** Server-side, every Claude call path adds two non-fatal queries beyond the core data fetch: `fetchCoachingProfile` (CLIENT PROFILE block) + `fetchRecentCoachHistory` (RECENT COACHING CONVERSATIONS block). Both run in parallel inside the existing `Promise.all`; failures return null/empty and the main call proceeds with fallback content. Future "context augmentation" features should follow this same pattern (parallel fetch + non-fatal + fallback content).
+- **Cardio detection via library lookup.** `isCardioExerciseName(name)` checks `exerciseLibraryByName[normName(name)].muscle_group === 'cardio'`. Single source of truth — no redundant `type` field on plan JSON. `renderSetRow`'s `isCardio` flag is computed at the caller (4 sites) and passed through. When cardio, the row renders DURATION + DIST inputs instead of weight + reps; `fmtP` detects `prescribed.duration_seconds != null` to format prescriptions as `30:00, 0.5mi`.
+- **Drop set state model (v2.5.11).** Each set object in `todayState.exercises[ei].sets[]` has optional `setType: 'drop'` + `parentSetIdx` (array index of the parent in the same exercise). + Drop Set always attaches to the LAST set; chained drops become siblings of each other (same parent). Cascade-on-parent-done (in `_toggleSetCommit`) walks the array and marks all entries with `setType==='drop' AND parentSetIdx===si` done. Auto-fill from prescribed runs per child against its own `plan.sets[ci]` entry. Prescribed drops in plan JSON use a flat `set_type: 'drop'` field on individual entries (NOT a nested `drop_sets` array) so plan and in-memory indices align.
+- **Iterative plan refinement (v2.5.3).** Refine mode (`/api/generate-plan { mode: 'refine' }`) takes `current_plan` + `iteration_history: [{plan, feedback}]` + `new_feedback` and reconstructs the multi-turn conversation server-side. Each subsequent assistant turn carries `cache_control` so iter N+1 reuses iter N's prefix. Frontend tracks `iterationHistory` + `generatedChangeNotes`. Pattern reusable for any future iterative-prompt feature (e.g., "regenerate with adjustments" on the analyze flow).
+- **Resume-session prompt (v2.4.18).** Adding work to a session marked `endedAt` triggers a one-shot modal asking whether to resume the timer first. Three options: Resume timer (calls `resumeSession` then runs the action), Just log it (sets a per-session suppress flag), Cancel. Suppress flag clears on explicit Resume. The flow is gated via `promptResumeIfEnded(actionFn)` — wrap any new "user is logging more work" entry point in this helper.
+- **Coach Chat panel + persistent history.** Floating chat fab opens a bottom-sheet panel. On open, loads last 2 weeks of `coach_messages` (5-min in-memory cache). Past-session messages render at 0.65 opacity with date headers and context badges (`[swap: Cable Row]`, `[plan]`); current-session messages render at full opacity, no header. The frontend dedupes the live messages array against the loaded history via `(role, content)` match so the same exchange doesn't render twice. Coach prompts are persistent + injected into ALL Claude calls (not just chat) — see DECISIONS.md and the v2.4.x ROADMAP entry.
+- **Rest timer floating pill (v2.5.9).** Was a centered modal blocking the whole app while resting. Now a bottom-center horizontal pill (`[-15s] [1:30] [+15s] [Skip]`) at z-index 200; the app stays interactive during rest. Backdrop overlay element kept in DOM but forced `display: none` regardless of any `.show` class.
+- **Carry-forward set values (v2.5.10).** + Add Set inherits weight + reps (or duration + distance for cardio) from the most-recent populated set in the same exercise. New set still has `done = false`. Apply this carry-forward pattern when designing any new "stack another similar entry" affordance.
 
 ## Testing & deployment
 
@@ -261,7 +355,12 @@ Patterns established through earlier features. Reuse these when adding new UI ra
 
 - **Pre-refactor (v2.0.14 and earlier):** single `index.html` with ~3,100 lines of JS inline. File grew from ~2,000 lines at start of Session A to 4,421 lines by the time gym profiles + rest-timer fix landed.
 - **The JS split (2026-04-19, post-v2.0.14):** split inline JS into the 5 files described above. No logic changes — `sed` extractions with a single bug (one missing closing brace, caught by `node --check` before any other testing).
-- **Session B (2026-04-20, v2.0.19 – v2.0.25):** added weekly History browser, physique photos + storage, AI plan generator Edge Function + inputs UI + Plans management modal. ~1400 new lines in `ui.js`, ~600 in `data.js`, plus 500 lines of new server-side code in `api/generate-plan.js`. Added `system-prompt.md`, `vercel.json`, `package.json`, and one Supabase migration. See HANDOFF.md for the version-by-version breakdown.
+- **Session B (2026-04-20, v2.0.19 – v2.0.25):** added weekly History browser, physique photos + storage, AI plan generator Edge Function + inputs UI + Plans management modal. ~1400 new lines in `ui.js`, ~600 in `data.js`, plus 500 lines of new server-side code in `api/generate-plan.js`. Added `system-prompt.md`, `vercel.json`, `package.json`, and one Supabase migration.
+- **v2.1 – v2.3 milestones (2026-04-20 – 2026-04-21):** plan templates + AI exercise swap (v2.1.0), Coach Chat with `api/coach-chat.js` and Haiku 4.5 (v2.2.0), structured per-session substitutions schema (`prescribed_exercise_id`, v2.2.1), session lifecycle recovery (v2.2.2), drag-to-reorder via SortableJS (v2.2.5), three-way prompt split — `system-prompt-{core,plan,analyze}.md` — and analyze mode (v2.3.0). Schema grew with `is_template`+`template_name`, `prescribed_exercise_id`, the partial unique index on done sets, and the locations table.
+- **v2.4.x (2026-04-21 – 2026-04-22):** hydration cache for fast warm boot (v2.4.0; localStorage-backed snapshot, schema-versioned, 7d age gate); Resume-Session prompt for add-while-ended (v2.4.18); persistent Coach chat history end-to-end across 4 commits — `coach_messages` table + frontend logging + Edge Function side-channel injection + chat panel display (v2.4.19 – v2.4.22). v2.4 added a bunch of UX hardening fixes for ad-hoc dedup, template-mid-session add, rest-timer auto-start, etc.
+- **v2.5.x (2026-04-23 – 2026-05-01):** adaptive coaching profile end-to-end — `coaching_profile` jsonb table + Coaching Profile modal + Edge Function injection across all four call paths (v2.5.0 – v2.5.1); Option C analyze-time profile_updates (v2.5.2); iterative plan refinement with `mode: 'refine'` and multi-turn cache_control (v2.5.3 – v2.5.4); hydrate parallelization + deferred phase 2 (v2.5.5); start-screen Generate path (v2.5.6); Cardio Phase 1 (v2.5.7 – v2.5.8; new `duration_seconds` + `distance` columns + 5 new seed rows + cardio set-row UI branch + system-prompt CARDIO PRESCRIPTION section); rest timer floating pill (v2.5.9); + Add Set carry-forward (v2.5.10); Drop Sets Phase 1 (v2.5.11 – v2.5.12; new `set_type` + `parent_set_id` columns + UI + cascade-on-done + flat `set_type: 'drop'` plan format + AI prescription).
+
+End of v2.5.x: ~11,800 total lines across `js/*` + `api/*` (vs ~4,500 at end of Session B). Most growth is in `js/ui.js` (renderers + many new modal flows) and `api/generate-plan.js` (4 modes vs 1).
 
 ## Pointers to other docs
 
