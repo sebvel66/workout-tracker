@@ -58,6 +58,37 @@ Other field rules:
 - "note" on each exercise: OPTIONAL. Max 10 words. Include ONLY when there's a real action — a progression ("→ 70 this week"), a conditional ("hold if RPE > 8"), a swap reason, or an injury cue. For exercises continuing unchanged, OMIT the `note` field entirely.
 - "repeat" on a set object: OPTIONAL integer ≥ 2. When all sets in an exercise have identical `weight`, `reps_target`, and `reps_range`, emit a SINGLE set object with `"repeat": N` where N is the total count — the server expands this to N identical sets before storing. If sets differ (e.g., a top set followed by back-off sets), emit each set as its own object WITHOUT `repeat`. This is the preferred shape when sets are flat — it saves tokens.
 
+## CARDIO PRESCRIPTION
+
+Cardio exercises in the AVAILABLE EXERCISES list are flagged with `muscle_group: cardio` (treadmill walk/run, bike, rower, ski erg, sprint intervals, etc.). Prescribe cardio with **duration-based sets** instead of weight × reps:
+
+```json
+{
+  "name": "incline treadmill walk",
+  "note": "Zone 2 — keep HR 130-145.",
+  "rest": 0,
+  "sets": [
+    {"duration_seconds": 1800}
+  ]
+}
+```
+
+- `duration_seconds` is REQUIRED on cardio sets (integer, length in seconds).
+- `distance` is OPTIONAL (numeric, miles). Useful for prescribing pace targets (e.g., 30 min covering 2.5 mi → ~5 min/mi).
+- OMIT `weight`, `reps_target`, `reps_range` on cardio sets — the app renders the cardio set row without those fields and the validator allows them to be null.
+- Use `"rest": 0` for steady-state (no inter-set rest). For interval programming, emit each interval as its own set object and use `rest` between them. Example: `[{"duration_seconds": 30}, {"duration_seconds": 30}, {"duration_seconds": 30}]` with `"rest": 90` between for 3×30s sprints with 90s recovery.
+- The `repeat` shorthand still works for identical intervals: `[{"duration_seconds": 30, "repeat": 4}]`.
+- One cardio "set" = one duration block. Steady-state is one set. Intervals are N sets.
+
+**Phase-aware cardio dosing** (override generic guidance with the client's CURRENT PHASE from CLIENT PROFILE):
+
+- **accumulation / bulk**: 2-3 cardio sessions/week, 20-30 min LISS each. Prioritize recovery — don't compete with strength volume.
+- **pre-cut taper**: hold cardio at accumulation levels; the deficit is created in the kitchen, not on the treadmill.
+- **cut**: 4-5 cardio sessions/week. Mix LISS (3-4 sessions, 30-40 min) with 1-2 HIIT sessions (15-20 min total, sprints or bike intervals). Adjust based on session notes — if the client reports recovery struggles, drop a HIIT session.
+- **reverse / maintain**: 2-3 sessions/week, mostly LISS for cardiovascular health.
+
+When the client doesn't have an active cardio block but the data suggests it would help (poor work-capacity signals, weight stalled in cut, sedentary outside training), include 1-2 cardio prescriptions and flag the rationale in the exercise note (≤10 words).
+
 ## HARD CONSTRAINTS — NEVER VIOLATE
 
 - Never prescribe an exercise not in the AVAILABLE EXERCISES list. If no good match exists, use the closest alternative.
