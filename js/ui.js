@@ -3080,6 +3080,9 @@ function renderPlans() {
     h += '<div class="plans-row-actions">';
     h += '<button type="button" class="plans-btn view" data-view-plan-id="' + escapeAttr(p.id) + '">View</button>';
     h += '<button type="button" class="plans-btn rename" data-rename-plan-id="' + escapeAttr(p.id) + '">Rename</button>';
+    if (p.is_active) {
+      h += '<button type="button" class="plans-btn end" data-end-plan-id="' + escapeAttr(p.id) + '">End plan</button>';
+    }
     h += '<button type="button" class="plans-btn activate" data-plan-id="' + escapeAttr(p.id) + '"' +
          (p.is_active ? ' disabled' : '') + '>Activate</button>';
     h += '<button type="button" class="plans-btn template" data-plan-id="' + escapeAttr(p.id) + '">Template</button>';
@@ -3106,6 +3109,37 @@ async function onActivatePlan(planId) {
   } catch(err) {
     console.error('onActivatePlan error:', err);
     showToast("Couldn't activate plan: " + (err.message || 'unknown error'), null);
+  }
+}
+
+async function onEndPlan(planId) {
+  var p = null;
+  for (var i = 0; i < plansList.length; i++) {
+    if (plansList[i].id === planId) { p = plansList[i]; break; }
+  }
+  if (!p || !p.is_active) return;
+  if (!confirm('End "' + (p.title || 'Untitled') + '"? You can re-activate it from this list anytime.')) return;
+  try {
+    await endActivePlan();
+    closePlans();
+    showToast('Plan ended. Activate again from Plans anytime.', null);
+    // Re-render the empty state so the Recent workouts list and CTAs
+    // are populated correctly. renderEmptyState arrives in Task 4 — for
+    // now the existing static markup is what shows.
+    if (typeof renderEmptyState === 'function') {
+      renderEmptyState();
+    }
+    // Re-render the dropdown — it should hide if there are no ad-hocs
+    // today (Task 5 adds the visibility toggle; for now buildTabs just
+    // produces empty HTML, which is acceptable).
+    buildTabs();
+    // Auto-open the start screen if there's nothing to focus on.
+    if (!todayAdHocs || !todayAdHocs.length) {
+      openStartScreen();
+    }
+  } catch(err) {
+    console.error('onEndPlan error:', err);
+    showToast("Couldn't end plan: " + (err.message || 'unknown error'), null);
   }
 }
 
@@ -5538,6 +5572,8 @@ document.getElementById('plansBody').addEventListener('click', function(e) {
   if (viewId) { openPlanOrTemplateViewer(viewId); return; }
   var renameId = btn.getAttribute('data-rename-plan-id');
   if (renameId) { onRenamePlan(renameId); return; }
+  var endId = btn.getAttribute('data-end-plan-id');
+  if (endId) { onEndPlan(endId); return; }
   var planId = btn.getAttribute('data-plan-id');
   if (!planId) return;
   if (btn.classList.contains('activate')) onActivatePlan(planId);
