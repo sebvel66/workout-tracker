@@ -7,7 +7,7 @@
 
 // Bump this on every deploy. Displayed at the bottom of the app so stale-
 // cache issues can be diagnosed from the client ("which version am I on?").
-var APP_VERSION = 'v3.0.1';
+var APP_VERSION = 'v3.0.2';
 
 // Paint the version tag in the bottom-right as soon as APP_VERSION is declared.
 // DOM is already parsed here (all the script tags sit at the end of <body>).
@@ -189,6 +189,12 @@ async function hydrate() {
         focusTab(currentDay);
         buildTabs();
         buildDay(currentDay);
+        // Auto-open the start-screen overlay so the no-plan options
+        // (Generate / Use a template / Blank session) are surfaced
+        // while the user is in their ad-hoc. Close button is always
+        // visible in the no-plan branch (per v3 fix), so this is a
+        // gentle prompt, not a forced wall.
+        if (typeof openStartScreen === 'function') openStartScreen();
       } else {
         document.getElementById('emptyState').style.display = 'block';
         if (typeof renderEmptyState === 'function') renderEmptyState();

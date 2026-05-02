@@ -3237,10 +3237,37 @@ async function onEndPlan(planId) {
     await endActivePlan();
     closePlans();
     showToast('Plan ended. Activate again from Plans anytime.', null);
-    if (typeof renderEmptyState === 'function') {
-      renderEmptyState();
+
+    // Mirror the hydrate no-plan focus hierarchy: in-progress ad-hoc
+    // wins, else first ad-hoc of any state, else empty state. End just
+    // flipped is_active=false; todayAdHocs (plan-agnostic) is preserved
+    // so a session in progress at end-time stays focused.
+    var focusedAdHocKey = null;
+    for (var ai = 0; ai < todayAdHocs.length; ai++) {
+      var as = todayAdHocs[ai];
+      if (as && as.workoutId && as.startedAt && !as.endedAt) {
+        focusedAdHocKey = 'ah_' + as.workoutId;
+        break;
+      }
     }
-    buildTabs();
+    if (!focusedAdHocKey && todayAdHocs.length) {
+      focusedAdHocKey = 'ah_' + todayAdHocs[0].workoutId;
+    }
+
+    if (focusedAdHocKey) {
+      document.getElementById('emptyState').style.display = 'none';
+      document.getElementById('summaryBar').style.display = 'flex';
+      currentDay = focusedAdHocKey;
+      focusTab(currentDay);
+      buildTabs();
+      buildDay(currentDay);
+      // Auto-open the start-screen so the no-plan options are surfaced
+      // alongside the focused ad-hoc. Close button is always visible.
+      openStartScreen();
+    } else {
+      if (typeof renderEmptyState === 'function') renderEmptyState();
+      buildTabs();
+    }
   } catch(err) {
     console.error('onEndPlan error:', err);
     showToast("Couldn't end plan: " + (err.message || 'unknown error'), null);
