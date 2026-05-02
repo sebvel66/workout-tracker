@@ -419,6 +419,14 @@ function buildTabs() {
     h += '</optgroup>';
   }
   sel.innerHTML = h;
+
+  // Hide the dropdown wrapper when there's nothing to focus on. The
+  // plan title / week header above stays visible (or shows "No active
+  // plan"), and the New Session button below stays available.
+  var wrap = sel.closest('.day-picker-row');
+  if (wrap) {
+    wrap.style.display = (h === '') ? 'none' : '';
+  }
 }
 
 function buildDay(di) {
