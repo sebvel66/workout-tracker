@@ -3234,7 +3234,7 @@ function _formatRecentPerfForCoach(workouts) {
       var ex = s.exercises;
       if (!ex || !ex.name) continue;
       var key = ex.name;
-      if (!byOrder[key]) byOrder[key] = { name: ex.name, mode: ex.weight_mode || 'total', sets: [] };
+      if (!byOrder[key]) byOrder[key] = { name: ex.name, sets: [] };
       byOrder[key].sets.push({ w: s.weight, r: s.reps, rpe: s.rpe, order: s.set_order });
     }
     var keys = Object.keys(byOrder);
