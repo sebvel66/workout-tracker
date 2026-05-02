@@ -121,22 +121,81 @@ async function hydrate() {
         __removeRefreshingPill();
       }
 
-      // Load the exercise library even without a plan. History detail
-      // for ad-hoc (and now-deactivated-plan) workouts looks up names
-      // + weight modes by exercise_id via exerciseLibraryById; pre-v3
-      // this branch returned early without loading it, so every set's
-      // exerciseMeta resolved to null and the History renderer fell
-      // back to the literal "Exercise" placeholder. Locations matters
-      // for gym-tag rendering — fire in background.
-      try { await loadExerciseLibrary(); } catch (e) { console.error('no-plan library load failed', e); }
-      loadLocations();
+      // No-plan hydrate Phase 1 — fire today's ad-hoc workouts + the
+      // exercise library + locations in parallel. The library is needed
+      // by stateFromWorkout (resolves exerciseMeta names) and the picker;
+      // locations supplies gym-tag rendering. Plan-anchored queries
+      // (daysWithHistory, suggestedDayIndex) are skipped — irrelevant
+      // when there's no plan.
+      var bounds = sessionBounds();
+      var pAdHocs = sb.from('workouts').select('*, sets(*)')
+        .eq('user_id', userId)
+        .is('plan_id', null)
+        .gte('performed_at', bounds.start.toISOString())
+        .lt('performed_at', bounds.end.toISOString())
+        .order('performed_at', { ascending: true });
+      var pLib = loadExerciseLibrary();
+      var pLoc = loadLocations();
+      var wRes;
+      try {
+        var phase1 = await Promise.all([pAdHocs, pLib, pLoc]);
+        wRes = phase1[0];
+      } catch (err) {
+        console.error('no-plan hydrate phase 1 error:', err);
+        wRes = { error: err };
+      }
 
-      document.getElementById('emptyState').style.display = 'block';
-      if (typeof renderEmptyState === 'function') renderEmptyState();
-      document.getElementById('summaryBar').style.display = 'none';
+      // Reconcile today's ad-hocs from DB. paintFromCache may have
+      // populated todayAdHocs from the snapshot; clear before pushing
+      // fresh rows to avoid duplicates (same pattern as plan hydrate).
+      todayAdHocs = [];
+      todayPlanStates = {};
+      if (wRes && !wRes.error) {
+        var rows = wRes.data || [];
+        for (var i = 0; i < rows.length; i++) {
+          var row = rows[i];
+          var adState = stateFromWorkout(row);
+          adState.title = row.title || null;
+          adState.isAdHoc = true;
+          todayAdHocs.push(adState);
+        }
+      }
+
+      // Focus hierarchy: in-progress ad-hoc wins; else first ad-hoc of
+      // any state (so a completed ad-hoc today is still visible — user
+      // can view what they did, log more sets, or open the start screen
+      // to add another session). If neither, fall through to the empty
+      // state. Mirrors the plan-hydrate focus pattern but scoped to
+      // ad-hocs since plan days don't exist here.
+      var focusedAdHocKey = null;
+      for (var ai = 0; ai < todayAdHocs.length; ai++) {
+        var as = todayAdHocs[ai];
+        if (as && as.workoutId && as.startedAt && !as.endedAt) {
+          focusedAdHocKey = 'ah_' + as.workoutId;
+          break;
+        }
+      }
+      if (!focusedAdHocKey && todayAdHocs.length) {
+        focusedAdHocKey = 'ah_' + todayAdHocs[0].workoutId;
+      }
+
       document.getElementById('planTitle').textContent = 'No active plan';
       document.getElementById('planWeek').textContent = '';
-      buildTabs();
+
+      if (focusedAdHocKey) {
+        document.getElementById('emptyState').style.display = 'none';
+        document.getElementById('summaryBar').style.display = 'flex';
+        currentDay = focusedAdHocKey;
+        focusTab(currentDay);
+        buildTabs();
+        buildDay(currentDay);
+      } else {
+        document.getElementById('emptyState').style.display = 'block';
+        if (typeof renderEmptyState === 'function') renderEmptyState();
+        document.getElementById('summaryBar').style.display = 'none';
+        buildTabs();
+      }
+      __removeRefreshingPill();
       return;
     }
     activePlanId = planRes.data.id;
