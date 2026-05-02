@@ -1771,6 +1771,36 @@ body.unauthed #emptyState { display: none !important; }
 }
 .ex-history-btn:active { color: var(--text); }
 
+/* Per-workout weight-mode chip (v3.1.0). Sits next to .ex-history-btn
+   inside .exercise-name-block. Toggles between Total and Per side; the
+   .is-per-side variant is just a different color so the override is
+   visually distinct from the default. */
+.weight-mode-chip {
+  align-self: flex-start;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text2);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 6px;
+  margin-top: 4px;
+  border-radius: 3px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.weight-mode-chip.is-per-side {
+  background: var(--accent-soft, var(--surface3));
+  color: var(--accent, var(--text));
+  border-color: var(--accent, var(--border));
+}
+.weight-mode-chip:disabled,
+.weight-mode-chip.is-readonly {
+  cursor: default;
+  opacity: 0.85;
+}
+
 .ex-history-session {
   padding: 14px 16px;
   border-bottom: 1px solid var(--border);

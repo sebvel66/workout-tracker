@@ -93,6 +93,38 @@ var toastCounter = 0;
 function escapeHtml(s) { return String(s == null ? '' : s).replace(/[&<>]/g, function(c){ return c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;'; }); }
 function escapeAttr(s) { return escapeHtml(s).replace(/"/g, '&quot;'); }
 
+// Render the per-workout weight-mode chip for an exercise card (v3.1.0).
+// `mode` is the effective mode (output of effectiveWeightMode).
+// `meta` is the exerciseMeta — used to decide visibility (skip for
+// bodyweight/none/cardio rows). `ctx` is one of:
+//   - 'editable' — today plan day or ad-hoc; clickable, fires
+//                  data-toggle-weight-mode-ei.
+//   - 'history-edit' — historical edit mode; clickable, fires
+//                      data-history-toggle-weight-mode with workout id.
+//   - 'history-readonly' — no click, static label.
+// Returns '' (chip hidden) when the exercise is bodyweight/none/cardio.
+function renderWeightModeChip(ei, mode, meta, ctx, workoutId) {
+  if (!meta) return '';
+  var lib = meta.weight_mode || 'total';
+  if (lib === 'bodyweight' || lib === 'none') return '';
+  if (meta.muscle_group === 'cardio') return '';
+  var isPerSide = mode === 'per_side';
+  var label = isPerSide ? 'Per side' : 'Total';
+  var classes = 'weight-mode-chip' + (isPerSide ? ' is-per-side' : '');
+  if (ctx === 'history-readonly') {
+    return '<span class="' + classes + ' is-readonly">' + label + '</span>';
+  }
+  var attrs = '';
+  if (ctx === 'editable') {
+    attrs = ' type="button" data-toggle-weight-mode-ei="' + ei + '"';
+  } else if (ctx === 'history-edit') {
+    attrs = ' type="button" data-history-toggle-weight-mode="1"' +
+            ' data-history-ex-order="' + ei + '"' +
+            ' data-history-workout-id="' + escapeAttr(workoutId || '') + '"';
+  }
+  return '<button class="' + classes + '"' + attrs + '>' + label + '</button>';
+}
+
 // Clamp a form input value to [min, max]; fall back to `fallback` if missing/invalid.
 function clampFormInt(raw, min, max, fallback) {
   var n = raw == null ? NaN : parseInt(String(raw), 10);
@@ -543,7 +575,12 @@ function buildDay(di) {
 
     h += '<div class="exercise-card' + cc + '">';
     var swapBtn = readOnly ? '' : '<button class="card-swap" data-swap-di="' + di + '" data-swap-ei="' + ei + '" aria-label="Swap exercise" type="button">⇄</button>';
-    h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + escapeHtml(displayName) + prescribedBadge + '</div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(displayName) + '">view recent</button></div><div class="exercise-status ' + sc + '">' + stat + '</div>' + swapBtn + '</div>';
+    // chipMeta visibility check: substitute's library row when subbed,
+    // else the prescribed exercise's library row. (Lookup mirrors what
+    // weightModeForName does internally.)
+    var chipMeta = exState.subExercise || exerciseLibraryByName[normName(ex.name)] || null;
+    var chipHtml = renderWeightModeChip(ei, weightMode, chipMeta, readOnly ? 'history-readonly' : 'editable', null);
+    h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + escapeHtml(displayName) + prescribedBadge + '</div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(displayName) + '">view recent</button>' + chipHtml + '</div><div class="exercise-status ' + sc + '">' + stat + '</div>' + swapBtn + '</div>';
     if (ex.note) h += '<div class="exercise-note">' + escapeHtml(ex.note) + '</div>';
     h += '<div class="sets-container">';
 
@@ -686,7 +723,8 @@ function buildDay(di) {
     var xcc = xad ? ' complete' : xsd ? ' partial' : '';
 
     h += '<div class="exercise-card' + xcc + '">';
-    h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + escapeHtml(xMeta.name) + '<span class="extras-badge">added</span></div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(xMeta.name) + '">view recent</button></div><div class="exercise-status ' + xsc + '">' + xstat + '</div>' + (readOnly ? '' : '<button class="card-delete" data-di="' + di + '" data-ei="' + xei + '" aria-label="Delete exercise" type="button">×</button>') + '</div>';
+    var xChipHtml = renderWeightModeChip(xei, xWeightMode, xMeta, readOnly ? 'history-readonly' : 'editable', null);
+    h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + escapeHtml(xMeta.name) + '<span class="extras-badge">added</span></div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(xMeta.name) + '">view recent</button>' + xChipHtml + '</div><div class="exercise-status ' + xsc + '">' + xstat + '</div>' + (readOnly ? '' : '<button class="card-delete" data-di="' + di + '" data-ei="' + xei + '" aria-label="Delete exercise" type="button">×</button>') + '</div>';
     h += '<div class="sets-container">';
     var xStdSetNum = 0;
     for (var xsi2 = 0; xsi2 < xSetCount; xsi2++) {
@@ -797,7 +835,8 @@ function buildAdHocDay(di) {
     var cc = ad ? ' complete' : sd ? ' partial' : '';
 
     h += '<div class="exercise-card' + cc + '">';
-    h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + escapeHtml(meta.name) + '</div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(meta.name) + '">view recent</button></div><div class="exercise-status ' + sc + '">' + stat + '</div><button class="card-delete" data-di="' + di + '" data-ei="' + ei + '" aria-label="Delete exercise" type="button">×</button></div>';
+    var adChipHtml = renderWeightModeChip(ei, weightMode, meta, 'editable', null);
+    h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + escapeHtml(meta.name) + '</div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(meta.name) + '">view recent</button>' + adChipHtml + '</div><div class="exercise-status ' + sc + '">' + stat + '</div><button class="card-delete" data-di="' + di + '" data-ei="' + ei + '" aria-label="Delete exercise" type="button">×</button></div>';
     h += '<div class="sets-container">';
     var adStdSetNum = 0;
     for (var si = 0; si < setCount; si++) {
@@ -1952,7 +1991,7 @@ function renderHistoryDetail(detail) {
       var ei = parseInt(ek.slice(3), 10);
       var exState = state.exercises[ek];
       var meta = exState.exerciseMeta || { name: 'Exercise', weight_mode: 'total' };
-      h += renderHistoryExerciseCard(ei, exState, meta.name, effectiveWeightMode(exState.sets[0], meta), null);
+      h += renderHistoryExerciseCard(ei, exState, meta.name, effectiveWeightMode(exState.sets[0], meta), null, workout.id);
     }
   } else if (dayPlan) {
     var planLen = dayPlan.exercises.length;
@@ -1963,7 +2002,7 @@ function renderHistoryDetail(detail) {
       if (!exState2) continue; // nothing logged for this prescribed exercise
       // Library default by name + per-set override (v3.1.0).
       var wm = (exState2.sets[0] && exState2.sets[0].weight_mode) || weightModeForName(ex.name);
-      h += renderHistoryExerciseCard(j, exState2, ex.name, wm, ex.sets);
+      h += renderHistoryExerciseCard(j, exState2, ex.name, wm, ex.sets, workout.id);
     }
     var extraKeys = Object.keys(state.exercises || {}).filter(function(k) {
       return parseInt(k.slice(3), 10) >= planLen;
@@ -1976,7 +2015,7 @@ function renderHistoryDetail(detail) {
       var ei3 = parseInt(ek3.slice(3), 10);
       var exState3 = state.exercises[ek3];
       var meta3 = exState3.exerciseMeta || { name: 'Exercise', weight_mode: 'total' };
-      h += renderHistoryExerciseCard(ei3, exState3, meta3.name, effectiveWeightMode(exState3.sets[0], meta3), null);
+      h += renderHistoryExerciseCard(ei3, exState3, meta3.name, effectiveWeightMode(exState3.sets[0], meta3), null, workout.id);
     }
   } else {
     h += '<div class="history-empty">Plan data for this workout isn\'t available; showing raw sets instead.</div>';
@@ -1988,7 +2027,7 @@ function renderHistoryDetail(detail) {
       var ei4 = parseInt(ek4.slice(3), 10);
       var exState4 = state.exercises[ek4];
       var meta4 = exState4.exerciseMeta || { name: 'Exercise ' + (ei4 + 1), weight_mode: 'total' };
-      h += renderHistoryExerciseCard(ei4, exState4, meta4.name, effectiveWeightMode(exState4.sets[0], meta4), null);
+      h += renderHistoryExerciseCard(ei4, exState4, meta4.name, effectiveWeightMode(exState4.sets[0], meta4), null, workout.id);
     }
   }
   // Lifecycle actions — discard + reactivate. Placed at the bottom of the
@@ -2156,7 +2195,7 @@ function onHistoryWorkoutNotesChange(input) {
   });
 }
 
-function renderHistoryExerciseCard(ei, exState, name, weightMode, prescribedSets) {
+function renderHistoryExerciseCard(ei, exState, name, weightMode, prescribedSets, histWorkoutId) {
   var dn = 0;
   var setCount = exState.sets.length;
   for (var i = 0; i < exState.sets.length; i++) {
@@ -2181,7 +2220,14 @@ function renderHistoryExerciseCard(ei, exState, name, weightMode, prescribedSets
 
   var h = '';
   h += '<div class="exercise-card' + cc + '" data-history-ex-order="' + ei + '">';
-  h += '<div class="exercise-header"><div class="exercise-name">' + escapeHtml(name) + '</div><div class="exercise-status ' + sc + '">' + stat + '</div></div>';
+  // Wrap name in .exercise-name-block so the chip can stack beneath the
+  // name, matching the live cards' layout. chipMeta falls back to a
+  // name-based library lookup for prescribed plan-day rows where
+  // exState.exerciseMeta is null.
+  var histChipCtx = historyEditMode ? 'history-edit' : 'history-readonly';
+  var histChipMeta = exState.exerciseMeta || exerciseLibraryByName[normName(name)] || null;
+  var histChipHtml = renderWeightModeChip(ei, weightMode, histChipMeta, histChipCtx, histWorkoutId);
+  h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + escapeHtml(name) + '</div>' + histChipHtml + '</div><div class="exercise-status ' + sc + '">' + stat + '</div></div>';
   h += '<div class="sets-container">';
   var histStdSetNum = 0;
   for (var si = 0; si < setCount; si++) {
@@ -6219,6 +6265,30 @@ document.getElementById('historyBody').addEventListener('click', function(e) {
       onHistoryRpeClick(histRpeBtn);
       return;
     }
+    // Per-workout weight-mode chip in history-edit mode (v3.1.0).
+    var histWmChip = e.target.closest ? e.target.closest('[data-history-toggle-weight-mode]') : null;
+    if (histWmChip) {
+      var histWmEi = parseInt(histWmChip.getAttribute('data-history-ex-order'), 10);
+      var histWmWid = histWmChip.getAttribute('data-history-workout-id');
+      var histWmDetails = historyDetails[histWmWid];
+      if (!histWmDetails) return;
+      var histWmEx = histWmDetails.exercises['ex_' + histWmEi];
+      if (!histWmEx) return;
+      var histWmCur = (histWmEx.sets[0] && histWmEx.sets[0].weight_mode)
+        || (histWmEx.exerciseMeta && histWmEx.exerciseMeta.weight_mode)
+        || 'total';
+      var histWmNext = histWmCur === 'per_side' ? 'total' : 'per_side';
+      historyUpdateExerciseWeightMode(histWmWid, histWmEi, histWmNext).then(function() {
+        for (var hi = 0; hi < histWmEx.sets.length; hi++) {
+          if (histWmEx.sets[hi]) histWmEx.sets[hi].weight_mode = histWmNext;
+        }
+        renderHistoryDetail(histWmDetails);
+      }).catch(function(err) {
+        console.error('history weight-mode toggle failed:', err);
+        showToast("Weight mode didn't save");
+      });
+      return;
+    }
   }
   var row = e.target.closest ? e.target.closest('.history-row') : null;
   if (row) {
@@ -6422,6 +6492,27 @@ document.getElementById('workoutContainer').addEventListener('click', function(e
   if (delAdHocBtn) {
     if (delAdHocBtn.disabled) return;
     deleteAdHocSession();
+    return;
+  }
+  // Per-workout weight-mode chip toggle (v3.1.0). Editable today + ad-hoc.
+  // Stamps the same value on every set in the placement, then re-renders
+  // the day so chip + per-side hint + volume math all reflect the change.
+  var wmChip = target.closest ? target.closest('[data-toggle-weight-mode-ei]') : null;
+  if (wmChip) {
+    if (wmChip.disabled) return;
+    var wmEi = parseInt(wmChip.getAttribute('data-toggle-weight-mode-ei'), 10);
+    if (isNaN(wmEi)) return;
+    var wmDi = currentDay;
+    var wmSt = isAdHocKey(wmDi) ? findAdHoc(wmDi) : todayState;
+    if (!wmSt) return;
+    var wmExState = wmSt.exercises['ex_' + wmEi];
+    if (!wmExState) return;
+    var wmCurMeta = wmExState.subExercise || wmExState.exerciseMeta;
+    var wmCurMode = effectiveWeightMode(wmExState.sets[0], wmCurMeta);
+    var wmNext = wmCurMode === 'per_side' ? 'total' : 'per_side';
+    setExerciseWeightMode(wmDi, wmEi, wmNext).then(function() {
+      buildDay(wmDi);
+    });
     return;
   }
   // Add Set / Add Drop Set on an exercise. Drop Set has a distinct
