@@ -761,7 +761,9 @@ function _summarizeWorkoutRow(row) {
   for (var i = 0; i < sorted.length; i++) {
     var s = sorted[i];
     var ex = s.exercises || {};
-    var mode = ex.weight_mode || 'total';
+    // Per-set effective mode (v3.1.0): override on the set wins over
+    // ex.weight_mode (the exercise's library default). Same math otherwise.
+    var mode = effectiveWeightMode(s, ex);
     var eo = s.exercise_order;
 
     if (!byOrder[eo]) {

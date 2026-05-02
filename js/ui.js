@@ -524,9 +524,13 @@ function buildDay(di) {
     // Weight mode + display name track the substitute when one is set —
     // a per_side substitute for a total prescribed exercise needs the
     // right label ("LBS/ea") and its own name visible on the card.
-    var weightMode = (exState.subExercise && exState.subExercise.weight_mode)
+    // Substitute's mode wins when present; otherwise resolve from the
+    // prescribed exercise's library row by name. Per-set override (v3.1.0)
+    // wins over both at the per-row render below.
+    var libDefault = (exState.subExercise && exState.subExercise.weight_mode)
       ? exState.subExercise.weight_mode
       : weightModeForName(ex.name);
+    var weightMode = (exState.sets[0] && exState.sets[0].weight_mode) || libDefault;
     // Cardio detection follows the displayed exercise name — substitutes
     // can flip a resistance prescription into a cardio one (e.g., user
     // subs incline treadmill walk for a stalled accessory).
@@ -584,7 +588,7 @@ function buildDay(di) {
         stdSetNum++;
         pSetLabel = stdSetNum;
       }
-      h += renderSetRow(di, ei, si, sl, effectiveSet, weightMode, dis, pr, false, isCardioRow, pSetLabel);
+      h += renderSetRow(di, ei, si, sl, effectiveSet, (sl.weight_mode || weightMode), dis, pr, false, isCardioRow, pSetLabel);
     }
 
     // Extras on this prescribed exercise: sets past the plan-defined count.
@@ -599,7 +603,7 @@ function buildDay(di) {
         stdSetNum++;
         slExtraNum = stdSetNum;
       }
-      h += renderSetRow(di, ei, siExtra, slExtra, null, weightMode, dis, '—', !readOnly, isCardioRow, slExtraNum);
+      h += renderSetRow(di, ei, siExtra, slExtra, null, (slExtra.weight_mode || weightMode), dis, '—', !readOnly, isCardioRow, slExtraNum);
     }
     if (mode === 'editable') {
       h += '<button class="add-set-btn" data-add-set-ei="' + ei + '">+ Add Set</button>';
@@ -664,7 +668,10 @@ function buildDay(di) {
     var xei = parseInt(xek.slice(3), 10);
     var xState = state.exercises[xek];
     var xMeta = xState.exerciseMeta || { name: 'Exercise', weight_mode: 'total' };
-    var xWeightMode = xMeta.weight_mode || 'total';
+    // Card-level effective mode (v3.1.0): per-set override on sets[0] wins
+    // over the library default. Every set in a placement carries the same
+    // value (the toggle fan-out keeps them in sync).
+    var xWeightMode = effectiveWeightMode(xState.sets[0], xMeta);
     var xIsCardio = xMeta.muscle_group === 'cardio';
     var xSetCount = xState.sets.length || 1;
     ts += xSetCount;
@@ -689,7 +696,7 @@ function buildDay(di) {
         xStdSetNum++;
         xLabelNum = xStdSetNum;
       }
-      h += renderSetRow(di, xei, xsi2, xsl, null, xWeightMode, dis, '—', !readOnly, xIsCardio, xLabelNum);
+      h += renderSetRow(di, xei, xsi2, xsl, null, (xsl.weight_mode || xWeightMode), dis, '—', !readOnly, xIsCardio, xLabelNum);
     }
     if (mode === 'editable') {
       h += '<button class="add-set-btn" data-add-set-ei="' + xei + '">+ Add Set</button>';
@@ -775,7 +782,7 @@ function buildAdHocDay(di) {
     var ei = parseInt(ek.slice(3), 10);
     var exState = state.exercises[ek];
     var meta = exState.exerciseMeta || { name: 'Exercise', weight_mode: 'total' };
-    var weightMode = meta.weight_mode || 'total';
+    var weightMode = effectiveWeightMode(exState.sets[0], meta);
     var isCardioRow = meta.muscle_group === 'cardio';
     var setCount = exState.sets.length || 1;
     ts += setCount;
@@ -800,7 +807,7 @@ function buildAdHocDay(di) {
         adStdSetNum++;
         adLabelNum = adStdSetNum;
       }
-      h += renderSetRow(di, ei, si, sl, null, weightMode, dis, '—', true, isCardioRow, adLabelNum);
+      h += renderSetRow(di, ei, si, sl, null, (sl.weight_mode || weightMode), dis, '—', true, isCardioRow, adLabelNum);
     }
     h += '<button class="add-set-btn" data-add-set-ei="' + ei + '">+ Add Set</button>';
     if (!isCardioRow && exState.sets && exState.sets.length > 0) {
@@ -1945,7 +1952,7 @@ function renderHistoryDetail(detail) {
       var ei = parseInt(ek.slice(3), 10);
       var exState = state.exercises[ek];
       var meta = exState.exerciseMeta || { name: 'Exercise', weight_mode: 'total' };
-      h += renderHistoryExerciseCard(ei, exState, meta.name, meta.weight_mode || 'total', null);
+      h += renderHistoryExerciseCard(ei, exState, meta.name, effectiveWeightMode(exState.sets[0], meta), null);
     }
   } else if (dayPlan) {
     var planLen = dayPlan.exercises.length;
@@ -1954,7 +1961,8 @@ function renderHistoryDetail(detail) {
       var ek2 = 'ex_' + j;
       var exState2 = state.exercises[ek2];
       if (!exState2) continue; // nothing logged for this prescribed exercise
-      var wm = weightModeForName(ex.name);
+      // Library default by name + per-set override (v3.1.0).
+      var wm = (exState2.sets[0] && exState2.sets[0].weight_mode) || weightModeForName(ex.name);
       h += renderHistoryExerciseCard(j, exState2, ex.name, wm, ex.sets);
     }
     var extraKeys = Object.keys(state.exercises || {}).filter(function(k) {
@@ -1968,7 +1976,7 @@ function renderHistoryDetail(detail) {
       var ei3 = parseInt(ek3.slice(3), 10);
       var exState3 = state.exercises[ek3];
       var meta3 = exState3.exerciseMeta || { name: 'Exercise', weight_mode: 'total' };
-      h += renderHistoryExerciseCard(ei3, exState3, meta3.name, meta3.weight_mode || 'total', null);
+      h += renderHistoryExerciseCard(ei3, exState3, meta3.name, effectiveWeightMode(exState3.sets[0], meta3), null);
     }
   } else {
     h += '<div class="history-empty">Plan data for this workout isn\'t available; showing raw sets instead.</div>';
@@ -1980,7 +1988,7 @@ function renderHistoryDetail(detail) {
       var ei4 = parseInt(ek4.slice(3), 10);
       var exState4 = state.exercises[ek4];
       var meta4 = exState4.exerciseMeta || { name: 'Exercise ' + (ei4 + 1), weight_mode: 'total' };
-      h += renderHistoryExerciseCard(ei4, exState4, meta4.name, meta4.weight_mode || 'total', null);
+      h += renderHistoryExerciseCard(ei4, exState4, meta4.name, effectiveWeightMode(exState4.sets[0], meta4), null);
     }
   }
   // Lifecycle actions — discard + reactivate. Placed at the bottom of the
@@ -2185,7 +2193,7 @@ function renderHistoryExerciseCard(ei, exState, name, weightMode, prescribedSets
       histStdSetNum++;
       histLabelNum = histStdSetNum;
     }
-    h += renderSetRow('history', ei, si, sl, prescribed, weightMode, disabledAttr, prText, false, isCardioRow, histLabelNum);
+    h += renderSetRow('history', ei, si, sl, prescribed, (sl.weight_mode || weightMode), disabledAttr, prText, false, isCardioRow, histLabelNum);
   }
   h += '</div>';
   // RPE row — in edit mode, render even when null so the user can pick
