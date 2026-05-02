@@ -6278,15 +6278,20 @@ document.getElementById('historyBody').addEventListener('click', function(e) {
         || (histWmEx.exerciseMeta && histWmEx.exerciseMeta.weight_mode)
         || 'total';
       var histWmNext = histWmCur === 'per_side' ? 'total' : 'per_side';
-      historyUpdateExerciseWeightMode(histWmWid, histWmEi, histWmNext).then(function() {
-        for (var hi = 0; hi < histWmEx.sets.length; hi++) {
-          if (histWmEx.sets[hi]) histWmEx.sets[hi].weight_mode = histWmNext;
-        }
-        renderHistoryDetail(histWmDetails);
-      }).catch(function(err) {
-        console.error('history weight-mode toggle failed:', err);
-        showToast("Weight mode didn't save");
-      });
+      // Wrap in a named local so the failure toast can re-invoke the same
+      // write — matches the retry pattern used by setExerciseWeightMode.
+      function retryHistWeightMode() {
+        historyUpdateExerciseWeightMode(histWmWid, histWmEi, histWmNext).then(function() {
+          for (var hi = 0; hi < histWmEx.sets.length; hi++) {
+            if (histWmEx.sets[hi]) histWmEx.sets[hi].weight_mode = histWmNext;
+          }
+          renderHistoryDetail(histWmDetails);
+        }).catch(function(err) {
+          console.error('history weight-mode toggle failed:', err);
+          showToast("Weight mode didn't save", retryHistWeightMode);
+        });
+      }
+      retryHistWeightMode();
       return;
     }
   }
@@ -6449,6 +6454,28 @@ document.getElementById('workoutContainer').addEventListener('click', function(e
     openExerciseHistory(histBtn.getAttribute('data-exercise-name'));
     return;
   }
+  // Per-workout weight-mode chip toggle (v3.1.0). Editable today + ad-hoc.
+  // Stamps the same value on every set in the placement, then re-renders
+  // the day so chip + per-side hint + volume math all reflect the change.
+  // Handled before .exercise-header expand — chip lives inside that header.
+  var wmChip = target.closest ? target.closest('[data-toggle-weight-mode-ei]') : null;
+  if (wmChip) {
+    if (wmChip.disabled) return;
+    var wmEi = parseInt(wmChip.getAttribute('data-toggle-weight-mode-ei'), 10);
+    if (isNaN(wmEi)) return;
+    var wmDi = currentDay;
+    var wmSt = isAdHocKey(wmDi) ? findAdHoc(wmDi) : todayState;
+    if (!wmSt) return;
+    var wmExState = wmSt.exercises['ex_' + wmEi];
+    if (!wmExState) return;
+    var wmCurMeta = wmExState.subExercise || wmExState.exerciseMeta;
+    var wmCurMode = effectiveWeightMode(wmExState.sets[0], wmCurMeta);
+    var wmNext = wmCurMode === 'per_side' ? 'total' : 'per_side';
+    setExerciseWeightMode(wmDi, wmEi, wmNext).then(function() {
+      buildDay(wmDi);
+    });
+    return;
+  }
   // Session-location prompt (zero-gym case) — opens the Gym Profiles modal.
   var locPrompt = target.closest ? target.closest('.session-location-prompt') : null;
   if (locPrompt) {
@@ -6492,27 +6519,6 @@ document.getElementById('workoutContainer').addEventListener('click', function(e
   if (delAdHocBtn) {
     if (delAdHocBtn.disabled) return;
     deleteAdHocSession();
-    return;
-  }
-  // Per-workout weight-mode chip toggle (v3.1.0). Editable today + ad-hoc.
-  // Stamps the same value on every set in the placement, then re-renders
-  // the day so chip + per-side hint + volume math all reflect the change.
-  var wmChip = target.closest ? target.closest('[data-toggle-weight-mode-ei]') : null;
-  if (wmChip) {
-    if (wmChip.disabled) return;
-    var wmEi = parseInt(wmChip.getAttribute('data-toggle-weight-mode-ei'), 10);
-    if (isNaN(wmEi)) return;
-    var wmDi = currentDay;
-    var wmSt = isAdHocKey(wmDi) ? findAdHoc(wmDi) : todayState;
-    if (!wmSt) return;
-    var wmExState = wmSt.exercises['ex_' + wmEi];
-    if (!wmExState) return;
-    var wmCurMeta = wmExState.subExercise || wmExState.exerciseMeta;
-    var wmCurMode = effectiveWeightMode(wmExState.sets[0], wmCurMeta);
-    var wmNext = wmCurMode === 'per_side' ? 'total' : 'per_side';
-    setExerciseWeightMode(wmDi, wmEi, wmNext).then(function() {
-      buildDay(wmDi);
-    });
     return;
   }
   // Add Set / Add Drop Set on an exercise. Drop Set has a distinct
