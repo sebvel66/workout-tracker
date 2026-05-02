@@ -1713,6 +1713,46 @@ body.unauthed #emptyState { display: none !important; }
 .history-action-btn.discard { color: var(--danger); border-color: var(--danger); }
 .history-action-btn.discard:active { background: rgba(248, 113, 113, 0.08); }
 
+/* History edit mode (v2.5.13) — Edit toggle button at the top of the
+ * detail, plus the always-visible workout-notes section. The .history-
+ * edit-on class on the parent is just a hook for future scoped tweaks. */
+.history-edit-toggle {
+  margin-top: 10px;
+  padding: 6px 14px;
+  background: transparent; color: var(--text2);
+  border: 1px solid var(--border); border-radius: 999px;
+  font-family: 'Outfit', sans-serif; font-size: 12px; font-weight: 600;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.history-edit-toggle.on {
+  color: var(--accent); border-color: var(--accent);
+  background: rgba(74, 222, 128, 0.06);
+}
+.history-edit-toggle:active { background: var(--surface2); }
+.history-workout-notes {
+  margin: 14px 0 6px;
+  padding: 10px 12px;
+  background: var(--surface2);
+  border: 1px solid var(--border); border-radius: 8px;
+}
+.history-notes-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px; color: var(--text3);
+  text-transform: uppercase; letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+.history-notes-display {
+  font-size: 13px; line-height: 1.45; color: var(--text);
+  white-space: pre-wrap; word-wrap: break-word;
+}
+.history-notes-input {
+  width: 100%;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 8px 10px;
+  font-family: 'Outfit', sans-serif; font-size: 13px; line-height: 1.45;
+}
+
 /* Per-exercise recent history */
 .exercise-name-block { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .ex-history-btn {

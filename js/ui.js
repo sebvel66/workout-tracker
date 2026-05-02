@@ -31,6 +31,13 @@ var historyWeekStart = null;        // currently-viewed Sunday, YYYY-MM-DD
 var historyWeekCache = {};          // weekStart → fetchWeekSummary result
 var historyWeekLoading = false;
 var historyDetails = {};            // workoutId → { workout, state } for detail view
+// History edit mode (v2.5.13): when true, the detail view renders inputs
+// without the disabled attribute so the user can correct missed values
+// or add notes after the fact. Auto-saves on change directly to DB
+// (bypasses the todayState-coupled persistSet path); the local
+// historyDetails cache mirrors writes so the view stays in sync without
+// a refetch. Reset to false on detail close / week back / sign-out.
+var historyEditMode = false;
 
 // Physique photos browser state — modal with three sub-views.
 var photosView = 'gallery';         // 'gallery' | 'upload' | 'viewer'
@@ -1555,10 +1562,14 @@ async function openHistory() {
 
 function closeHistory() {
   document.getElementById('historyOverlay').classList.remove('show');
+  // Always exit history edit mode when leaving — re-entering a detail
+  // should default back to read-only review.
+  historyEditMode = false;
 }
 
 function backToHistoryWeek() {
   historyView = 'week';
+  historyEditMode = false;
   renderHistoryWeek();
 }
 
@@ -1891,7 +1902,7 @@ function renderHistoryDetail(detail) {
   if (workout.location_id && locationById[workout.location_id]) {
     gymText = ' · ' + locationById[workout.location_id].name;
   }
-  var h = '<div class="history-detail">';
+  var h = '<div class="history-detail' + (historyEditMode ? ' history-edit-on' : '') + '">';
   h += '<div class="history-detail-header">';
   h += '<div class="history-detail-meta">' + escapeHtml(dateText) + (isAdHoc ? ' · ad-hoc' : '') + escapeHtml(gymText) + '</div>';
   if (state.startedAt && state.endedAt) {
@@ -1899,7 +1910,31 @@ function renderHistoryDetail(detail) {
     h += '<div class="session-bar done" style="margin-top:12px"><div class="session-duration">Session: ' + fmtDuration(ms) + '</div>' +
          renderDurationEditBtn(workout.id, ms, state.endedAt, 'history') + '</div>';
   }
+  // Edit toggle (v2.5.13) — flip the whole detail into editable mode for
+  // post-hoc corrections (forgot a weight, missed an RPE, want to add
+  // a note). Auto-saves to DB on every change; no Save button.
+  h += '<button type="button" class="history-edit-toggle' + (historyEditMode ? ' on' : '') + '" id="btnHistoryEditToggle" data-workout-id="' + escapeAttr(workout.id) + '">' +
+       (historyEditMode ? 'Done editing' : 'Edit') +
+       '</button>';
   h += '</div>';
+
+  // Workout-level notes — always visible (was previously hidden in
+  // history detail). When edit mode is on, the textarea is editable
+  // and saves on blur via historyUpdateWorkoutNotes.
+  var workoutNotes = (state.notes || workout.notes || '').trim();
+  if (historyEditMode || workoutNotes) {
+    h += '<div class="history-workout-notes">';
+    h += '<div class="history-notes-label">SESSION NOTES</div>';
+    if (historyEditMode) {
+      h += '<textarea class="exercise-note-input history-notes-input" rows="2" ' +
+           'data-history-workout-notes="' + escapeAttr(workout.id) + '" ' +
+           'placeholder="How did the session go? Anything to remember for next time?">' +
+           escapeHtml(workoutNotes) + '</textarea>';
+    } else {
+      h += '<div class="history-notes-display">' + escapeHtml(workoutNotes) + '</div>';
+    }
+    h += '</div>';
+  }
 
   if (isAdHoc) {
     var keys = Object.keys(state.exercises || {}).sort(function(a, b) {
@@ -1972,6 +2007,147 @@ function renderHistoryDetail(detail) {
   body.innerHTML = h;
 }
 
+// ---- History edit mode handlers (v2.5.13) ----
+// Each handler resolves the edited target via data attributes, calls the
+// matching historyUpdate* helper in data.js, mirrors the change into the
+// in-memory historyDetails cache so the next render reflects it, and
+// re-renders the detail (only when the change might affect derived UI
+// like exercise status / completion counts; pure-value edits skip the
+// re-render to avoid losing focus while typing).
+
+// Find the history detail's workoutId from the detail container; fallback
+// to the modal title if needed. The detail's data-history-detail attr
+// would be more robust, but the existing render doesn't add one — using
+// historyDetails as source of truth: the modal only opens one workout
+// at a time, so whichever is in cache and active is the one we're
+// editing. We pick it via the dedicated open-detail handler that sets
+// it (see openHistoryDetail).
+function _historyDetailWorkoutId() {
+  // The Edit toggle button carries the workout id — read that.
+  var t = document.getElementById('btnHistoryEditToggle');
+  return t ? t.getAttribute('data-workout-id') : null;
+}
+
+function onHistorySetCheckClick(btnEl) {
+  var widCheck = _historyDetailWorkoutId();
+  var ei = parseInt(btnEl.getAttribute('data-ei'), 10);
+  var si = parseInt(btnEl.getAttribute('data-si'), 10);
+  var detail = widCheck && historyDetails[widCheck];
+  if (!detail) return;
+  var sl = detail.state.exercises['ex_' + ei] && detail.state.exercises['ex_' + ei].sets[si];
+  if (!sl || !sl.setId) {
+    // Set not yet persisted -- shouldn't happen for historical workouts,
+    // but bail out safely.
+    showToast("Can't toggle this set", null);
+    return;
+  }
+  var newDone = !sl.done;
+  historyUpdateSetDone(sl.setId, newDone, detail.workout && detail.workout.started_at).then(function() {
+    sl.done = newDone;
+    if (newDone) {
+      sl.completedAt = detail.workout && detail.workout.started_at
+        ? detail.workout.started_at
+        : new Date().toISOString();
+    } else {
+      sl.completedAt = null;
+    }
+    invalidateHistoryCache();
+    renderHistoryDetail(detail);
+  }).catch(function(err) {
+    console.error('history set toggle failed:', err);
+    showToast("Couldn't update set: " + (err.message || ''), null);
+  });
+}
+
+function onHistorySetInputChange(input) {
+  var widIn = _historyDetailWorkoutId();
+  var ei = parseInt(input.getAttribute('data-ei'), 10);
+  var si = parseInt(input.getAttribute('data-si'), 10);
+  var field = input.getAttribute('data-field');
+  var detail = widIn && historyDetails[widIn];
+  if (!detail || !field) return;
+  var sl = detail.state.exercises['ex_' + ei] && detail.state.exercises['ex_' + ei].sets[si];
+  if (!sl || !sl.setId) return;
+  // Parse value per field type — same rules as logSet's input handler.
+  var val = input.value;
+  var parsed;
+  if (val === '' || val == null) {
+    parsed = null;
+  } else if (field === 'weight') {
+    parsed = parseWeightInput(val, getWeightUnit());
+  } else if (field === 'duration_seconds') {
+    parsed = parseDurationMSS(val);
+  } else {
+    parsed = parseFloat(val);
+    if (isNaN(parsed)) parsed = null;
+  }
+  historyUpdateSetField(sl.setId, field, parsed).then(function() {
+    sl[field] = parsed;
+    invalidateHistoryCache();
+    // Don't re-render -- the user is mid-edit and we don't want to
+    // steal focus. The exercise-card status badge is now slightly
+    // stale until the next interaction triggers a re-render, which
+    // is acceptable for plain value edits.
+  }).catch(function(err) {
+    console.error('history set field update failed:', err);
+    showToast("Couldn't save: " + (err.message || ''), null);
+  });
+}
+
+function onHistoryRpeClick(btnEl) {
+  var widR = _historyDetailWorkoutId();
+  var ei = parseInt(btnEl.getAttribute('data-history-ex-order'), 10);
+  var rpe = parseInt(btnEl.getAttribute('data-history-rpe'), 10);
+  var detail = widR && historyDetails[widR];
+  if (!detail || !Number.isFinite(rpe)) return;
+  var exState = detail.state.exercises['ex_' + ei];
+  if (!exState) return;
+  // Toggle: if the user taps the currently-selected RPE, clear it.
+  var newRpe = exState.rpe === rpe ? null : rpe;
+  historyUpdateExerciseRpe(widR, ei, newRpe).then(function() {
+    exState.rpe = newRpe;
+    invalidateHistoryCache();
+    renderHistoryDetail(detail);  // re-render so the .selected class flips
+  }).catch(function(err) {
+    console.error('history rpe update failed:', err);
+    showToast("Couldn't save RPE: " + (err.message || ''), null);
+  });
+}
+
+function onHistoryExerciseNoteChange(input) {
+  var widN = _historyDetailWorkoutId();
+  var ei = parseInt(input.getAttribute('data-history-ex-order'), 10);
+  var detail = widN && historyDetails[widN];
+  if (!detail) return;
+  var exState = detail.state.exercises['ex_' + ei];
+  if (!exState) return;
+  var newNote = (input.value || '').trim() || null;
+  historyUpdateExerciseNote(widN, ei, newNote).then(function() {
+    exState.note = newNote || '';
+    invalidateHistoryCache();
+    // No re-render — keep focus.
+  }).catch(function(err) {
+    console.error('history exercise note update failed:', err);
+    showToast("Couldn't save note: " + (err.message || ''), null);
+  });
+}
+
+function onHistoryWorkoutNotesChange(input) {
+  var widW = input.getAttribute('data-history-workout-notes');
+  var detail = widW && historyDetails[widW];
+  if (!detail) return;
+  var newNotes = (input.value || '').trim() || null;
+  historyUpdateWorkoutNotes(widW, newNotes).then(function() {
+    detail.workout.notes = newNotes;
+    detail.state.notes = newNotes || '';
+    invalidateHistoryCache();
+    // No re-render — keep focus.
+  }).catch(function(err) {
+    console.error('history workout notes update failed:', err);
+    showToast("Couldn't save session notes: " + (err.message || ''), null);
+  });
+}
+
 function renderHistoryExerciseCard(ei, exState, name, weightMode, prescribedSets) {
   var dn = 0;
   var setCount = exState.sets.length;
@@ -1988,9 +2164,15 @@ function renderHistoryExerciseCard(ei, exState, name, weightMode, prescribedSets
   // duration_seconds null, so the history row falls back to the
   // resistance render even when name says "treadmill walk" — accurate.
   var isCardioRow = isCardioExerciseName(name);
+  // disabledAttr is the lever for history-edit mode (v2.5.13). When
+  // historyEditMode is on, all set inputs / RPE buttons / note textareas
+  // render WITHOUT the disabled attribute, so the existing event
+  // delegation on historyBody can pick up changes and route them to the
+  // history-update helpers (instead of the today-state-coupled persistSet).
+  var disabledAttr = historyEditMode ? '' : ' disabled';
 
   var h = '';
-  h += '<div class="exercise-card' + cc + '">';
+  h += '<div class="exercise-card' + cc + '" data-history-ex-order="' + ei + '">';
   h += '<div class="exercise-header"><div class="exercise-name">' + escapeHtml(name) + '</div><div class="exercise-status ' + sc + '">' + stat + '</div></div>';
   h += '<div class="sets-container">';
   var histStdSetNum = 0;
@@ -2003,14 +2185,21 @@ function renderHistoryExerciseCard(ei, exState, name, weightMode, prescribedSets
       histStdSetNum++;
       histLabelNum = histStdSetNum;
     }
-    h += renderSetRow('history', ei, si, sl, prescribed, weightMode, ' disabled', prText, false, isCardioRow, histLabelNum);
+    h += renderSetRow('history', ei, si, sl, prescribed, weightMode, disabledAttr, prText, false, isCardioRow, histLabelNum);
   }
   h += '</div>';
-  if (exState.rpe != null) {
+  // RPE row — in edit mode, render even when null so the user can pick
+  // an RPE retroactively. Buttons get the same data-ei / data-rpe attrs
+  // the live-session row uses; the historyBody click listener routes
+  // to historyUpdateExerciseRpe.
+  if (exState.rpe != null || historyEditMode) {
     h += '<div class="rpe-row"><div class="rpe-label">RPE</div><div class="rpe-buttons">';
     var rv = [6,7,8,9,10];
     for (var r = 0; r < rv.length; r++) {
-      h += '<button class="rpe-btn' + (exState.rpe === rv[r] ? ' selected' : '') + '" disabled>' + rv[r] + '</button>';
+      var rpeAttrs = historyEditMode
+        ? ' data-history-ex-order="' + ei + '" data-history-rpe="' + rv[r] + '"'
+        : ' disabled';
+      h += '<button class="rpe-btn' + (exState.rpe === rv[r] ? ' selected' : '') + '"' + rpeAttrs + '>' + rv[r] + '</button>';
     }
     h += '</div></div>';
   }
@@ -2020,7 +2209,11 @@ function renderHistoryExerciseCard(ei, exState, name, weightMode, prescribedSets
     var histSubLabel = exState.subExercise ? exState.subExercise.name : exState.sub;
     h += '<div class="sub-row"><div class="sub-label">SUB:</div><div style="font-size:12px;color:var(--text2);flex:1">' + escapeHtml(histSubLabel) + '</div></div>';
   }
-  if (exState.note) {
+  // Per-exercise note. Edit mode: editable textarea (saves on blur).
+  // Read-only mode: pre-formatted display when there's a note.
+  if (historyEditMode) {
+    h += '<div style="padding:10px 14px 14px"><textarea class="exercise-note-input" rows="1" placeholder="Notes" data-history-ex-order="' + ei + '" data-history-ex-note="1">' + escapeHtml(exState.note || '') + '</textarea></div>';
+  } else if (exState.note) {
     h += '<div style="padding:10px 14px 14px"><div class="exercise-note" style="display:block;padding:0">' + escapeHtml(exState.note) + '</div></div>';
   }
   h += '</div>';
@@ -5992,9 +6185,63 @@ document.getElementById('historyBody').addEventListener('click', function(e) {
     if (widD) onDiscardWorkout(widD, completed, title);
     return;
   }
+  // History edit-mode toggle (v2.5.13). Flip the flag and re-render the
+  // detail so all inputs / RPE / notes flip between disabled and active.
+  var editToggle = e.target.closest ? e.target.closest('#btnHistoryEditToggle') : null;
+  if (editToggle) {
+    var editWid = editToggle.getAttribute('data-workout-id');
+    historyEditMode = !historyEditMode;
+    if (editWid && historyDetails[editWid]) {
+      renderHistoryDetail(historyDetails[editWid]);
+    }
+    return;
+  }
+  // History edit: set check (toggle done). Routes through historyUpdateSetDone
+  // which writes done + completed_at; cache + re-render after success.
+  if (historyEditMode) {
+    var setCheck = e.target.closest ? e.target.closest('.set-check') : null;
+    if (setCheck && !setCheck.disabled) {
+      onHistorySetCheckClick(setCheck);
+      return;
+    }
+    // History edit: RPE button. The data-history-rpe + data-history-ex-order
+    // attrs are added at render time only when in edit mode.
+    var histRpeBtn = e.target.closest ? e.target.closest('[data-history-rpe]') : null;
+    if (histRpeBtn) {
+      onHistoryRpeClick(histRpeBtn);
+      return;
+    }
+  }
   var row = e.target.closest ? e.target.closest('.history-row') : null;
   if (row) {
     openHistoryDetail(row.getAttribute('data-workout-id'));
+    return;
+  }
+});
+
+// History detail change handler (v2.5.13). Catches set-input edits, per-
+// exercise note blur, and workout-notes blur. All three route to the
+// historyUpdate* helpers in data.js, then update the local
+// historyDetails cache + re-render the detail.
+document.getElementById('historyBody').addEventListener('change', function(e) {
+  if (!historyEditMode) return;
+  var t = e.target;
+  if (!t || t.disabled) return;
+  // Set inputs (weight, reps, duration_seconds, distance) — catch on
+  // change rather than blur so the value persists even if the user
+  // closes the modal mid-edit.
+  if (t.classList && t.classList.contains('set-input')) {
+    onHistorySetInputChange(t);
+    return;
+  }
+  // Per-exercise note textarea — saves on change/blur.
+  if (t.hasAttribute && t.hasAttribute('data-history-ex-note')) {
+    onHistoryExerciseNoteChange(t);
+    return;
+  }
+  // Workout-level notes textarea.
+  if (t.hasAttribute && t.hasAttribute('data-history-workout-notes')) {
+    onHistoryWorkoutNotesChange(t);
     return;
   }
 });

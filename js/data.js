@@ -2048,6 +2048,80 @@ async function createAdHocSession() {
   }
 }
 
+// ---- Historical workout edits (v2.5.13) ----
+// Direct DB updates on a logged set / workout — used by the history-detail
+// edit mode, which intentionally bypasses the todayState-coupled
+// persistSet path. The caller (renderHistoryDetail in ui.js) is
+// responsible for updating the in-memory historyDetails cache after a
+// successful update so re-renders reflect the change without a refetch.
+//
+// All four helpers throw on failure so the caller can showToast.
+
+// Update a single field on one set row (weight, reps, rpe, done,
+// duration_seconds, distance, note). Note: rpe + note are typically per-
+// exercise — use historyUpdateExerciseRpe / historyUpdateExerciseNote
+// when you want the change to fan out to all sets in the exercise.
+async function historyUpdateSetField(setId, field, value) {
+  if (!userId || !setId || !field) throw new Error('Missing context');
+  var payload = {};
+  payload[field] = value;
+  var r = await sb.from('sets').update(payload).eq('id', setId).eq('user_id', userId);
+  if (r.error) throw new Error(r.error.message);
+}
+
+// Toggle a single set's done state. When flipping done -> not-done,
+// completed_at is cleared (the CHECK constraint requires it null when
+// done=false). When flipping not-done -> done, we stamp completed_at
+// to the workout's start time so per-set ordering by completed_at
+// stays sensible (rather than "now" which would re-order an old workout
+// to look like it ended just now).
+async function historyUpdateSetDone(setId, newDone, workoutStartedAt) {
+  if (!userId || !setId) throw new Error('Missing context');
+  var payload;
+  if (newDone) {
+    var stamp = workoutStartedAt || new Date().toISOString();
+    payload = { done: true, completed_at: stamp };
+  } else {
+    payload = { done: false, completed_at: null };
+  }
+  var r = await sb.from('sets').update(payload).eq('id', setId).eq('user_id', userId);
+  if (r.error) throw new Error(r.error.message);
+}
+
+// Per-exercise RPE: fans out to every set on this exercise within the
+// workout. Mirrors the live-session pattern where RPE is conceptually
+// per-exercise but stored per-set (replicated).
+async function historyUpdateExerciseRpe(workoutId, exerciseOrder, rpe) {
+  if (!userId || !workoutId) throw new Error('Missing context');
+  var r = await sb.from('sets')
+    .update({ rpe: rpe })
+    .eq('user_id', userId)
+    .eq('workout_id', workoutId)
+    .eq('exercise_order', exerciseOrder);
+  if (r.error) throw new Error(r.error.message);
+}
+
+// Per-exercise note: same fan-out pattern as RPE.
+async function historyUpdateExerciseNote(workoutId, exerciseOrder, note) {
+  if (!userId || !workoutId) throw new Error('Missing context');
+  var r = await sb.from('sets')
+    .update({ note: note || null })
+    .eq('user_id', userId)
+    .eq('workout_id', workoutId)
+    .eq('exercise_order', exerciseOrder);
+  if (r.error) throw new Error(r.error.message);
+}
+
+// Workout-level notes: lives on the workouts row, not replicated to sets.
+async function historyUpdateWorkoutNotes(workoutId, notes) {
+  if (!userId || !workoutId) throw new Error('Missing context');
+  var r = await sb.from('workouts')
+    .update({ notes: notes || null })
+    .eq('id', workoutId)
+    .eq('user_id', userId);
+  if (r.error) throw new Error(r.error.message);
+}
+
 // Delete a workout by id. Sets cascade via the workout_id FK. Used by the
 // history detail "Discard session" action (plan + ad-hoc) and the today
 // "Cancel session" action on 0-set in-progress plan days. Caller handles
