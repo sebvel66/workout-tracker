@@ -68,3 +68,15 @@ function resolveLibraryRow(name) {
   }
   return null;
 }
+
+// Resolve the effective weight_mode for a set: per-set override wins over
+// the exercise's library default. Used wherever we previously read
+// `exerciseMeta.weight_mode || 'total'`.
+//
+// `set` may be missing/null when the caller is making a card-level decision
+// before any set is in scope — in that case, only the exerciseMeta default
+// is consulted.
+function effectiveWeightMode(set, exerciseMeta) {
+  if (set && set.weight_mode) return set.weight_mode;
+  return (exerciseMeta && exerciseMeta.weight_mode) || 'total';
+}

@@ -364,6 +364,10 @@ function stateFromWorkout(row) {
       // (array index in this exercise's sets[]) below after the loop.
       setType: s.set_type || 'standard',
       parentSetId: s.parent_set_id || null,
+      // Per-set weight_mode override (v3.1.0). Null = inherit from the
+      // exercise's library default. effectiveWeightMode(set, meta) is the
+      // single read site.
+      weight_mode: s.weight_mode || null,
       startedAt: s.started_at, completedAt: s.completed_at,
     };
     if (setIsExtra) state.exercises[ek].sets[s.set_order].isExtra = true;
@@ -1402,6 +1406,11 @@ function buildSetPayload(di, ei, si) {
     // Drop-set chain columns (v2.5 Phase 1). 'standard' on independent sets.
     set_type: setType,
     parent_set_id: parentSetId,
+    // Per-set weight_mode override (v3.1.0). Null = inherit library default.
+    // Stamped by setExerciseWeightMode (today/ad-hoc) or
+    // historyUpdateExerciseWeightMode; new sets inherit from existing
+    // placement sets via the add-set helpers.
+    weight_mode: sl.weight_mode || null,
     // Legacy free-text column — we no longer populate it on new writes;
     // substitution is now carried structurally via exercise_id mismatch.
     substitution: null,
