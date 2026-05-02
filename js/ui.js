@@ -5780,10 +5780,6 @@ document.getElementById('startPathGenerate').addEventListener('click', function(
   closeStartScreen();
   openGenerate();
 });
-document.getElementById('startPathImportLink').addEventListener('click', function() {
-  closeStartScreen();
-  document.getElementById('fileInput').click();
-});
 
 // Coach chat wiring.
 document.getElementById('btnCoachOpen').addEventListener('click', openCoachChat);
