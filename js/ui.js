@@ -6285,9 +6285,17 @@ document.getElementById('historyBody').addEventListener('click', function(e) {
       if (!histWmDetails) return;
       var histWmEx = histWmDetails.state.exercises['ex_' + histWmEi];
       if (!histWmEx) return;
-      var histWmCur = (histWmEx.sets[0] && histWmEx.sets[0].weight_mode)
-        || (histWmEx.exerciseMeta && histWmEx.exerciseMeta.weight_mode)
-        || 'total';
+      // Resolve meta the same way renderHistoryExerciseCard's chipMeta
+      // does — exerciseMeta is null on plan-day prescribed history rows;
+      // fall back to a library lookup by the persisted set's exercise_id
+      // so first-tap correctly inverts the displayed state. Without this
+      // a per_side-default plan-day historical exercise would silently
+      // no-op on the first tap (issue from final v3.1.0 review).
+      var histMeta = histWmEx.exerciseMeta
+        || (histWmEx.sets[0] && histWmEx.sets[0].exerciseId
+            ? (exerciseLibraryById[histWmEx.sets[0].exerciseId] || null)
+            : null);
+      var histWmCur = effectiveWeightMode(histWmEx.sets[0], histMeta);
       var histWmNext = histWmCur === 'per_side' ? 'total' : 'per_side';
       // Wrap in a named local so the failure toast can re-invoke the same
       // write — matches the retry pattern used by setExerciseWeightMode.
@@ -6479,7 +6487,17 @@ document.getElementById('workoutContainer').addEventListener('click', function(e
     if (!wmSt) return;
     var wmExState = wmSt.exercises['ex_' + wmEi];
     if (!wmExState) return;
+    // Resolve meta the same way the chip render does. exerciseMeta is
+    // only attached in stateFromWorkout for ad-hoc / extras-on-plan rows;
+    // for plan-day prescribed exercises we fall back to the library row
+    // by name (matches the chip render at js/ui.js render site for
+    // plan-day prescribed cards). Without this fallback, the first tap
+    // on a per_side-default plan-day exercise computes current='total'
+    // and silently stamps the same value the chip already displays.
     var wmCurMeta = wmExState.subExercise || wmExState.exerciseMeta;
+    if (!wmCurMeta && !wmSt.isAdHoc && plan && plan.days && plan.days[wmDi] && plan.days[wmDi].exercises && plan.days[wmDi].exercises[wmEi]) {
+      wmCurMeta = exerciseLibraryByName[normName(plan.days[wmDi].exercises[wmEi].name)] || null;
+    }
     var wmCurMode = effectiveWeightMode(wmExState.sets[0], wmCurMeta);
     var wmNext = wmCurMode === 'per_side' ? 'total' : 'per_side';
     setExerciseWeightMode(wmDi, wmEi, wmNext).then(function() {
