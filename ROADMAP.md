@@ -1,6 +1,18 @@
 # Roadmap
 
-Forward-looking scope for the workout tracker. Last updated 2026-05-01. Each entry notes whether an explicit design exists (→ `DECISIONS.md`) or it's just a recorded idea.
+Forward-looking scope for the workout tracker. Last updated 2026-05-02. Each entry notes whether an explicit design exists (→ `DECISIONS.md`) or it's just a recorded idea.
+
+## Shipped — v3.0.0 (2026-05-02)
+
+Live at www.sebvel.app as of `v3.0.0`. The v3 line opens with the no-plan state becoming a first-class experience: the central workflow shifts from "you always have a plan loaded" to "you may have a plan loaded, but you may also be in a deliberate no-plan state without it feeling broken."
+
+- **End plan + no-plan UX as first-class experience (`v3.0.0`).** Three motivating scenarios collapsed into one code path — mesocycle complete, pause/break, mistake recovery — all served by a single "End plan" affordance. Surfaces:
+  - **Plans modal "End plan" button** on the active row (between Rename and Activate). Native confirm → `endActivePlan` flips `is_active = false`, clears plan-anchored in-memory state (`activePlanId` / `plan` / `todayState` / `todayPlanStates` / `historicalCache` / `daysWithHistory` / `exerciseIdCache` / `currentDay` / `suggestedDayIndex`), calls `refreshCoachForNewSession` so coach context drops the now-stale plan block, calls `clearHydrationSnapshot` so warm-boot lands on the empty state, defensively `stopTimerTick`s any running session interval. End is fully reversible via the existing `activateExistingPlan` — workouts, sets, and coach history are preserved across the round trip. No schema changes.
+  - **Refreshed empty state.** The v1 "Tap Import to load your weekly plan JSON" relic is gone. `#emptyState` is now populated by `renderEmptyState` (ui.js) with three CTAs (Generate / Use a template / Blank session), a View full History link, and a Recent workouts list. `fetchRecentWorkouts(userId, 5)` returns the 5 most recent workouts (any `plan_id`, including ad-hoc) enriched with plan title + day name + location + done-set count; rows render as clickable bars and open via `openHistory()` + `openHistoryDetail(id)` so the back button lands sensibly on the History week view.
+  - **Day-picker dropdown placeholder.** When `buildTabs` produces no plan-day or ad-hoc options, it renders a single disabled `<option>` reading "No active plan or session" instead of hiding the wrapper. UI chrome stays consistent.
+  - **Start-screen overlay no longer forces the user.** Pre-v3 the overlay auto-opened on hydrate's no-plan branch and after `onEndPlan`, with the close button hidden when there was nowhere to fall back to. Now the empty state IS the fallback, so the overlay does not auto-open on End / no-plan-hydrate, and its close button is always available. Manual entry via the empty-state Template CTA or hamburger → Start a workout still works.
+  - **No-plan hydrate loads the exercise library.** Pre-v3, `hydrate`'s no-plan branch returned early without loading `exerciseLibraryById`, so `stateFromWorkout` resolved `exerciseMeta` to null and `renderHistoryDetail` fell back to the literal "Exercise" string for every card — visible when tapping a Recent workouts row in no-plan state. The branch now `await`s `loadExerciseLibrary()` and fires `loadLocations()` in the background so History detail resolves names + gym tags correctly.
+  - **Spec + plan:** [docs/superpowers/specs/2026-05-02-end-plan-and-no-plan-ux-design.md](docs/superpowers/specs/2026-05-02-end-plan-and-no-plan-ux-design.md), [docs/superpowers/plans/2026-05-02-end-plan-and-no-plan-ux.md](docs/superpowers/plans/2026-05-02-end-plan-and-no-plan-ux.md).
 
 ## Shipped — v2.5.x (2026-04-23 → 2026-05-01)
 
@@ -148,4 +160,4 @@ Next-tier AI features not yet built. Order is rough priority.
 
 ## Known limitations to fix
 
-*(No open v1.1 or v2 limitations right now — all previously documented items have been addressed. Keep adding here as new ones surface.)*
+- **No-plan hydrate doesn't load today's ad-hocs (v3.0.0 follow-up).** When a user signs in or hard-reloads in no-plan state with an in-progress ad-hoc workout from earlier today, the ad-hoc falls out of the visible UI — the workout row is preserved in the DB but `todayAdHocs` is never populated because `hydrate`'s no-plan branch returns after loading the library + locations. Pre-existing pre-v3 (the no-plan path was minimal until v3 made it a first-class state). Fix: in the no-plan branch, parallel-load workouts (filtered to `plan_id IS NULL` within `sessionBounds`) alongside the library + locations, populate `todayAdHocs` via `stateFromWorkout`, and run a focus-hierarchy step that picks an in-progress ad-hoc if any (mirroring the plan-hydrate logic at app.js:232-260). Renders a focused ad-hoc card instead of the empty state in that case. Low priority — exercising the bug requires the specific sequence "no plan + start an ad-hoc + reload."
