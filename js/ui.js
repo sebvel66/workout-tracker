@@ -6280,7 +6280,7 @@ document.getElementById('historyBody').addEventListener('click', function(e) {
       var histWmWid = histWmChip.getAttribute('data-history-workout-id');
       var histWmDetails = historyDetails[histWmWid];
       if (!histWmDetails) return;
-      var histWmEx = histWmDetails.exercises['ex_' + histWmEi];
+      var histWmEx = histWmDetails.state.exercises['ex_' + histWmEi];
       if (!histWmEx) return;
       var histWmCur = (histWmEx.sets[0] && histWmEx.sets[0].weight_mode)
         || (histWmEx.exerciseMeta && histWmEx.exerciseMeta.weight_mode)
