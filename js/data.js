@@ -2099,6 +2099,13 @@ async function createAdHocSession() {
     };
     todayAdHocs.push(adState);
     focusTab('ah_' + res.data.id);
+    // Hide the no-plan empty state (if it was visible) and show the
+    // summary bar — matches the pattern used by savePlanAsActive,
+    // activateExistingPlan, onEndPlan's focused-ad-hoc branch, and
+    // the hydrate paths in app.js. Idempotent when emptyState was
+    // already hidden (e.g., creating an ad-hoc from inside a plan day).
+    document.getElementById('emptyState').style.display = 'none';
+    document.getElementById('summaryBar').style.display = 'flex';
     buildTabs();
     buildDay(currentDay);
     refreshCoachForNewSession();
@@ -2456,7 +2463,11 @@ async function deleteAdHocSession() {
     return;
   }
   todayAdHocs = todayAdHocs.filter(function(ah) { return ah.workoutId !== state.workoutId; });
-  // Focus plan day 0 if a plan exists, else first remaining ad-hoc, else 0.
+  // Focus plan day 0 if a plan exists, else first remaining ad-hoc, else
+  // drop back into the no-plan empty state. The third branch needs an
+  // explicit DOM reset because buildDay(0) returns early when `plan` is
+  // null, so neither the leftover ad-hoc DOM in #workoutContainer nor
+  // the hidden #emptyState would otherwise be touched.
   if (plan) {
     focusTab(0);
   } else if (todayAdHocs.length) {
@@ -2464,6 +2475,10 @@ async function deleteAdHocSession() {
   } else {
     currentDay = 0;
     todayState = null;
+    document.getElementById('workoutContainer').innerHTML = '';
+    document.getElementById('emptyState').style.display = 'block';
+    document.getElementById('summaryBar').style.display = 'none';
+    if (typeof renderEmptyState === 'function') renderEmptyState();
   }
   invalidateHistoryCache();
   buildTabs();

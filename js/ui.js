@@ -3512,6 +3512,14 @@ async function onEndPlan(planId) {
       // alongside the focused ad-hoc. Close button is always visible.
       openStartScreen();
     } else {
+      // No ad-hoc to focus — fall fully back into the no-plan empty state.
+      // The Plans modal entry path means #emptyState was hidden before this
+      // call; renderEmptyState repopulates innerHTML but doesn't toggle
+      // display, so do that explicitly here (matches the hydrate path in
+      // app.js:199-201).
+      document.getElementById('workoutContainer').innerHTML = '';
+      document.getElementById('emptyState').style.display = 'block';
+      document.getElementById('summaryBar').style.display = 'none';
       if (typeof renderEmptyState === 'function') renderEmptyState();
       buildTabs();
     }
