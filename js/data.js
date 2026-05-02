@@ -2578,6 +2578,66 @@ async function activateExistingPlan(planId) {
   return r2.data;
 }
 
+// Deactivate the currently-active plan without replacing it. Used by the
+// Plans modal "End plan" action. Unlike savePlanAsActive / activateExistingPlan
+// this leaves the user in a no-plan state — DB plan row stays intact (is_active
+// flipped to false), all attached workouts/sets/coach history preserved. The
+// user can re-activate via the Plans modal at any time.
+//
+// Mirrors the structure of activateExistingPlan but in reverse: DB write
+// first, then in-memory state cleared, then UI re-rendered into empty-state.
+async function endActivePlan() {
+  if (!userId) throw new Error('Not signed in');
+  if (!activePlanId) throw new Error('No active plan to end');
+
+  var r = await sb.from('plans').update({ is_active: false })
+    .eq('user_id', userId).eq('is_active', true);
+  if (r.error) throw new Error(r.error.message);
+
+  // Clear plan-anchored in-memory state. planCache is intentionally retained
+  // — other plans may still be browsable via the Plans modal.
+  activePlanId = null;
+  plan = null;
+  todayState = null;
+  todayPlanStates = {};
+  historicalCache = {};
+  daysWithHistory = {};
+  exerciseIdCache = {};
+  currentDay = 0;
+  suggestedDayIndex = null;
+
+  // Coach context is plan-anchored; rebuild against the now-empty plan slot
+  // so chat doesn't keep referencing the ended plan. buildCoachContext
+  // (data.js:2801) handles plan == null cleanly — _formatPlanForCoach
+  // returns '' when plan is null/empty, so the plan block just drops out.
+  if (typeof refreshCoachForNewSession === 'function') {
+    refreshCoachForNewSession();
+  }
+
+  // Drop the hydration snapshot. saveHydrationSnapshot's existing guard
+  // (`if (!activePlanId || !plan) return;`) means we can't save a no-plan
+  // snapshot directly — clearing is the right move. paintFromCache will
+  // skip on next boot and hydrate runs from scratch into the empty state.
+  if (typeof clearHydrationSnapshot === 'function') {
+    clearHydrationSnapshot();
+  }
+
+  // UI side effects: tracker drops to empty state. Caller is responsible
+  // for re-rendering (renderEmptyState in ui.js). We only handle the
+  // direct DOM toggles here that are already done by savePlanAsActive's
+  // mirror — keeps the data-layer / UI-layer split clean.
+  var emptyEl = document.getElementById('emptyState');
+  if (emptyEl) emptyEl.style.display = 'block';
+  var summaryEl = document.getElementById('summaryBar');
+  if (summaryEl) summaryEl.style.display = 'none';
+  var titleEl = document.getElementById('planTitle');
+  if (titleEl) titleEl.textContent = 'No active plan';
+  var weekEl = document.getElementById('planWeek');
+  if (weekEl) weekEl.textContent = '';
+  var container = document.getElementById('workoutContainer');
+  if (container) container.innerHTML = '';
+}
+
 // ---- Templates ----
 // Templates are plans rows with is_template = true, is_active = false.
 // They're never activated directly — they're copied into ad-hoc sessions
