@@ -418,14 +418,19 @@ function buildTabs() {
     }
     h += '</optgroup>';
   }
+  // When neither plan-days nor ad-hocs are available, render a single
+  // disabled placeholder so the dropdown isn't an empty box. Keeps the
+  // chrome present for visual consistency rather than collapsing it.
+  if (h === '') {
+    h = '<option disabled selected>No active plan or session</option>';
+  }
   sel.innerHTML = h;
 
-  // Hide the dropdown wrapper when there's nothing to focus on. The
-  // plan title / week header above stays visible (or shows "No active
-  // plan"), and the New Session button below stays available.
+  // Wrapper is always visible now — the placeholder option above
+  // ensures the dropdown always has at least one entry.
   var wrap = sel.closest('.day-picker-row');
   if (wrap) {
-    wrap.style.display = (h === '') ? 'none' : '';
+    wrap.style.display = '';
   }
 }
 
@@ -1279,10 +1284,16 @@ function renderEmptyStateRecent() {
   body.innerHTML = h;
 
   // Click delegate: tap a row to open in the History detail modal.
+  // openHistoryDetail writes to elements inside the History overlay
+  // and assumes the overlay is already showing — so we fire openHistory
+  // first to mount the modal + initialize week state (so the ← back
+  // button has a week to return to), then drill into the detail.
   body.addEventListener('click', function(e) {
     var row = e.target.closest('[data-recent-workout-id]');
     if (!row) return;
-    openHistoryDetail(row.getAttribute('data-recent-workout-id'));
+    var wid = row.getAttribute('data-recent-workout-id');
+    openHistory();
+    openHistoryDetail(wid);
   });
 }
 
