@@ -1196,7 +1196,7 @@ async function submitCustomForm() {
 
 // Render the empty-state tracker view (no active plan). Three CTAs
 // (Generate / Use a template / Blank session), a View full History
-// link, and a Recent workouts list (last 7 days, tappable to open
+// link, and a Recent workouts list (5 most recent, tappable to open
 // in the History detail modal).
 //
 // Called whenever the no-plan empty state needs to refresh — after
@@ -1243,7 +1243,7 @@ function renderEmptyState() {
 
   // Async-fill the Recent workouts list. Render immediately above so
   // the buttons show at 0ms; the list fades in when the query lands.
-  fetchRecentWorkouts(userId, 7, 10).then(function(rows) {
+  fetchRecentWorkouts(userId, 5).then(function(rows) {
     recentWorkoutsCache = rows;
     renderEmptyStateRecent();
   });
@@ -1255,7 +1255,7 @@ function renderEmptyStateRecent() {
   var rows = recentWorkoutsCache;
   if (!rows) { body.textContent = 'Loading…'; return; }
   if (!rows.length) {
-    body.innerHTML = '<div class="empty-state-recent-empty">No recent training in the last 7 days.</div>';
+    body.innerHTML = '<div class="empty-state-recent-empty">No prior workouts logged.</div>';
     return;
   }
   var h = '<div class="empty-state-recent-list">';

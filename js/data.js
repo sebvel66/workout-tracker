@@ -559,29 +559,21 @@ async function loadEarliestWorkoutDate() {
   return earliestWorkoutDate;
 }
 
-// Fetch recent workouts for the empty-state Recent list. Returns up to
-// `limit` workouts within the last `days` calendar days, most recent
-// first, with embedded plan metadata + location name + set count.
+// Fetch the N most recent workouts for the empty-state Recent list,
+// ordered newest first. Embeds plan metadata + location name + set count.
 //
 // Used only by the no-plan empty state, so we don't need full set rows
 // or summary stats — just enough to render a clickable row that opens
 // in the History detail modal.
-async function fetchRecentWorkouts(userId, days, limit) {
+async function fetchRecentWorkouts(userId, limit) {
   if (!userId) return [];
-  days = days || 7;
-  limit = limit || 10;
-
-  // Cutoff at local midnight `days` days ago. performed_at is a timestamptz;
-  // compare against an ISO timestamp.
-  var cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
-  var cutoffIso = new Date(cutoffMs).toISOString();
+  limit = limit || 5;
 
   try {
     var r = await sb.from('workouts')
       .select('id, performed_at, day_index, title, plan_id, location_id, ' +
               'plans(title, data), locations(name)')
       .eq('user_id', userId)
-      .gte('performed_at', cutoffIso)
       .order('performed_at', { ascending: false })
       .limit(limit);
     if (r.error) throw r.error;
@@ -2692,6 +2684,12 @@ async function endActivePlan() {
   if (typeof clearHydrationSnapshot === 'function') {
     clearHydrationSnapshot();
   }
+
+  // Stop the running session timer interval if it was ticking against
+  // the now-cleared Day card. Self-cleans on next tick anyway (the
+  // tick callback finds #sessionTimer missing and calls stopTimerTick),
+  // but stopping eagerly avoids a stray tick re-rendering anything.
+  if (typeof stopTimerTick === 'function') stopTimerTick();
 
   // UI side effects: tracker drops to empty state. Caller is responsible
   // for re-rendering (renderEmptyState in ui.js). We only handle the
