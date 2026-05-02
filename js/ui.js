@@ -5642,7 +5642,9 @@ async function runExport() {
                   exercise_name: ex.name || null,
                   equipment: ex.equipment || null,
                   muscle_group: ex.muscle_group || null,
-                  weight_mode: ex.weight_mode || null,
+                  // Effective weight_mode (v3.1.0): per-set override wins over
+                  // exercise's library default. NULL means "inherit library default."
+                  weight_mode: s.weight_mode || ex.weight_mode || null,
                   exercise_order: s.exercise_order,
                   set_order: s.set_order,
                   prescribed_weight: s.prescribed_weight,
@@ -5699,7 +5701,8 @@ async function runExport() {
             ex.name || '',
             ex.equipment || '',
             ex.muscle_group || '',
-            ex.weight_mode || '',
+            // Effective mode (v3.1.0): per-set override wins.
+            s.weight_mode || ex.weight_mode || '',
             s.exercise_order,
             s.set_order,
             s.prescribed_weight != null ? s.prescribed_weight : '',
