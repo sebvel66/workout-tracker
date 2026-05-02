@@ -44,6 +44,10 @@ var photosViewerId = null;          // id of the photo currently in the viewer
 // 'review' (accept/cancel the returned plan).
 var generateView = 'inputs';        // 'inputs' | 'loading' | 'review'
 var generateMode = 'plan';          // 'plan' | 'analyze' — set at submit time
+
+// Empty-state recent workouts cache — lazily populated by renderEmptyState;
+// null = not yet fetched.
+var recentWorkoutsCache = null;
 var generatedPlan = null;           // the full plan JSON returned by /api/generate-plan
 var generatedAnalysis = null;       // the analysis object from mode=analyze
 var generatedMeta = null;           // { model, usage, generated_at, elapsed_s }
@@ -1178,6 +1182,100 @@ async function submitCustomForm() {
     console.error('submitCustomForm error:', err);
     showToast("Couldn't create exercise: " + err.message, null);
   }
+}
+
+// ---- Empty state (no active plan) ----
+
+// Render the empty-state tracker view (no active plan). Three CTAs
+// (Generate / Use a template / Blank session), a View full History
+// link, and a Recent workouts list (last 7 days, tappable to open
+// in the History detail modal).
+//
+// Called whenever the no-plan empty state needs to refresh — after
+// endActivePlan, on hydrate's no-plan branch, and on sign-in when
+// the user has no active plan.
+function renderEmptyState() {
+  var el = document.getElementById('emptyState');
+  if (!el) return;
+
+  var h = '';
+  h += '<div class="empty-state-icon">🏋️</div>';
+  h += '<h3>No active plan</h3>';
+  h += '<p class="empty-state-hint">Pick something to work on, or generate a new plan.</p>';
+
+  h += '<div class="empty-state-actions">';
+  h += '<button type="button" class="empty-cta primary" id="emptyCtaGenerate">Generate a plan</button>';
+  h += '<button type="button" class="empty-cta" id="emptyCtaTemplate">Use a template</button>';
+  h += '<button type="button" class="empty-cta" id="emptyCtaBlank">Blank session</button>';
+  h += '<button type="button" class="empty-cta link" id="emptyCtaHistory">View full History</button>';
+  h += '</div>';
+
+  h += '<div class="empty-state-recent" id="emptyStateRecent">';
+  h += '<div class="empty-state-recent-label">Recent workouts</div>';
+  h += '<div class="empty-state-recent-body">Loading…</div>';
+  h += '</div>';
+
+  el.innerHTML = h;
+
+  // Wire button clicks. These reuse existing handlers — no new flows.
+  var btnGen = document.getElementById('emptyCtaGenerate');
+  if (btnGen) btnGen.addEventListener('click', function() { openGenerate(); });
+  var btnTpl = document.getElementById('emptyCtaTemplate');
+  if (btnTpl) btnTpl.addEventListener('click', function() {
+    // The Templates flow lives inside the start screen as an inline
+    // expanding card. Open the start screen — user clicks "Use a
+    // template" there. One extra tap, but reuses the existing UX
+    // without introducing a separate templates-picker modal.
+    openStartScreen();
+  });
+  var btnBlank = document.getElementById('emptyCtaBlank');
+  if (btnBlank) btnBlank.addEventListener('click', function() { createAdHocSession(); });
+  var btnHist = document.getElementById('emptyCtaHistory');
+  if (btnHist) btnHist.addEventListener('click', function() { openHistory(); });
+
+  // Async-fill the Recent workouts list. Render immediately above so
+  // the buttons show at 0ms; the list fades in when the query lands.
+  fetchRecentWorkouts(userId, 7, 10).then(function(rows) {
+    recentWorkoutsCache = rows;
+    renderEmptyStateRecent();
+  });
+}
+
+function renderEmptyStateRecent() {
+  var body = document.querySelector('#emptyStateRecent .empty-state-recent-body');
+  if (!body) return;
+  var rows = recentWorkoutsCache;
+  if (!rows) { body.textContent = 'Loading…'; return; }
+  if (!rows.length) {
+    body.innerHTML = '<div class="empty-state-recent-empty">No recent training in the last 7 days.</div>';
+    return;
+  }
+  var h = '<div class="empty-state-recent-list">';
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i];
+    var d = new Date(r.performed_at);
+    var dateLabel = d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+    var nameLabel;
+    if (r.day_name) nameLabel = r.day_name;
+    else if (r.title) nameLabel = r.title;
+    else nameLabel = 'Ad-hoc session';
+    var locTag = r.location_name ? ' · @' + escapeHtml(r.location_name) : '';
+    var setLabel = r.set_count + ' set' + (r.set_count === 1 ? '' : 's');
+    h += '<button type="button" class="empty-recent-row" data-recent-workout-id="' + escapeAttr(r.id) + '">';
+    h += '<span class="empty-recent-date">' + escapeHtml(dateLabel) + '</span>';
+    h += '<span class="empty-recent-name">' + escapeHtml(nameLabel) + '</span>';
+    h += '<span class="empty-recent-meta">' + escapeHtml(setLabel) + locTag + '</span>';
+    h += '</button>';
+  }
+  h += '</div>';
+  body.innerHTML = h;
+
+  // Click delegate: tap a row to open in the History detail modal.
+  body.addEventListener('click', function(e) {
+    var row = e.target.closest('[data-recent-workout-id]');
+    if (!row) return;
+    openHistoryDetail(row.getAttribute('data-recent-workout-id'));
+  });
 }
 
 // ---- Start screen modal (flexible session start) ----

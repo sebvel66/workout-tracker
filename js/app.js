@@ -121,9 +121,10 @@ async function hydrate() {
         __removeRefreshingPill();
       }
       document.getElementById('emptyState').style.display = 'block';
+      if (typeof renderEmptyState === 'function') renderEmptyState();
       document.getElementById('summaryBar').style.display = 'none';
-      document.getElementById('planTitle').textContent = 'Workout Tracker';
-      document.getElementById('planWeek').textContent = 'No plan loaded';
+      document.getElementById('planTitle').textContent = 'No active plan';
+      document.getElementById('planWeek').textContent = '';
       document.getElementById('dayPicker').innerHTML = '';
       openStartScreen();
       return;

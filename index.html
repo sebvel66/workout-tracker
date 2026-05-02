@@ -578,6 +578,82 @@ html, body {
 .empty-state-icon { font-size: 48px; margin-bottom: 16px; }
 .empty-state h3 { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
 .empty-state p { font-size: 14px; color: var(--text2); line-height: 1.6; }
+.empty-state-hint {
+  color: var(--text2);
+  margin: 8px 0 24px;
+  font-size: 14px;
+}
+.empty-state-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 320px;
+  margin: 0 auto 24px;
+}
+.empty-cta {
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  color: var(--text);
+  font-family: 'Outfit', sans-serif;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.empty-cta:hover { background: var(--surface3); }
+.empty-cta.primary {
+  background: var(--accent);
+  color: var(--accent-text, white);
+  border-color: var(--accent);
+}
+.empty-cta.link {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text2);
+  font-weight: 500;
+  text-decoration: underline;
+}
+.empty-state-recent {
+  max-width: 480px;
+  margin: 0 auto;
+  text-align: left;
+}
+.empty-state-recent-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text3);
+  margin-bottom: 8px;
+  padding: 0 4px;
+}
+.empty-state-recent-body { display: flex; flex-direction: column; gap: 6px; }
+.empty-state-recent-empty {
+  color: var(--text3);
+  font-size: 13px;
+  padding: 12px;
+  text-align: center;
+}
+.empty-state-recent-list { display: flex; flex-direction: column; gap: 6px; }
+.empty-recent-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+.empty-recent-row:hover { background: var(--surface3); }
+.empty-recent-date { color: var(--text2); white-space: nowrap; }
+.empty-recent-name { font-weight: 600; }
+.empty-recent-meta { color: var(--text3); font-size: 12px; white-space: nowrap; }
 
 /* Rest timer — non-blocking floating pill (v2.5.9). Replaces the
  * pre-v2.5.9 centered modal + backdrop overlay that blocked the whole
@@ -2387,11 +2463,7 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
   </div>
 </div>
 
-<div class="empty-state" id="emptyState">
-  <div class="empty-state-icon">🏋️</div>
-  <h3>No Plan Loaded</h3>
-  <p>Tap <strong>Import</strong> to load your weekly plan JSON, then start tracking.</p>
-</div>
+<div class="empty-state" id="emptyState"></div>
 <div class="workout-container" id="workoutContainer"></div>
 
 <div class="summary-bar" id="summaryBar">
