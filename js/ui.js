@@ -1335,14 +1335,11 @@ function openStartScreen() {
     generateTitle.textContent = 'Generate a plan';
   }
 
-  // Close affordance: only allowed when there is a fallback state to land on.
-  // No-plan + nothing-focused case hides close; user must pick a path.
-  var hasFallback = hasPlan || (todayAdHocs && todayAdHocs.length);
-  if (hasFallback) {
-    closeBtn.classList.remove('hidden');
-  } else {
-    closeBtn.classList.add('hidden');
-  }
+  // Close button is always available — the empty state is the no-plan
+  // UI now (Generate / Template / Blank / View History + Recent
+  // workouts), so dismissing this overlay always lands on a usable
+  // surface. Pre-v3 we hid close when there was nothing to fall back to.
+  closeBtn.classList.remove('hidden');
 
   overlay.classList.add('show');
 }
@@ -3229,20 +3226,10 @@ async function onEndPlan(planId) {
     await endActivePlan();
     closePlans();
     showToast('Plan ended. Activate again from Plans anytime.', null);
-    // Re-render the empty state so the Recent workouts list and CTAs
-    // are populated correctly. renderEmptyState arrives in Task 4 — for
-    // now the existing static markup is what shows.
     if (typeof renderEmptyState === 'function') {
       renderEmptyState();
     }
-    // Re-render the dropdown — it should hide if there are no ad-hocs
-    // today (Task 5 adds the visibility toggle; for now buildTabs just
-    // produces empty HTML, which is acceptable).
     buildTabs();
-    // Auto-open the start screen if there's nothing to focus on.
-    if (!todayAdHocs || !todayAdHocs.length) {
-      openStartScreen();
-    }
   } catch(err) {
     console.error('onEndPlan error:', err);
     showToast("Couldn't end plan: " + (err.message || 'unknown error'), null);

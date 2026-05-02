@@ -126,7 +126,6 @@ async function hydrate() {
       document.getElementById('planTitle').textContent = 'No active plan';
       document.getElementById('planWeek').textContent = '';
       document.getElementById('dayPicker').innerHTML = '';
-      openStartScreen();
       return;
     }
     activePlanId = planRes.data.id;
