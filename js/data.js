@@ -559,6 +559,77 @@ async function loadEarliestWorkoutDate() {
   return earliestWorkoutDate;
 }
 
+// Fetch recent workouts for the empty-state Recent list. Returns up to
+// `limit` workouts within the last `days` calendar days, most recent
+// first, with embedded plan metadata + location name + set count.
+//
+// Used only by the no-plan empty state, so we don't need full set rows
+// or summary stats — just enough to render a clickable row that opens
+// in the History detail modal.
+async function fetchRecentWorkouts(userId, days, limit) {
+  if (!userId) return [];
+  days = days || 7;
+  limit = limit || 10;
+
+  // Cutoff at local midnight `days` days ago. performed_at is a timestamptz;
+  // compare against an ISO timestamp.
+  var cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
+  var cutoffIso = new Date(cutoffMs).toISOString();
+
+  try {
+    var r = await sb.from('workouts')
+      .select('id, performed_at, day_index, title, plan_id, location_id, ' +
+              'plans(title, data), locations(name)')
+      .eq('user_id', userId)
+      .gte('performed_at', cutoffIso)
+      .order('performed_at', { ascending: false })
+      .limit(limit);
+    if (r.error) throw r.error;
+    var workouts = r.data || [];
+    if (!workouts.length) return [];
+
+    // Set counts via a separate query so we don't depend on PostgREST
+    // aggregate embeds (which require a relationship hint and are noisier
+    // to debug). Cheap — workouts.length is at most `limit`.
+    var workoutIds = workouts.map(function(w) { return w.id; });
+    var sr = await sb.from('sets')
+      .select('workout_id')
+      .eq('user_id', userId)
+      .in('workout_id', workoutIds)
+      .eq('done', true);
+    var counts = {};
+    if (!sr.error && sr.data) {
+      for (var i = 0; i < sr.data.length; i++) {
+        var wid = sr.data[i].workout_id;
+        counts[wid] = (counts[wid] || 0) + 1;
+      }
+    }
+
+    return workouts.map(function(w) {
+      var planTitle = (w.plans && w.plans.title) || null;
+      var planDays = (w.plans && w.plans.data && w.plans.data.days) || null;
+      var dayName = null;
+      if (w.day_index != null && Array.isArray(planDays) && planDays[w.day_index]) {
+        dayName = planDays[w.day_index].name || ('Day ' + (w.day_index + 1));
+      }
+      return {
+        id: w.id,
+        performed_at: w.performed_at,
+        plan_id: w.plan_id,
+        plan_title: planTitle,
+        day_index: w.day_index,
+        day_name: dayName,
+        title: w.title,
+        location_name: w.locations ? w.locations.name : null,
+        set_count: counts[w.id] || 0,
+      };
+    });
+  } catch (err) {
+    console.error('fetchRecentWorkouts error:', err);
+    return [];
+  }
+}
+
 // ---- Week summary (shared: History browser UI + AI planner Edge Function) ----
 //
 // Fetches one week of training data and returns a structured summary with
