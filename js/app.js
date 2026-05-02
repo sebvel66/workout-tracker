@@ -120,12 +120,23 @@ async function hydrate() {
         clearHydrationSnapshot();
         __removeRefreshingPill();
       }
+
+      // Load the exercise library even without a plan. History detail
+      // for ad-hoc (and now-deactivated-plan) workouts looks up names
+      // + weight modes by exercise_id via exerciseLibraryById; pre-v3
+      // this branch returned early without loading it, so every set's
+      // exerciseMeta resolved to null and the History renderer fell
+      // back to the literal "Exercise" placeholder. Locations matters
+      // for gym-tag rendering — fire in background.
+      try { await loadExerciseLibrary(); } catch (e) { console.error('no-plan library load failed', e); }
+      loadLocations();
+
       document.getElementById('emptyState').style.display = 'block';
       if (typeof renderEmptyState === 'function') renderEmptyState();
       document.getElementById('summaryBar').style.display = 'none';
       document.getElementById('planTitle').textContent = 'No active plan';
       document.getElementById('planWeek').textContent = '';
-      document.getElementById('dayPicker').innerHTML = '';
+      buildTabs();
       return;
     }
     activePlanId = planRes.data.id;
