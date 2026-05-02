@@ -2172,6 +2172,20 @@ async function historyUpdateExerciseNote(workoutId, exerciseOrder, note) {
   if (r.error) throw new Error(r.error.message);
 }
 
+// History-edit equivalent of setExerciseWeightMode. Same fan-out pattern
+// as historyUpdateExerciseRpe: UPDATE all sets in (workout_id, exercise_order).
+// Caller is responsible for patching historyDetails[workoutId] in-memory
+// so re-render reflects the change.
+async function historyUpdateExerciseWeightMode(workoutId, exerciseOrder, mode) {
+  if (!userId || !workoutId) throw new Error('Missing context');
+  var r = await sb.from('sets')
+    .update({ weight_mode: mode })
+    .eq('user_id', userId)
+    .eq('workout_id', workoutId)
+    .eq('exercise_order', exerciseOrder);
+  if (r.error) throw new Error(r.error.message);
+}
+
 // Workout-level notes: lives on the workouts row, not replicated to sets.
 async function historyUpdateWorkoutNotes(workoutId, notes) {
   if (!userId || !workoutId) throw new Error('Missing context');
