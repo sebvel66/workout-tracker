@@ -1499,6 +1499,47 @@ async function updateExerciseFanOut(di, ei) {
   }
 }
 
+// Stamp a weight_mode override on every set in an exercise placement.
+// Mirrors updateExerciseFanOut: single UPDATE keyed on (workout_id,
+// exercise_order). Used by the per-card weight-mode chip in editable
+// today + ad-hoc contexts.
+//
+// `mode` is 'total' or 'per_side' verbatim — we deliberately don't store
+// NULL when the user toggles back to the library default, because that
+// would make the chip's behavior depend on whether the library default
+// has changed since the toggle. See spec for the reasoning.
+async function setExerciseWeightMode(di, ei, mode) {
+  if (!todayState || !todayState.workoutId) {
+    // Not yet persisted — update memory only. The first persistSet write
+    // will pick up sl.weight_mode via buildSetPayload.
+    var exMem = todayState && todayState.exercises['ex_' + ei];
+    if (exMem) {
+      for (var i = 0; i < exMem.sets.length; i++) {
+        if (exMem.sets[i]) exMem.sets[i].weight_mode = mode;
+      }
+    }
+    return;
+  }
+  var exState = todayState.exercises['ex_' + ei];
+  if (!exState) return;
+  try {
+    var r = await sb.from('sets')
+      .update({ weight_mode: mode })
+      .eq('user_id', userId)
+      .eq('workout_id', todayState.workoutId)
+      .eq('exercise_order', ei);
+    if (r.error) throw r.error;
+    // Mirror to in-memory sets so renders + buildSetPayload (for any
+    // subsequent UPDATE) see the new value without a re-fetch.
+    for (var j = 0; j < exState.sets.length; j++) {
+      if (exState.sets[j]) exState.sets[j].weight_mode = mode;
+    }
+  } catch(err) {
+    console.error('setExerciseWeightMode error:', err);
+    showToast("Weight mode didn't save", function() { setExerciseWeightMode(di, ei, mode); });
+  }
+}
+
 // ---- User-action handlers (called by event listeners in ui.js) ----
 async function logSet(di, ei, si, field, val) {
   if (viewModeFor(di) !== 'editable') return;
@@ -1868,6 +1909,10 @@ function addExtraSet(ei) {
         break;
       }
     }
+    // Inherit the placement's current weight_mode (v3.1.0). New sets in a
+    // toggled placement should carry the same override so renders + volume
+    // math + persistence are consistent.
+    newSet.weight_mode = (exState.sets[0] && exState.sets[0].weight_mode) || null;
     exState.sets.push(newSet);
     buildDay(currentDay);
   });
@@ -1941,6 +1986,10 @@ async function _addDropSetInner(ei) {
   if (lastSet.duration_seconds != null) newSet.duration_seconds = lastSet.duration_seconds;
   if (lastSet.distance != null) newSet.distance = lastSet.distance;
 
+  // Inherit the placement's current weight_mode (v3.1.0). New sets in a
+  // toggled placement should carry the same override so renders + volume
+  // math + persistence are consistent.
+  newSet.weight_mode = (exState.sets[0] && exState.sets[0].weight_mode) || null;
   exState.sets.push(newSet);
   buildDay(currentDay);
 }
