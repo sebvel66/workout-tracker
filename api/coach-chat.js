@@ -17,7 +17,7 @@
 
 export const maxDuration = 30;  // Haiku @ 500 tokens lands well under this.
 
-import { resolveModel } from './_models.js';
+import { resolveModel, modelSupportsTemperature } from './_models.js';
 const MAX_TOKENS = 500;
 const TEMPERATURE = 0.4;
 
@@ -170,7 +170,7 @@ export default async function handler(req, res) {
         body: JSON.stringify({
           model: model,
           max_tokens: MAX_TOKENS,
-          temperature: TEMPERATURE,
+          ...(modelSupportsTemperature(model) ? { temperature: TEMPERATURE } : {}),
           system: [{
             type: 'text',
             text: COACH_SYSTEM_PROMPT,

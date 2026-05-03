@@ -21,7 +21,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveModel } from './_models.js';
+import { resolveModel, modelSupportsTemperature } from './_models.js';
 
 export const maxDuration = 60;  // Claude generation takes ~10-20s; Hobby plan cap.
 
@@ -212,7 +212,7 @@ export default async function handler(req, res) {
         body: JSON.stringify({
           model: model,
           max_tokens: MAX_TOKENS,
-          temperature: TEMPERATURE,
+          ...(modelSupportsTemperature(model) ? { temperature: TEMPERATURE } : {}),
           // Breakpoint 1: the plan-mode system prompt (core + plan suffix).
           // Cached at the tools→system boundary. Invalidated only when
           // either the core or plan suffix file changes.
@@ -865,7 +865,7 @@ async function handleAnalyze(res, userId, rawInputs) {
       body: JSON.stringify({
         model: model,
         max_tokens: ANALYZE_MAX_TOKENS,
-        temperature: TEMPERATURE,
+        ...(modelSupportsTemperature(model) ? { temperature: TEMPERATURE } : {}),
         system: [{
           type: 'text',
           text: SYSTEM_PROMPT_ANALYZE,
@@ -1142,7 +1142,7 @@ async function handleSwap(res, userId, rawInputs) {
       body: JSON.stringify({
         model: model,
         max_tokens: SWAP_MAX_TOKENS,
-        temperature: TEMPERATURE,
+        ...(modelSupportsTemperature(model) ? { temperature: TEMPERATURE } : {}),
         system: [{
           type: 'text',
           text: SWAP_SYSTEM_PROMPT,
@@ -1337,7 +1337,7 @@ async function handleRefine(res, userId, rawInputs) {
       body: JSON.stringify({
         model: model,
         max_tokens: REFINE_MAX_TOKENS,
-        temperature: TEMPERATURE,
+        ...(modelSupportsTemperature(model) ? { temperature: TEMPERATURE } : {}),
         system: [
           {
             type: 'text',
