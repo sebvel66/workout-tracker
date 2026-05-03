@@ -69,12 +69,32 @@ Existing rows without these keys keep working — the resolver falls back to the
 
 ## Allowlist module
 
-A single shared declaration of available models + per-bucket defaults. Two physical copies stay in sync, one server-side and one client-side:
+A single shared declaration of available models + per-bucket defaults. Two physical copies stay in sync — one server-side (ESM) and one client-side (browser globals). The data content (the array, the defaults object, and the function body) is identical between the two; only the module wrapper differs.
 
-- **Server:** `api/_models.js`
-- **Client:** `js/models.js`
+**Server:** `api/_models.js` — ESM (the API files already use ESM per `package.json` `"type": "module"`):
 
-Both files contain identical content:
+```js
+export const AVAILABLE_MODELS = [
+  { id: 'claude-opus-4-7',           label: 'Opus 4.7',   tier: 'most capable' },
+  { id: 'claude-sonnet-4-6',         label: 'Sonnet 4.6', tier: 'balanced' },
+  { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5',  tier: 'fast' },
+];
+
+export const DEFAULT_MODELS = {
+  coach:   'claude-haiku-4-5-20251001',
+  plan:    'claude-sonnet-4-6',
+  analyze: 'claude-sonnet-4-6',
+};
+
+export function resolveModel(requestedId, bucket) {
+  if (requestedId && AVAILABLE_MODELS.some(function(m) { return m.id === requestedId; })) {
+    return requestedId;
+  }
+  return DEFAULT_MODELS[bucket];
+}
+```
+
+**Client:** `js/models.js` — loaded via `<script src>` in `index.html` (no module system; globals):
 
 ```js
 var AVAILABLE_MODELS = [
@@ -95,14 +115,9 @@ function resolveModel(requestedId, bucket) {
   }
   return DEFAULT_MODELS[bucket];
 }
-
-// Server export (only meaningful in api/_models.js — client uses globals)
-if (typeof module !== 'undefined') {
-  module.exports = { AVAILABLE_MODELS: AVAILABLE_MODELS, DEFAULT_MODELS: DEFAULT_MODELS, resolveModel: resolveModel };
-}
 ```
 
-The duplication is acceptable: the project has no build step, the client runs in browser, and the API runs in Node serverless on Vercel — sharing requires either a build pipeline or a runtime fetch from the server. Both are over-engineered for a 3-row constant. Keeping two files in sync is the cost; the operational checklist below makes it explicit.
+The duplication is acceptable: the project has no build step, the client runs in the browser, and the API runs in Node serverless on Vercel — sharing requires either a build pipeline or a runtime fetch from the server. Both are over-engineered for a 3-row constant. Keeping the two files' data sections in sync is the cost; the operational checklist below makes it explicit.
 
 ## Resolver helpers (client)
 
