@@ -17,7 +17,7 @@
 
 export const maxDuration = 30;  // Haiku @ 500 tokens lands well under this.
 
-const MODEL = 'claude-haiku-4-5-20251001';
+import { resolveModel } from './_models.js';
 const MAX_TOKENS = 500;
 const TEMPERATURE = 0.4;
 
@@ -108,6 +108,12 @@ export default async function handler(req, res) {
       if (typeof m.content !== 'string' || !m.content) return jsonError(res, 400, `Message ${i} has empty content`);
     }
 
+    var requestedModel = (body && body.model) || null;
+    var model = resolveModel(requestedModel, 'coach');
+    if (requestedModel && requestedModel !== model) {
+      console.warn('coach-chat: model fallback', { requested: requestedModel, resolved: model });
+    }
+
     // Side-channel fetches for profile + coach history. Run in parallel;
     // both are non-fatal (formatters return '' on empty input). The
     // results get spliced into messages[0] (the COACHING CONTEXT block
@@ -162,7 +168,7 @@ export default async function handler(req, res) {
           'anthropic-version': '2023-06-01',
         },
         body: JSON.stringify({
-          model: MODEL,
+          model: model,
           max_tokens: MAX_TOKENS,
           temperature: TEMPERATURE,
           system: [{
@@ -200,7 +206,7 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       reply: text,
-      model: MODEL,
+      model: model,
       usage: claudeData.usage || null,
     });
   } catch (err) {

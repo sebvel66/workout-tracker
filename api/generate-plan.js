@@ -21,11 +21,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveModel } from './_models.js';
 
 export const maxDuration = 60;  // Claude generation takes ~10-20s; Hobby plan cap.
 
 // ---- Config ----
-const MODEL = 'claude-sonnet-4-6';
 const MAX_TOKENS = 16000;
 const TEMPERATURE = 0.3;
 const DEFAULT_HISTORY_WEEKS = 4;
@@ -165,6 +165,12 @@ export default async function handler(req, res) {
     };
     const verbatimWeeks = Math.min(MAX_VERBATIM_WEEKS, userInputs.historyWeeks);
 
+    var requestedModel = (rawInputs && rawInputs.model) || null;
+    var model = resolveModel(requestedModel, 'plan');
+    if (requestedModel && requestedModel !== model) {
+      console.warn('generate-plan/plan: model fallback', { requested: requestedModel, resolved: model });
+    }
+
     const t0 = Date.now();
     const [activePlan, history, exercises, photos, coachHistory, coachingProfile] = await Promise.all([
       fetchActivePlan(userId),
@@ -204,7 +210,7 @@ export default async function handler(req, res) {
           'anthropic-version': '2023-06-01',
         },
         body: JSON.stringify({
-          model: MODEL,
+          model: model,
           max_tokens: MAX_TOKENS,
           temperature: TEMPERATURE,
           // Breakpoint 1: the plan-mode system prompt (core + plan suffix).
@@ -275,7 +281,7 @@ export default async function handler(req, res) {
       weeks_analyzed: userInputs.historyWeeks,
       training_days: userInputs.trainingDays,
       include_photos: userInputs.includePhotos,
-      model: MODEL,
+      model: model,
       usage: claudeData.usage || null,
       generated_at: new Date().toISOString(),
     });
@@ -806,6 +812,12 @@ const ANALYZE_MAX_TOKENS = 1400;  // 400 headroom vs the pre-profile-updates bud
 const ANALYZE_PROGRESS_PHOTO_LIMIT = 4;
 
 async function handleAnalyze(res, userId, rawInputs) {
+  var requestedModel = (rawInputs && rawInputs.model) || null;
+  var model = resolveModel(requestedModel, 'analyze');
+  if (requestedModel && requestedModel !== model) {
+    console.warn('generate-plan/analyze: model fallback', { requested: requestedModel, resolved: model });
+  }
+
   const historyWeeks = clampInt(rawInputs.history_weeks, MIN_HISTORY_WEEKS, MAX_HISTORY_WEEKS, DEFAULT_HISTORY_WEEKS);
   const verbatimWeeks = Math.min(MAX_VERBATIM_WEEKS, historyWeeks);
   // Analyze-mode inputs: history_weeks (sets the window), optional notes
@@ -851,7 +863,7 @@ async function handleAnalyze(res, userId, rawInputs) {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: MODEL,
+        model: model,
         max_tokens: ANALYZE_MAX_TOKENS,
         temperature: TEMPERATURE,
         system: [{
@@ -905,7 +917,7 @@ async function handleAnalyze(res, userId, rawInputs) {
     analysis,
     weeks_analyzed: historyWeeks,
     include_photos: includePhotos,
-    model: MODEL,
+    model: model,
     usage: claudeData.usage || null,
     generated_at: new Date().toISOString(),
   });
@@ -1062,6 +1074,12 @@ function validateProfileUpdate(u) {
 // fetchExerciseLibrary + fetchRecentWorkouts with the main path but builds
 // a narrower user message.
 async function handleSwap(res, userId, rawInputs) {
+  var requestedModel = (rawInputs && rawInputs.model) || null;
+  var model = resolveModel(requestedModel, 'plan');
+  if (requestedModel && requestedModel !== model) {
+    console.warn('generate-plan/swap: model fallback', { requested: requestedModel, resolved: model });
+  }
+
   const exercise = rawInputs.exercise;
   if (!exercise || typeof exercise !== 'object' || !exercise.name) {
     return jsonError(res, 400, 'Missing exercise to replace');
@@ -1122,7 +1140,7 @@ async function handleSwap(res, userId, rawInputs) {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: MODEL,
+        model: model,
         max_tokens: SWAP_MAX_TOKENS,
         temperature: TEMPERATURE,
         system: [{
@@ -1181,7 +1199,7 @@ async function handleSwap(res, userId, rawInputs) {
     replacement,
     replaced: exercise.name,
     reason: reason || null,
-    model: MODEL,
+    model: model,
     usage: claudeData.usage || null,
     generated_at: new Date().toISOString(),
   });
@@ -1212,6 +1230,12 @@ const MAX_REFINE_FEEDBACK_LENGTH = 2000;
 const MAX_REFINE_ITERATIONS = 10;  // Hard cap to bound payload size and token bloat
 
 async function handleRefine(res, userId, rawInputs) {
+  var requestedModel = (rawInputs && rawInputs.model) || null;
+  var model = resolveModel(requestedModel, 'plan');
+  if (requestedModel && requestedModel !== model) {
+    console.warn('generate-plan/refine: model fallback', { requested: requestedModel, resolved: model });
+  }
+
   const currentPlan = rawInputs.current_plan;
   if (!currentPlan || typeof currentPlan !== 'object') {
     return jsonError(res, 400, 'current_plan required (full plan JSON from latest iteration)');
@@ -1311,7 +1335,7 @@ async function handleRefine(res, userId, rawInputs) {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: MODEL,
+        model: model,
         max_tokens: REFINE_MAX_TOKENS,
         temperature: TEMPERATURE,
         system: [
@@ -1385,7 +1409,7 @@ async function handleRefine(res, userId, rawInputs) {
     training_days: userInputs.trainingDays,
     include_photos: userInputs.includePhotos,
     iterations: iterationHistory.length + 1,
-    model: MODEL,
+    model: model,
     usage: claudeData.usage || null,
     generated_at: new Date().toISOString(),
   });
