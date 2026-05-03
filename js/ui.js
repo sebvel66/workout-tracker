@@ -2558,12 +2558,14 @@ async function submitGenerateInputs(mode) {
   if (mode === 'analyze') {
     payload = {
       mode: 'analyze',
+      model: modelForAnalyze(),
       history_weeks: historyWeeks,
       include_photos: includePhotos,
       notes: notes,
     };
   } else {
     payload = {
+      model: modelForPlan(),
       start_date: startDate,
       target_duration: targetDuration,
       training_days: trainingDays,
@@ -2932,6 +2934,7 @@ async function submitRefinePlan() {
     var inputs = generatedInputs || {};
     var payload = {
       mode: 'refine',
+      model: modelForPlan(),
       current_plan: generatedPlan,
       iteration_history: iterationHistory,
       new_feedback: feedback,
@@ -3974,7 +3977,7 @@ async function attemptCoachCall(userMsg) {
     var res = await fetch('/api/coach-chat', {
       method: 'POST',
       headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: messages }),
+      body: JSON.stringify({ messages: messages, model: modelForCoach() }),
     });
     var body = await res.json().catch(function() { return null; });
 
@@ -4169,6 +4172,7 @@ async function fireSwapFetch() {
     };
     var payload = {
       mode: 'swap',
+      model: modelForPlan(),
       exercise: exercise,
       reason: swapState.reason || '',
       day_name: swapState.dayName,
