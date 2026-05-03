@@ -963,9 +963,9 @@ function populateCoachingProfileForm(p) {
   setVal('cpPhaseStartDate', p.phase_start_date);
   setVal('cpPhaseNotes', p.phase_notes);
   setVal('cpSpecialInstructions', p.special_instructions);
-  setVal('cpModelCoach',   p.model_coach   || DEFAULT_MODELS.coach);
-  setVal('cpModelPlan',    p.model_plan    || DEFAULT_MODELS.plan);
-  setVal('cpModelAnalyze', p.model_analyze || DEFAULT_MODELS.analyze);
+  setVal('cpModelCoach',   resolveModel(p.model_coach,   'coach'));
+  setVal('cpModelPlan',    resolveModel(p.model_plan,    'plan'));
+  setVal('cpModelAnalyze', resolveModel(p.model_analyze, 'analyze'));
   renderInjuryList(Array.isArray(p.injuries) ? p.injuries : []);
 }
 
