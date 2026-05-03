@@ -2,6 +2,12 @@
 
 Forward-looking scope for the workout tracker. Last updated 2026-05-02. Each entry notes whether an explicit design exists (→ `DECISIONS.md`) or it's just a recorded idea.
 
+## Shipped — v3.2.0 (2026-05-03)
+
+Live at www.sebvel.app as of `v3.2.0`. Per-user AI model selection — Coach, Plan flows, and Analyze each get an independent dropdown in the Coaching Profile screen, backed by a hardcoded allowlist mirrored on client (`js/models.js`) and server (`api/_models.js`).
+
+- **Per-user AI model selection (`v3.2.0`).** New "AI models" section appended to the Coaching Profile form (hamburger → Coaching Profile). Three labelled `<select>` rows: Coach (default Haiku 4.5), Plan flows (default Sonnet 4.6, covers plan / refine / swap modes), Analyze (default Sonnet 4.6). Selections persist as `model_coach` / `model_plan` / `model_analyze` keys inside the existing `coaching_profile.data` JSONB blob — no schema migration. Each AI POST body now includes `model:` resolved via `coachingProfile.model_<bucket> || DEFAULT_MODELS[bucket]`. Server (`api/coach-chat`, `api/generate-plan`) reads the field, validates against `AVAILABLE_MODELS`, falls back to bucket default on miss with a `console.warn` so retired-model selections surface in Vercel logs. Operational pattern for new Anthropic releases: add a row to both `api/_models.js` and `js/models.js`, optionally retire an older entry, push — Vercel deploys client + API together. Spec + plan: [docs/superpowers/specs/2026-05-03-ai-model-selection-design.md](docs/superpowers/specs/2026-05-03-ai-model-selection-design.md), [docs/superpowers/plans/2026-05-03-ai-model-selection.md](docs/superpowers/plans/2026-05-03-ai-model-selection.md).
+
 ## Shipped — v3.1.0 (2026-05-02)
 
 Live at www.sebvel.app as of `v3.1.0`. Per-workout weight-mode toggle — solves the "same exercise, different machine at different gyms" case (e.g., Hammer Strength Incline plate-loaded at gym A, cable-driven at gym B) without forcing a library-level edit.
