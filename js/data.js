@@ -2628,6 +2628,20 @@ async function saveCoachingProfile(profile) {
   return coachingProfile;
 }
 
+// Per-bucket model resolvers (v3.2.0). Reads the user's stored selection
+// from coachingProfile.model_<bucket> (the JSONB blob is loaded flat into
+// `coachingProfile`, not nested under .data — see loadCoachingProfile).
+// Falls back to bucket default if unset or pointing at a retired model.
+function modelForCoach() {
+  return resolveModel(coachingProfile && coachingProfile.model_coach, 'coach');
+}
+function modelForPlan() {
+  return resolveModel(coachingProfile && coachingProfile.model_plan, 'plan');
+}
+function modelForAnalyze() {
+  return resolveModel(coachingProfile && coachingProfile.model_analyze, 'analyze');
+}
+
 // Merge accepted profile updates (from the analyze review's "Apply selected"
 // flow, v2.5 layer 3) into a profile object, returning a new object — does
 // NOT mutate the input. Scalar fields overwrite by field name; injury_*
