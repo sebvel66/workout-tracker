@@ -922,6 +922,24 @@ function closeCoachingProfile() {
   document.getElementById('coachingProfileOverlay').classList.remove('show');
 }
 
+// Populate the three model <select>s from AVAILABLE_MODELS. Run before
+// setVal'ing them so the saved option exists to be selected.
+function populateModelSelects() {
+  var ids = ['cpModelCoach', 'cpModelPlan', 'cpModelAnalyze'];
+  for (var i = 0; i < ids.length; i++) {
+    var sel = document.getElementById(ids[i]);
+    if (!sel) continue;
+    sel.innerHTML = '';
+    for (var j = 0; j < AVAILABLE_MODELS.length; j++) {
+      var m = AVAILABLE_MODELS[j];
+      var opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.label + ' (' + m.tier + ')';
+      sel.appendChild(opt);
+    }
+  }
+}
+
 // Fill every form control with the saved profile. Missing keys leave the
 // control at its default empty state.
 function populateCoachingProfileForm(p) {
@@ -929,6 +947,9 @@ function populateCoachingProfileForm(p) {
     var el = document.getElementById(id);
     if (el) el.value = (val == null) ? '' : String(val);
   };
+  // Populate the model <select> options before setVal'ing — the saved
+  // value's <option> must exist for the assignment to take effect.
+  populateModelSelects();
   setVal('cpSex', p.sex);
   setVal('cpHeightFt', p.height_ft);
   setVal('cpHeightIn', p.height_in);
@@ -942,6 +963,9 @@ function populateCoachingProfileForm(p) {
   setVal('cpPhaseStartDate', p.phase_start_date);
   setVal('cpPhaseNotes', p.phase_notes);
   setVal('cpSpecialInstructions', p.special_instructions);
+  setVal('cpModelCoach',   p.model_coach   || DEFAULT_MODELS.coach);
+  setVal('cpModelPlan',    p.model_plan    || DEFAULT_MODELS.plan);
+  setVal('cpModelAnalyze', p.model_analyze || DEFAULT_MODELS.analyze);
   renderInjuryList(Array.isArray(p.injuries) ? p.injuries : []);
 }
 
@@ -1044,6 +1068,11 @@ async function saveCoachingProfileFromForm() {
     phase_notes: trimOrNull(getVal('cpPhaseNotes')),
     injuries: readInjuryListFromDom(),
     special_instructions: trimOrNull(getVal('cpSpecialInstructions')),
+    // v3.2.0 model selections. Stored as plain strings; resolveModel on
+    // read time handles invalid / retired IDs by falling back to default.
+    model_coach:   trimOrNull(getVal('cpModelCoach'))   || null,
+    model_plan:    trimOrNull(getVal('cpModelPlan'))    || null,
+    model_analyze: trimOrNull(getVal('cpModelAnalyze')) || null,
   };
   var btn = document.getElementById('btnCoachingProfileSave');
   if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
