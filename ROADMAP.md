@@ -2,6 +2,12 @@
 
 Forward-looking scope for the workout tracker. Last updated 2026-05-02. Each entry notes whether an explicit design exists (→ `DECISIONS.md`) or it's just a recorded idea.
 
+## Shipped — v3.3.0 (2026-05-03)
+
+Live at www.sebvel.app as of `v3.3.0`. Empty-state "Generate a plan" CTA now actually works. Pre-v3.3.0 the server-side plan-mode handler bailed with `400 "No active plan. Import a plan before generating."` when there was no active plan, and again with `400 "No workout history found"` when no logged history existed — both predating the v3.0.0 no-plan UX. v3.3.0 closes the design gap by removing both bails.
+
+- **Cold-start plan generation (`v3.3.0`).** Plan-mode no longer requires `activePlan` or non-empty history. `formatCurrentPlan` gains a defensive null guard at its top so callers can pass null safely. `buildUserMessage` prepends a `COLD START` marker to the dynamic text when BOTH `activePlan` and `history` are absent, explicitly telling the planner it's building a first plan from CLIENT PROFILE + USER INPUTS only. When only one is missing (post-End-plan with prior history; or brand-new with profile only), the marker is omitted and the model infers from absent sections. **Analyze error message clarified**: the no-history bail message now names the actual window — `"No workouts in the last N weeks. Try a wider history window or generate a fresh plan first."` — replacing the prior `"Log at least one week of training before requesting an analysis"` which misled users with years of history outside the chosen window. Refine and Swap remain plan-anchored (refine evolves a plan in flight; swap operates on a single exercise within an existing slot — both correctly reject when there's no active plan). System prompts unchanged. Spec + plan: [docs/superpowers/specs/2026-05-03-cold-start-generate-design.md](docs/superpowers/specs/2026-05-03-cold-start-generate-design.md), [docs/superpowers/plans/2026-05-03-cold-start-generate.md](docs/superpowers/plans/2026-05-03-cold-start-generate.md).
+
 ## Shipped — v3.2.0 (2026-05-03)
 
 Live at www.sebvel.app as of `v3.2.0`. Per-user AI model selection — Coach, Plan flows, and Analyze each get an independent dropdown in the Coaching Profile screen, backed by a hardcoded allowlist mirrored on client (`js/models.js`) and server (`api/_models.js`).
