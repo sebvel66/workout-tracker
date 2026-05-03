@@ -182,13 +182,6 @@ export default async function handler(req, res) {
     ]);
     console.log('[generate-plan] data fetch:', Date.now() - t0, 'ms', '· history_weeks:', userInputs.historyWeeks, '· training_days:', userInputs.trainingDays, '· include_photos:', userInputs.includePhotos, '· coach_msgs:', coachHistory.length, '· profile:', coachingProfile ? 'yes' : 'no');
 
-    if (!activePlan) {
-      return jsonError(res, 400, 'No active plan. Import a plan before generating.');
-    }
-    if (!history.length) {
-      return jsonError(res, 400, 'No workout history found. Log at least one week of training before generating a plan.');
-    }
-
     const t1 = Date.now();
     const userMessage = await buildUserMessage({ activePlan, history, exercises, photos, userInputs, verbatimWeeks, coachHistory, coachingProfile });
     console.log('[generate-plan] prompt build (incl photo b64):', Date.now() - t1, 'ms');
@@ -570,6 +563,13 @@ async function buildUserMessage({ activePlan, history, exercises, photos, userIn
   // interpreting plan state, history, coaching context, and user inputs.
   let dynText = '';
   dynText += formatCoachingProfile(coachingProfile);
+  // v3.3.0 cold-start marker — explicit signal to the planner when both
+  // the active plan and history are absent. When only one is missing
+  // (post-End-plan with prior history; or brand-new with no profile yet),
+  // the marker is omitted and the model infers from absent sections.
+  if (!activePlan && history.length === 0) {
+    dynText += 'COLD START: No prior plan and no logged training history. Build the first training week for this client based on CLIENT PROFILE and USER INPUTS below.\n\n';
+  }
   dynText += formatCurrentPlan(activePlan);
   dynText += formatVerbatimHistory(verbatim, activePlan, verbatimWeeks);
   dynText += formatSummarizedHistory(summarized);
@@ -613,6 +613,7 @@ function splitHistoryByRecency(workouts, verbatimWeeks) {
 }
 
 function formatCurrentPlan(activePlan) {
+  if (!activePlan) return '';
   const d = activePlan.data || {};
   let out = 'CURRENT PLAN\n';
   out += `Title: ${d.title || activePlan.title || 'Untitled'}\n`;
@@ -843,7 +844,7 @@ async function handleAnalyze(res, userId, rawInputs) {
   console.log('[generate-plan:analyze] data fetch:', Date.now() - t0, 'ms', '· history_weeks:', historyWeeks, '· include_photos:', includePhotos, '· progress_photos:', (photos.progress || []).length, '· coach_msgs:', coachHistory.length, '· profile:', coachingProfile ? 'yes' : 'no');
 
   if (!history.length) {
-    return jsonError(res, 400, 'No workout history found. Log at least one week of training before requesting an analysis.');
+    return jsonError(res, 400, `No workouts in the last ${historyWeeks} weeks. Try a wider history window or generate a fresh plan first.`);
   }
 
   const t1 = Date.now();
