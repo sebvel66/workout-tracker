@@ -2974,6 +2974,26 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
           <span class="generate-form-label">Anything else the coach should know</span>
           <textarea id="cpSpecialInstructions" class="generate-form-textarea" placeholder="e.g., avoid exercises X, prefer dumbbells over barbells, warmup quirks" rows="3"></textarea>
         </label>
+
+        <div class="profile-section-label" style="margin-top:18px;">AI models</div>
+        <label class="generate-form-row">
+          <span class="generate-form-label">Coach</span>
+          <select id="cpModelCoach" class="generate-form-input"></select>
+          <span class="generate-form-hint">Fast chat replies</span>
+        </label>
+        <label class="generate-form-row">
+          <span class="generate-form-label">Plan flows</span>
+          <select id="cpModelPlan" class="generate-form-input"></select>
+          <span class="generate-form-hint">Plan generation, refinement, swaps</span>
+        </label>
+        <label class="generate-form-row">
+          <span class="generate-form-label">Analyze</span>
+          <select id="cpModelAnalyze" class="generate-form-input"></select>
+          <span class="generate-form-hint">Post-workout reviews + profile updates</span>
+        </label>
+        <div class="generate-form-hint" style="margin-top:6px;">
+          Selections apply on the next request. Switching mid-session may briefly slow the first request after the change (prompt cache cold).
+        </div>
       </div>
     </div>
     <div class="template-editor-footer">
