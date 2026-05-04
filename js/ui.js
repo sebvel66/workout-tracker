@@ -473,6 +473,269 @@ function buildTabs() {
   }
 }
 
+// Returns {html, totalSets, doneSets} for one prescribed plan-day exercise card.
+// Outer caller accumulates totalSets/doneSets for the summary bar.
+// badgeLabel (e.g., 'A1') is prepended to the .exercise-name span when set;
+// null = standalone card with no badge.
+function renderPlanDayExerciseCard(di, ei, planEx, exState, mode, readOnly, badgeLabel) {
+  var ex = planEx;
+  var ek = 'ex_' + ei;
+  var h = '';
+  var exTotal = Math.max(ex.sets.length, exState.sets.length);
+  var totalSets = exTotal;
+  var dn = 0;
+  for (var s = 0; s < exState.sets.length; s++) { if (exState.sets[s] && exState.sets[s].done) dn++; }
+  var doneSets = dn;
+  var ad = dn === exTotal, sd = dn > 0 && !ad;
+  var sc = ad ? 'complete' : sd ? 'partial' : 'pending';
+  var stat = ad ? dn + '/' + exTotal + ' ✓' : dn + '/' + exTotal;
+  var cc = ad ? ' complete' : sd ? ' partial' : '';
+  var dis = readOnly ? ' disabled' : '';
+  // Weight mode + display name track the substitute when one is set —
+  // a per_side substitute for a total prescribed exercise needs the
+  // right label ("LBS/ea") and its own name visible on the card.
+  // Substitute's mode wins when present; otherwise resolve from the
+  // prescribed exercise's library row by name. Per-set override (v3.1.0)
+  // wins over both at the per-row render below.
+  var libDefault = (exState.subExercise && exState.subExercise.weight_mode)
+    ? exState.subExercise.weight_mode
+    : weightModeForName(ex.name);
+  var weightMode = (exState.sets[0] && exState.sets[0].weight_mode) || libDefault;
+  // Cardio detection follows the displayed exercise name — substitutes
+  // can flip a resistance prescription into a cardio one (e.g., user
+  // subs incline treadmill walk for a stalled accessory).
+  var displayNameForCardio = exState.subExercise ? exState.subExercise.name : ex.name;
+  var isCardioRow = isCardioExerciseName(displayNameForCardio);
+  var displayName = exState.subExercise ? exState.subExercise.name : ex.name;
+  var prescribedBadge = exState.subExercise
+    ? '<span class="exercise-sub-origin">was: ' + escapeHtml(ex.name) + '</span>'
+    : '';
+
+  h += '<div class="exercise-card' + cc + '">';
+  var swapBtn = readOnly ? '' : '<button class="card-swap" data-swap-di="' + di + '" data-swap-ei="' + ei + '" aria-label="Swap exercise" type="button">⇄</button>';
+  // chipMeta visibility check: substitute's library row when subbed,
+  // else the prescribed exercise's library row. (Lookup mirrors what
+  // weightModeForName does internally.)
+  var chipMeta = exState.subExercise || exerciseLibraryByName[normName(ex.name)] || null;
+  var chipHtml = renderWeightModeChip(ei, weightMode, chipMeta, readOnly ? 'history-readonly' : 'editable', null);
+  var badgeHtml = badgeLabel ? '<span class="superset-badge">' + escapeHtml(badgeLabel) + '</span>' : '';
+  h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + badgeHtml + escapeHtml(displayName) + prescribedBadge + '</div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(displayName) + '">view recent</button>' + chipHtml + '</div><div class="exercise-status ' + sc + '">' + stat + '</div>' + swapBtn + '</div>';
+  if (ex.note) h += '<div class="exercise-note">' + escapeHtml(ex.note) + '</div>';
+  h += '<div class="sets-container">';
+
+  // Running count of standard (non-drop) sets so the S# label stays
+  // sequential across the prescribed → extras boundary even when
+  // drops are interspersed at the end of the array.
+  var stdSetNum = 0;
+  for (var si = 0; si < ex.sets.length; si++) {
+    var set = ex.sets[si];
+    var setIsDrop = !!(set && set.set_type === 'drop');
+    // Seed prescribed drops in the in-memory state so cascade-on-done
+    // can find them via setType + parentSetIdx (parentSetIdx is the
+    // index of the most recent non-drop set in this exercise's
+    // prescribed sets array). Lazy: only seed if the user hasn't
+    // touched this set yet. Once seeded, the entry behaves like a
+    // manually-added drop for cascade / persist purposes.
+    if (setIsDrop && !exState.sets[si]) {
+      var prescribedParentIdx = si - 1;
+      while (prescribedParentIdx >= 0
+             && ex.sets[prescribedParentIdx]
+             && ex.sets[prescribedParentIdx].set_type === 'drop') {
+        prescribedParentIdx--;
+      }
+      exState.sets[si] = {
+        setType: 'drop',
+        parentSetIdx: prescribedParentIdx >= 0 ? prescribedParentIdx : null,
+      };
+    }
+    var sl = exState.sets[si] || {};
+    // When substituted, the prescribed weight doesn't port to the
+    // substitute (different weight_mode, different strength curve, etc).
+    // Drop the weight anchor but keep rep targets — reps translate across
+    // most substitutions and still give the user a target. User can enter
+    // weight manually or (v2.2.2+) request an AI recommendation.
+    var effectiveSet = exState.subExercise
+      ? { reps_target: set && set.reps_target, reps_range: set && set.reps_range }
+      : set;
+    var pr = fmtP(effectiveSet);
+    // Drops use → label; standard sets get the next S#.
+    var pSetLabel;
+    if (!setIsDrop) {
+      stdSetNum++;
+      pSetLabel = stdSetNum;
+    }
+    h += renderSetRow(di, ei, si, sl, effectiveSet, (sl.weight_mode || weightMode), dis, pr, false, isCardioRow, pSetLabel);
+  }
+
+  // Extras on this prescribed exercise: sets past the plan-defined count.
+  // sl.isExtra is set on these by addExtraSet / stateFromWorkout. Delete
+  // button is rendered via the deletable flag; prescribed rows above stay
+  // immutable.
+  for (var siExtra = ex.sets.length; siExtra < exState.sets.length; siExtra++) {
+    var slExtra = exState.sets[siExtra] || {};
+    // Drops use → label; standard extras get the next sequential S#.
+    var slExtraNum;
+    if (slExtra && slExtra.setType !== 'drop') {
+      stdSetNum++;
+      slExtraNum = stdSetNum;
+    }
+    h += renderSetRow(di, ei, siExtra, slExtra, null, (slExtra.weight_mode || weightMode), dis, '—', !readOnly, isCardioRow, slExtraNum);
+  }
+  if (mode === 'editable') {
+    h += '<button class="add-set-btn" data-add-set-ei="' + ei + '">+ Add Set</button>';
+    // Drop Set affordance — only when there's a set to chain off of and
+    // the exercise isn't cardio (drops don't apply to duration-based work).
+    if (!isCardioRow && exState.sets && exState.sets.length > 0) {
+      h += '<button class="add-set-btn add-drop-btn" data-add-drop-ei="' + ei + '">+ Drop Set</button>';
+    }
+  }
+
+  h += '<div class="rpe-row"><div class="rpe-label">RPE</div><div class="rpe-buttons">';
+  var rv = [6,7,8,9,10];
+  for (var r = 0; r < rv.length; r++) {
+    h += '<button class="rpe-btn' + (exState.rpe === rv[r] ? ' selected' : '') + '" data-di="' + di + '" data-ei="' + ei + '" data-rpe="' + rv[r] + '"' + dis + '>' + rv[r] + '</button>';
+  }
+  h += '</div></div></div>';
+
+  // Substitution row. In editable mode, tapping opens the exercise picker.
+  // When set: shows the substitute's name with a ✕ clear button.
+  // Legacy free-text state.sub (pre-v2.2.1) still renders if present so
+  // historical values don't vanish until the user re-saves.
+  if (readOnly) {
+    if (exState.subExercise || exState.sub) {
+      var subLabel = exState.subExercise ? exState.subExercise.name : exState.sub;
+      h += '<div class="sub-row"><div class="sub-label">SUB:</div><div class="sub-readonly">' + escapeHtml(subLabel) + '</div></div>';
+    }
+  } else {
+    h += '<div class="sub-row"><div class="sub-label">SUB:</div>';
+    if (exState.subExercise) {
+      h += '<button type="button" class="sub-picker-btn has-value" data-di="' + di + '" data-ei="' + ei + '" data-action="pick">' + escapeHtml(exState.subExercise.name) + '</button>';
+      h += '<button type="button" class="sub-clear-btn" data-di="' + di + '" data-ei="' + ei + '" data-action="clear" aria-label="Clear substitution">×</button>';
+    } else if (exState.sub) {
+      // Legacy free-text value — show it but with a note that tapping upgrades to a picker selection.
+      h += '<button type="button" class="sub-picker-btn legacy" data-di="' + di + '" data-ei="' + ei + '" data-action="pick">' + escapeHtml(exState.sub) + ' (tap to re-link)</button>';
+      h += '<button type="button" class="sub-clear-btn" data-di="' + di + '" data-ei="' + ei + '" data-action="clear" aria-label="Clear substitution">×</button>';
+    } else {
+      h += '<button type="button" class="sub-picker-btn" data-di="' + di + '" data-ei="' + ei + '" data-action="pick">Substitute exercise…</button>';
+    }
+    h += '</div>';
+  }
+  h += '<div style="padding:0 14px 14px"><textarea class="exercise-note-input" rows="1" placeholder="Notes" data-di="' + di + '" data-ei="' + ei + '"' + dis + '>' + escapeHtml(exState.note || '') + '</textarea></div>';
+  h += '</div>';
+
+  return { html: h, totalSets: totalSets, doneSets: doneSets };
+}
+
+// Returns {html, totalSets, doneSets} for one extra (ad-hoc added) card on a
+// plan day. mode and readOnly match the parent day's values.
+// badgeLabel is always null for extras in v1 (extras never superset).
+function renderPlanDayExtraCard(di, xei, xState, mode, readOnly, badgeLabel) {
+  var h = '';
+  var xMeta = xState.exerciseMeta || { name: 'Exercise', weight_mode: 'total' };
+  // Card-level effective mode (v3.1.0): per-set override on sets[0] wins
+  // over the library default. Every set in a placement carries the same
+  // value (the toggle fan-out keeps them in sync).
+  var xWeightMode = effectiveWeightMode(xState.sets[0], xMeta);
+  var xIsCardio = xMeta.muscle_group === 'cardio';
+  var xSetCount = xState.sets.length || 1;
+  var totalSets = xSetCount;
+  var xdn = 0;
+  for (var xsi = 0; xsi < xState.sets.length; xsi++) {
+    if (xState.sets[xsi] && xState.sets[xsi].done) xdn++;
+  }
+  var doneSets = xdn;
+  var xad = xdn === xSetCount, xsd = xdn > 0 && !xad;
+  var xsc = xad ? 'complete' : xsd ? 'partial' : 'pending';
+  var xstat = xad ? xdn + '/' + xSetCount + ' ✓' : xdn + '/' + xSetCount;
+  var xcc = xad ? ' complete' : xsd ? ' partial' : '';
+  var dis = readOnly ? ' disabled' : '';
+
+  var xBadgeHtml = badgeLabel ? '<span class="superset-badge">' + escapeHtml(badgeLabel) + '</span>' : '';
+  h += '<div class="exercise-card' + xcc + '">';
+  var xChipHtml = renderWeightModeChip(xei, xWeightMode, xMeta, readOnly ? 'history-readonly' : 'editable', null);
+  h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + xBadgeHtml + escapeHtml(xMeta.name) + '<span class="extras-badge">added</span></div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(xMeta.name) + '">view recent</button>' + xChipHtml + '</div><div class="exercise-status ' + xsc + '">' + xstat + '</div>' + (readOnly ? '' : '<button class="card-delete" data-di="' + di + '" data-ei="' + xei + '" aria-label="Delete exercise" type="button">×</button>') + '</div>';
+  h += '<div class="sets-container">';
+  var xStdSetNum = 0;
+  for (var xsi2 = 0; xsi2 < xSetCount; xsi2++) {
+    var xsl = xState.sets[xsi2] || {};
+    var xLabelNum;
+    if (!xsl || xsl.setType !== 'drop') {
+      xStdSetNum++;
+      xLabelNum = xStdSetNum;
+    }
+    h += renderSetRow(di, xei, xsi2, xsl, null, (xsl.weight_mode || xWeightMode), dis, '—', !readOnly, xIsCardio, xLabelNum);
+  }
+  if (mode === 'editable') {
+    h += '<button class="add-set-btn" data-add-set-ei="' + xei + '">+ Add Set</button>';
+    if (!xIsCardio && xState.sets && xState.sets.length > 0) {
+      h += '<button class="add-set-btn add-drop-btn" data-add-drop-ei="' + xei + '">+ Drop Set</button>';
+    }
+  }
+  h += '</div>';
+  h += '<div class="rpe-row"><div class="rpe-label">RPE</div><div class="rpe-buttons">';
+  var xrv = [6,7,8,9,10];
+  for (var xr = 0; xr < xrv.length; xr++) {
+    h += '<button class="rpe-btn' + (xState.rpe === xrv[xr] ? ' selected' : '') + '" data-di="' + di + '" data-ei="' + xei + '" data-rpe="' + xrv[xr] + '"' + dis + '>' + xrv[xr] + '</button>';
+  }
+  h += '</div></div>';
+  h += '<div style="padding:0 14px 14px"><textarea class="exercise-note-input" rows="1" placeholder="Notes" data-di="' + di + '" data-ei="' + xei + '"' + dis + '>' + escapeHtml(xState.note || '') + '</textarea></div>';
+  h += '</div>';
+
+  return { html: h, totalSets: totalSets, doneSets: doneSets };
+}
+
+// Returns {html, totalSets, doneSets} for one ad-hoc session exercise card.
+// badgeLabel is prepended to .exercise-name when non-null.
+function renderAdHocExerciseCard(di, ei, exState, badgeLabel) {
+  var h = '';
+  var meta = exState.exerciseMeta || { name: 'Exercise', weight_mode: 'total' };
+  var weightMode = effectiveWeightMode(exState.sets[0], meta);
+  var isCardioRow = meta.muscle_group === 'cardio';
+  var setCount = exState.sets.length || 1;
+  var totalSets = setCount;
+  var dn = 0;
+  for (var s = 0; s < exState.sets.length; s++) {
+    if (exState.sets[s] && exState.sets[s].done) dn++;
+  }
+  var doneSets = dn;
+  var ad = dn === setCount, sd = dn > 0 && !ad;
+  var sc = ad ? 'complete' : sd ? 'partial' : 'pending';
+  var stat = ad ? dn + '/' + setCount + ' ✓' : dn + '/' + setCount;
+  var cc = ad ? ' complete' : sd ? ' partial' : '';
+  var dis = '';
+
+  var badgeHtml = badgeLabel ? '<span class="superset-badge">' + escapeHtml(badgeLabel) + '</span>' : '';
+  h += '<div class="exercise-card' + cc + '">';
+  var adChipHtml = renderWeightModeChip(ei, weightMode, meta, 'editable', null);
+  h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + badgeHtml + escapeHtml(meta.name) + '</div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(meta.name) + '">view recent</button>' + adChipHtml + '</div><div class="exercise-status ' + sc + '">' + stat + '</div><button class="card-delete" data-di="' + di + '" data-ei="' + ei + '" aria-label="Delete exercise" type="button">×</button></div>';
+  h += '<div class="sets-container">';
+  var adStdSetNum = 0;
+  for (var si = 0; si < setCount; si++) {
+    var sl = exState.sets[si] || {};
+    var adLabelNum;
+    if (!sl || sl.setType !== 'drop') {
+      adStdSetNum++;
+      adLabelNum = adStdSetNum;
+    }
+    h += renderSetRow(di, ei, si, sl, null, (sl.weight_mode || weightMode), dis, '—', true, isCardioRow, adLabelNum);
+  }
+  h += '<button class="add-set-btn" data-add-set-ei="' + ei + '">+ Add Set</button>';
+  if (!isCardioRow && exState.sets && exState.sets.length > 0) {
+    h += '<button class="add-set-btn add-drop-btn" data-add-drop-ei="' + ei + '">+ Drop Set</button>';
+  }
+  h += '</div>';
+  h += '<div class="rpe-row"><div class="rpe-label">RPE</div><div class="rpe-buttons">';
+  var rv = [6,7,8,9,10];
+  for (var r = 0; r < rv.length; r++) {
+    h += '<button class="rpe-btn' + (exState.rpe === rv[r] ? ' selected' : '') + '" data-di="' + di + '" data-ei="' + ei + '" data-rpe="' + rv[r] + '"' + dis + '>' + rv[r] + '</button>';
+  }
+  h += '</div></div>';
+  h += '<div style="padding:0 14px 14px"><textarea class="exercise-note-input" rows="1" placeholder="Notes" data-di="' + di + '" data-ei="' + ei + '"' + dis + '>' + escapeHtml(exState.note || '') + '</textarea></div>';
+  h += '</div>';
+
+  return { html: h, totalSets: totalSets, doneSets: doneSets };
+}
+
 function buildDay(di) {
   // Ad-hoc branch: renders title input, session bar, exercise cards, Add Exercise.
   if (isAdHocKey(di)) {
@@ -543,146 +806,9 @@ function buildDay(di) {
     var ex = dayPlan.exercises[ei];
     var ek = 'ex_' + ei;
     var exState = (state && state.exercises[ek]) || { sets: [], rpe: null, note: '', sub: '' };
-    var exTotal = Math.max(ex.sets.length, exState.sets.length);
-    ts += exTotal;
-    var dn = 0;
-    for (var s = 0; s < exState.sets.length; s++) { if (exState.sets[s] && exState.sets[s].done) dn++; }
-    cs += dn;
-    var ad = dn === exTotal, sd = dn > 0 && !ad;
-    var sc = ad ? 'complete' : sd ? 'partial' : 'pending';
-    var stat = ad ? dn + '/' + exTotal + ' ✓' : dn + '/' + exTotal;
-    var cc = ad ? ' complete' : sd ? ' partial' : '';
-    var dis = readOnly ? ' disabled' : '';
-    // Weight mode + display name track the substitute when one is set —
-    // a per_side substitute for a total prescribed exercise needs the
-    // right label ("LBS/ea") and its own name visible on the card.
-    // Substitute's mode wins when present; otherwise resolve from the
-    // prescribed exercise's library row by name. Per-set override (v3.1.0)
-    // wins over both at the per-row render below.
-    var libDefault = (exState.subExercise && exState.subExercise.weight_mode)
-      ? exState.subExercise.weight_mode
-      : weightModeForName(ex.name);
-    var weightMode = (exState.sets[0] && exState.sets[0].weight_mode) || libDefault;
-    // Cardio detection follows the displayed exercise name — substitutes
-    // can flip a resistance prescription into a cardio one (e.g., user
-    // subs incline treadmill walk for a stalled accessory).
-    var displayNameForCardio = exState.subExercise ? exState.subExercise.name : ex.name;
-    var isCardioRow = isCardioExerciseName(displayNameForCardio);
-    var displayName = exState.subExercise ? exState.subExercise.name : ex.name;
-    var prescribedBadge = exState.subExercise
-      ? '<span class="exercise-sub-origin">was: ' + escapeHtml(ex.name) + '</span>'
-      : '';
-
-    h += '<div class="exercise-card' + cc + '">';
-    var swapBtn = readOnly ? '' : '<button class="card-swap" data-swap-di="' + di + '" data-swap-ei="' + ei + '" aria-label="Swap exercise" type="button">⇄</button>';
-    // chipMeta visibility check: substitute's library row when subbed,
-    // else the prescribed exercise's library row. (Lookup mirrors what
-    // weightModeForName does internally.)
-    var chipMeta = exState.subExercise || exerciseLibraryByName[normName(ex.name)] || null;
-    var chipHtml = renderWeightModeChip(ei, weightMode, chipMeta, readOnly ? 'history-readonly' : 'editable', null);
-    h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + escapeHtml(displayName) + prescribedBadge + '</div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(displayName) + '">view recent</button>' + chipHtml + '</div><div class="exercise-status ' + sc + '">' + stat + '</div>' + swapBtn + '</div>';
-    if (ex.note) h += '<div class="exercise-note">' + escapeHtml(ex.note) + '</div>';
-    h += '<div class="sets-container">';
-
-    // Running count of standard (non-drop) sets so the S# label stays
-    // sequential across the prescribed → extras boundary even when
-    // drops are interspersed at the end of the array.
-    var stdSetNum = 0;
-    for (var si = 0; si < ex.sets.length; si++) {
-      var set = ex.sets[si];
-      var setIsDrop = !!(set && set.set_type === 'drop');
-      // Seed prescribed drops in the in-memory state so cascade-on-done
-      // can find them via setType + parentSetIdx (parentSetIdx is the
-      // index of the most recent non-drop set in this exercise's
-      // prescribed sets array). Lazy: only seed if the user hasn't
-      // touched this set yet. Once seeded, the entry behaves like a
-      // manually-added drop for cascade / persist purposes.
-      if (setIsDrop && !exState.sets[si]) {
-        var prescribedParentIdx = si - 1;
-        while (prescribedParentIdx >= 0
-               && ex.sets[prescribedParentIdx]
-               && ex.sets[prescribedParentIdx].set_type === 'drop') {
-          prescribedParentIdx--;
-        }
-        exState.sets[si] = {
-          setType: 'drop',
-          parentSetIdx: prescribedParentIdx >= 0 ? prescribedParentIdx : null,
-        };
-      }
-      var sl = exState.sets[si] || {};
-      // When substituted, the prescribed weight doesn't port to the
-      // substitute (different weight_mode, different strength curve, etc).
-      // Drop the weight anchor but keep rep targets — reps translate across
-      // most substitutions and still give the user a target. User can enter
-      // weight manually or (v2.2.2+) request an AI recommendation.
-      var effectiveSet = exState.subExercise
-        ? { reps_target: set && set.reps_target, reps_range: set && set.reps_range }
-        : set;
-      var pr = fmtP(effectiveSet);
-      // Drops use → label; standard sets get the next S#.
-      var pSetLabel;
-      if (!setIsDrop) {
-        stdSetNum++;
-        pSetLabel = stdSetNum;
-      }
-      h += renderSetRow(di, ei, si, sl, effectiveSet, (sl.weight_mode || weightMode), dis, pr, false, isCardioRow, pSetLabel);
-    }
-
-    // Extras on this prescribed exercise: sets past the plan-defined count.
-    // sl.isExtra is set on these by addExtraSet / stateFromWorkout. Delete
-    // button is rendered via the deletable flag; prescribed rows above stay
-    // immutable.
-    for (var siExtra = ex.sets.length; siExtra < exState.sets.length; siExtra++) {
-      var slExtra = exState.sets[siExtra] || {};
-      // Drops use → label; standard extras get the next sequential S#.
-      var slExtraNum;
-      if (slExtra && slExtra.setType !== 'drop') {
-        stdSetNum++;
-        slExtraNum = stdSetNum;
-      }
-      h += renderSetRow(di, ei, siExtra, slExtra, null, (slExtra.weight_mode || weightMode), dis, '—', !readOnly, isCardioRow, slExtraNum);
-    }
-    if (mode === 'editable') {
-      h += '<button class="add-set-btn" data-add-set-ei="' + ei + '">+ Add Set</button>';
-      // Drop Set affordance — only when there's a set to chain off of and
-      // the exercise isn't cardio (drops don't apply to duration-based work).
-      if (!isCardioRow && exState.sets && exState.sets.length > 0) {
-        h += '<button class="add-set-btn add-drop-btn" data-add-drop-ei="' + ei + '">+ Drop Set</button>';
-      }
-    }
-
-    h += '<div class="rpe-row"><div class="rpe-label">RPE</div><div class="rpe-buttons">';
-    var rv = [6,7,8,9,10];
-    for (var r = 0; r < rv.length; r++) {
-      h += '<button class="rpe-btn' + (exState.rpe === rv[r] ? ' selected' : '') + '" data-di="' + di + '" data-ei="' + ei + '" data-rpe="' + rv[r] + '"' + dis + '>' + rv[r] + '</button>';
-    }
-    h += '</div></div></div>';
-
-    // Substitution row. In editable mode, tapping opens the exercise picker.
-    // When set: shows the substitute's name with a ✕ clear button.
-    // Legacy free-text state.sub (pre-v2.2.1) still renders if present so
-    // historical values don't vanish until the user re-saves.
-    if (readOnly) {
-      if (exState.subExercise || exState.sub) {
-        var subLabel = exState.subExercise ? exState.subExercise.name : exState.sub;
-        h += '<div class="sub-row"><div class="sub-label">SUB:</div><div class="sub-readonly">' + escapeHtml(subLabel) + '</div></div>';
-      }
-    } else {
-      h += '<div class="sub-row"><div class="sub-label">SUB:</div>';
-      if (exState.subExercise) {
-        h += '<button type="button" class="sub-picker-btn has-value" data-di="' + di + '" data-ei="' + ei + '" data-action="pick">' + escapeHtml(exState.subExercise.name) + '</button>';
-        h += '<button type="button" class="sub-clear-btn" data-di="' + di + '" data-ei="' + ei + '" data-action="clear" aria-label="Clear substitution">×</button>';
-      } else if (exState.sub) {
-        // Legacy free-text value — show it but with a note that tapping upgrades to a picker selection.
-        h += '<button type="button" class="sub-picker-btn legacy" data-di="' + di + '" data-ei="' + ei + '" data-action="pick">' + escapeHtml(exState.sub) + ' (tap to re-link)</button>';
-        h += '<button type="button" class="sub-clear-btn" data-di="' + di + '" data-ei="' + ei + '" data-action="clear" aria-label="Clear substitution">×</button>';
-      } else {
-        h += '<button type="button" class="sub-picker-btn" data-di="' + di + '" data-ei="' + ei + '" data-action="pick">Substitute exercise…</button>';
-      }
-      h += '</div>';
-    }
-    h += '<div style="padding:0 14px 14px"><textarea class="exercise-note-input" rows="1" placeholder="Notes" data-di="' + di + '" data-ei="' + ei + '"' + dis + '>' + escapeHtml(exState.note || '') + '</textarea></div>';
-    h += '</div>';
+    var card = renderPlanDayExerciseCard(di, ei, ex, exState, mode, readOnly, null);
+    ts += card.totalSets; cs += card.doneSets;
+    h += card.html;
   }
 
   h += '</div>';  // close plan sort-zone
@@ -704,52 +830,9 @@ function buildDay(di) {
     var xek = extraKeys[xi];
     var xei = parseInt(xek.slice(3), 10);
     var xState = state.exercises[xek];
-    var xMeta = xState.exerciseMeta || { name: 'Exercise', weight_mode: 'total' };
-    // Card-level effective mode (v3.1.0): per-set override on sets[0] wins
-    // over the library default. Every set in a placement carries the same
-    // value (the toggle fan-out keeps them in sync).
-    var xWeightMode = effectiveWeightMode(xState.sets[0], xMeta);
-    var xIsCardio = xMeta.muscle_group === 'cardio';
-    var xSetCount = xState.sets.length || 1;
-    ts += xSetCount;
-    var xdn = 0;
-    for (var xsi = 0; xsi < xState.sets.length; xsi++) {
-      if (xState.sets[xsi] && xState.sets[xsi].done) xdn++;
-    }
-    cs += xdn;
-    var xad = xdn === xSetCount, xsd = xdn > 0 && !xad;
-    var xsc = xad ? 'complete' : xsd ? 'partial' : 'pending';
-    var xstat = xad ? xdn + '/' + xSetCount + ' ✓' : xdn + '/' + xSetCount;
-    var xcc = xad ? ' complete' : xsd ? ' partial' : '';
-
-    h += '<div class="exercise-card' + xcc + '">';
-    var xChipHtml = renderWeightModeChip(xei, xWeightMode, xMeta, readOnly ? 'history-readonly' : 'editable', null);
-    h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + escapeHtml(xMeta.name) + '<span class="extras-badge">added</span></div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(xMeta.name) + '">view recent</button>' + xChipHtml + '</div><div class="exercise-status ' + xsc + '">' + xstat + '</div>' + (readOnly ? '' : '<button class="card-delete" data-di="' + di + '" data-ei="' + xei + '" aria-label="Delete exercise" type="button">×</button>') + '</div>';
-    h += '<div class="sets-container">';
-    var xStdSetNum = 0;
-    for (var xsi2 = 0; xsi2 < xSetCount; xsi2++) {
-      var xsl = xState.sets[xsi2] || {};
-      var xLabelNum;
-      if (!xsl || xsl.setType !== 'drop') {
-        xStdSetNum++;
-        xLabelNum = xStdSetNum;
-      }
-      h += renderSetRow(di, xei, xsi2, xsl, null, (xsl.weight_mode || xWeightMode), dis, '—', !readOnly, xIsCardio, xLabelNum);
-    }
-    if (mode === 'editable') {
-      h += '<button class="add-set-btn" data-add-set-ei="' + xei + '">+ Add Set</button>';
-      if (!xIsCardio && xState.sets && xState.sets.length > 0) {
-        h += '<button class="add-set-btn add-drop-btn" data-add-drop-ei="' + xei + '">+ Drop Set</button>';
-      }
-    }
-    h += '</div>';
-    h += '<div class="rpe-row"><div class="rpe-label">RPE</div><div class="rpe-buttons">';
-    for (var xr = 0; xr < rv.length; xr++) {
-      h += '<button class="rpe-btn' + (xState.rpe === rv[xr] ? ' selected' : '') + '" data-di="' + di + '" data-ei="' + xei + '" data-rpe="' + rv[xr] + '"' + dis + '>' + rv[xr] + '</button>';
-    }
-    h += '</div></div>';
-    h += '<div style="padding:0 14px 14px"><textarea class="exercise-note-input" rows="1" placeholder="Notes" data-di="' + di + '" data-ei="' + xei + '"' + dis + '>' + escapeHtml(xState.note || '') + '</textarea></div>';
-    h += '</div>';
+    var xCard = renderPlanDayExtraCard(di, xei, xState, mode, readOnly, null);
+    ts += xCard.totalSets; cs += xCard.doneSets;
+    h += xCard.html;
   }
   if (extraKeys.length) h += '</div>';  // close extras sort-zone
 
@@ -819,48 +902,9 @@ function buildAdHocDay(di) {
     var ek = keys[xi];
     var ei = parseInt(ek.slice(3), 10);
     var exState = state.exercises[ek];
-    var meta = exState.exerciseMeta || { name: 'Exercise', weight_mode: 'total' };
-    var weightMode = effectiveWeightMode(exState.sets[0], meta);
-    var isCardioRow = meta.muscle_group === 'cardio';
-    var setCount = exState.sets.length || 1;
-    ts += setCount;
-    var dn = 0;
-    for (var s = 0; s < exState.sets.length; s++) {
-      if (exState.sets[s] && exState.sets[s].done) dn++;
-    }
-    cs += dn;
-    var ad = dn === setCount, sd = dn > 0 && !ad;
-    var sc = ad ? 'complete' : sd ? 'partial' : 'pending';
-    var stat = ad ? dn + '/' + setCount + ' ✓' : dn + '/' + setCount;
-    var cc = ad ? ' complete' : sd ? ' partial' : '';
-
-    h += '<div class="exercise-card' + cc + '">';
-    var adChipHtml = renderWeightModeChip(ei, weightMode, meta, 'editable', null);
-    h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + escapeHtml(meta.name) + '</div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(meta.name) + '">view recent</button>' + adChipHtml + '</div><div class="exercise-status ' + sc + '">' + stat + '</div><button class="card-delete" data-di="' + di + '" data-ei="' + ei + '" aria-label="Delete exercise" type="button">×</button></div>';
-    h += '<div class="sets-container">';
-    var adStdSetNum = 0;
-    for (var si = 0; si < setCount; si++) {
-      var sl = exState.sets[si] || {};
-      var adLabelNum;
-      if (!sl || sl.setType !== 'drop') {
-        adStdSetNum++;
-        adLabelNum = adStdSetNum;
-      }
-      h += renderSetRow(di, ei, si, sl, null, (sl.weight_mode || weightMode), dis, '—', true, isCardioRow, adLabelNum);
-    }
-    h += '<button class="add-set-btn" data-add-set-ei="' + ei + '">+ Add Set</button>';
-    if (!isCardioRow && exState.sets && exState.sets.length > 0) {
-      h += '<button class="add-set-btn add-drop-btn" data-add-drop-ei="' + ei + '">+ Drop Set</button>';
-    }
-    h += '</div>';
-    h += '<div class="rpe-row"><div class="rpe-label">RPE</div><div class="rpe-buttons">';
-    var rv = [6,7,8,9,10];
-    for (var r = 0; r < rv.length; r++) {
-      h += '<button class="rpe-btn' + (exState.rpe === rv[r] ? ' selected' : '') + '" data-di="' + di + '" data-ei="' + ei + '" data-rpe="' + rv[r] + '"' + dis + '>' + rv[r] + '</button>';
-    }
-    h += '</div></div>';
-    h += '<div style="padding:0 14px 14px"><textarea class="exercise-note-input" rows="1" placeholder="Notes" data-di="' + di + '" data-ei="' + ei + '"' + dis + '>' + escapeHtml(exState.note || '') + '</textarea></div>';
-    h += '</div>';
+    var adCard = renderAdHocExerciseCard(di, ei, exState, null);
+    ts += adCard.totalSets; cs += adCard.doneSets;
+    h += adCard.html;
   }
   if (keys.length) h += '</div>';  // close ad-hoc sort-zone
 
