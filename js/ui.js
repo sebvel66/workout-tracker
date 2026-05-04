@@ -622,13 +622,19 @@ function renderPlanDayExerciseCard(di, ei, planEx, exState, mode, readOnly, badg
 
   h += '<div class="exercise-card' + cc + '">';
   var swapBtn = readOnly ? '' : '<button class="card-swap" data-swap-di="' + di + '" data-swap-ei="' + ei + '" aria-label="Swap exercise" type="button">⇄</button>';
+  var inBlock = !!(exState && exState.supersetGroup);
+  var supersetBtn = readOnly ? '' :
+    '<button class="ex-superset-btn' + (inBlock ? ' in-block' : '') +
+    '" type="button" data-di="' + escapeAttr(String(di)) + '" data-ei="' + ei +
+    '" aria-label="' + (inBlock ? 'Remove from superset' : 'Pair as superset') +
+    '" title="' + (inBlock ? 'Remove from superset' : 'Pair as superset') + '">⟷</button>';
   // chipMeta visibility check: substitute's library row when subbed,
   // else the prescribed exercise's library row. (Lookup mirrors what
   // weightModeForName does internally.)
   var chipMeta = exState.subExercise || exerciseLibraryByName[normName(ex.name)] || null;
   var chipHtml = renderWeightModeChip(ei, weightMode, chipMeta, readOnly ? 'history-readonly' : 'editable', null);
   var badgeHtml = badgeLabel ? '<span class="superset-badge">' + escapeHtml(badgeLabel) + '</span>' : '';
-  h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + badgeHtml + escapeHtml(displayName) + prescribedBadge + '</div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(displayName) + '">view recent</button>' + chipHtml + '</div><div class="exercise-status ' + sc + '">' + stat + '</div>' + swapBtn + '</div>';
+  h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + badgeHtml + escapeHtml(displayName) + prescribedBadge + '</div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(displayName) + '">view recent</button>' + chipHtml + '</div><div class="exercise-status ' + sc + '">' + stat + '</div>' + swapBtn + supersetBtn + '</div>';
   if (ex.note) h += '<div class="exercise-note">' + escapeHtml(ex.note) + '</div>';
   h += '<div class="sets-container">';
 
@@ -762,7 +768,13 @@ function renderPlanDayExtraCard(di, xei, xState, mode, readOnly, badgeLabel) {
   var xBadgeHtml = badgeLabel ? '<span class="superset-badge">' + escapeHtml(badgeLabel) + '</span>' : '';
   h += '<div class="exercise-card' + xcc + '">';
   var xChipHtml = renderWeightModeChip(xei, xWeightMode, xMeta, readOnly ? 'history-readonly' : 'editable', null);
-  h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + xBadgeHtml + escapeHtml(xMeta.name) + '<span class="extras-badge">added</span></div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(xMeta.name) + '">view recent</button>' + xChipHtml + '</div><div class="exercise-status ' + xsc + '">' + xstat + '</div>' + (readOnly ? '' : '<button class="card-delete" data-di="' + di + '" data-ei="' + xei + '" aria-label="Delete exercise" type="button">×</button>') + '</div>';
+  var xInBlock = !!(xState && xState.supersetGroup);
+  var xSupersetBtn = readOnly ? '' :
+    '<button class="ex-superset-btn' + (xInBlock ? ' in-block' : '') +
+    '" type="button" data-di="' + escapeAttr(String(di)) + '" data-ei="' + xei +
+    '" aria-label="' + (xInBlock ? 'Remove from superset' : 'Pair as superset') +
+    '" title="' + (xInBlock ? 'Remove from superset' : 'Pair as superset') + '">⟷</button>';
+  h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + xBadgeHtml + escapeHtml(xMeta.name) + '<span class="extras-badge">added</span></div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(xMeta.name) + '">view recent</button>' + xChipHtml + '</div><div class="exercise-status ' + xsc + '">' + xstat + '</div>' + (readOnly ? '' : xSupersetBtn + '<button class="card-delete" data-di="' + di + '" data-ei="' + xei + '" aria-label="Delete exercise" type="button">×</button>') + '</div>';
   h += '<div class="sets-container">';
   var xStdSetNum = 0;
   for (var xsi2 = 0; xsi2 < xSetCount; xsi2++) {
@@ -816,7 +828,12 @@ function renderAdHocExerciseCard(di, ei, exState, badgeLabel) {
   var badgeHtml = badgeLabel ? '<span class="superset-badge">' + escapeHtml(badgeLabel) + '</span>' : '';
   h += '<div class="exercise-card' + cc + '">';
   var adChipHtml = renderWeightModeChip(ei, weightMode, meta, 'editable', null);
-  h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + badgeHtml + escapeHtml(meta.name) + '</div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(meta.name) + '">view recent</button>' + adChipHtml + '</div><div class="exercise-status ' + sc + '">' + stat + '</div><button class="card-delete" data-di="' + di + '" data-ei="' + ei + '" aria-label="Delete exercise" type="button">×</button></div>';
+  var inBlockAd = !!(exState && exState.supersetGroup);
+  var supersetBtnAd = '<button class="ex-superset-btn' + (inBlockAd ? ' in-block' : '') +
+    '" type="button" data-di="' + escapeAttr(String(di)) + '" data-ei="' + ei +
+    '" aria-label="' + (inBlockAd ? 'Remove from superset' : 'Pair as superset') +
+    '" title="' + (inBlockAd ? 'Remove from superset' : 'Pair as superset') + '">⟷</button>';
+  h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + badgeHtml + escapeHtml(meta.name) + '</div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(meta.name) + '">view recent</button>' + adChipHtml + '</div><div class="exercise-status ' + sc + '">' + stat + '</div>' + supersetBtnAd + '<button class="card-delete" data-di="' + di + '" data-ei="' + ei + '" aria-label="Delete exercise" type="button">×</button></div>';
   h += '<div class="sets-container">';
   var adStdSetNum = 0;
   for (var si = 0; si < setCount; si++) {
