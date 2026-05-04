@@ -1633,14 +1633,23 @@ function renderEmptyStateRecent() {
 
   // Click delegate: tap a row to open in the History detail modal.
   // openHistoryDetail writes to elements inside the History overlay
-  // and assumes the overlay is already showing — so we fire openHistory
-  // first to mount the modal + initialize week state (so the ← back
-  // button has a week to return to), then drill into the detail.
+  // and assumes the overlay is already showing. Pre-fix we called
+  // openHistory() then openHistoryDetail() — but those are both
+  // async, and on the path where openHistory awaits loadEarliestWorkout
+  // Date AND the detail fetch resolves first, openHistory resumed
+  // afterward and clobbered the detail render with renderHistoryWeek.
+  // Fix: mount the overlay synchronously, ensure historyWeekStart is
+  // set so the back-button path is sensible, and call openHistoryDetail
+  // directly with no parallel race.
   body.addEventListener('click', function(e) {
     var row = e.target.closest('[data-recent-workout-id]');
     if (!row) return;
     var wid = row.getAttribute('data-recent-workout-id');
-    openHistory();
+    document.getElementById('historyOverlay').classList.add('show');
+    if (!historyWeekStart) {
+      var currentStart = weekStartForLocalDate(new Date(sessionTodayDateString() + 'T00:00:00'));
+      historyWeekStart = addDaysToDateString(currentStart, -7);
+    }
     openHistoryDetail(wid);
   });
 }
