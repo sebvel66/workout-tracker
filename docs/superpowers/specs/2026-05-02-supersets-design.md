@@ -102,7 +102,7 @@ After pick:
 
 ### Block rendering
 
-Bordered group container (indigo accent, distinguishable from regular cards). Header line: `⟷ Superset · Round N of M · 60s rest`. Members stacked inside as nested mini-cards with `A1` / `A2` / `A3` badges. Same set-row chrome as standalone cards.
+Bordered group container (indigo accent, distinguishable from regular cards). Header line: `⟷ Superset · Round N of M · 60s rest`. Members stacked inside as nested mini-cards with `A1` / `A2` / `A3` badges. Member cards retain all existing card chrome — Swap (⇄), ⟷ (now reading "Remove from superset"), Delete (✕), the v3.1.0 per-workout weight-mode chip, view-recent. Member-level helpers (`setExerciseWeightMode`, RPE fan-out, etc.) work unchanged because they key on `(workout_id, exercise_order)` and members keep their own exercise_order values.
 
 - `M` = max-set-count across members.
 - `N` = min(completed-set-count across members) + 1, clamped to M. When every round is fully done, displays `M / M ✓`.
@@ -186,10 +186,12 @@ function validateSupersetBlock(entry, ctx) {
 
 ### Mode coverage
 
-- **Plan mode** — emits blocks. Default mode.
+- **Plan mode** — emits blocks. Default mode. Includes the **cold-start path** (v3.3.0): Claude can prescribe supersets when building a brand-new plan from CLIENT PROFILE + USER INPUTS only, with the same opportunistic rules.
 - **Refine mode** — emits blocks. The multi-turn assistant turns may carry blocks; the cache prefix mechanism unchanged.
 - **Swap mode** — single-exercise replacement. Operates on one member of a block (the one tapped). Block structure stays intact; one child's `name` (and downstream effects) gets swapped.
 - **Analyze mode** — read-only. Sees blocks in the active plan blob via `formatCurrentPlan` and includes them in the analysis context. No blocks emitted.
+
+The `## SUPERSETS` system prompt addition is loaded for plan / refine / swap regardless of which Claude model the user has selected via the v3.2.0 per-user model dropdowns. Default Sonnet 4.6 handles supersets cleanly; Opus 4.7 / Haiku 4.5 work fine within their respective capabilities (the prompt text is the same; the gating of `temperature` per v3.2.1 is unchanged).
 
 ### Coach Chat live context
 
@@ -209,7 +211,11 @@ The `⟷ ... / ... / ... (Ns rest)` notation tells Haiku and Sonnet that those e
 
 ### History detail (`renderHistoryDetail` in `js/ui.js`)
 
-Reads `workouts.superset_groups` (not `plan.data`) to reconstruct block structure. Renders blocks with the same visual treatment as the live tracker — bordered indigo container, `⟷ Superset · Nx rounds · 60s rest` header, members stacked inside with A1/A2/A3 badges. Per-set chrome follows whatever is current for History detail in v3.0.3+ (sets, RPE, notes are editable in-place); block-level structure (member add/remove, block-level rest changes) stays read-only — those are plan-time / live-session edits, not historical-detail edits.
+Reads `workouts.superset_groups` (not `plan.data`) to reconstruct block structure. Renders blocks with the same visual treatment as the live tracker — bordered indigo container, `⟷ Superset · Nx rounds · 60s rest` header, members stacked inside with A1/A2/A3 badges.
+
+Per-set chrome follows whatever is current for History detail in v3.0.3+: when `historyEditMode` is on, set values (weight/reps/duration/distance), per-set done check, per-exercise RPE, per-exercise note, and the workout-level session note are all editable in-place via the existing `historyUpdateSetField` / `historyUpdateSetDone` / `historyUpdateExerciseRpe` / `historyUpdateExerciseNote` / `historyUpdateWorkoutNotes` helpers. Those helpers key on `(workout_id, exercise_order)` and `(set_id)` so they work on members of a superset block unchanged.
+
+Block-level structure (member add / remove, block-level rest changes) stays read-only in History detail — those are plan-time or live-session concerns. Users still have Bring-to-today / Discard for full structural recovery.
 
 This decoupling from plan.data is intentional: a workout completed today against superset block `A=[Cable Row, Lateral Raise]` should still render that block tomorrow even if the user merges another exercise into the block in the active plan, deactivates the plan, or deletes it. Historical truth is the workout's `superset_groups`, not the current plan structure.
 
