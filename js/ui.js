@@ -2211,51 +2211,161 @@ function renderHistoryDetail(detail) {
   }
 
   if (isAdHoc) {
-    var keys = Object.keys(state.exercises || {}).sort(function(a, b) {
-      return parseInt(a.slice(3), 10) - parseInt(b.slice(3), 10);
-    });
-    for (var i = 0; i < keys.length; i++) {
-      var ek = keys[i];
-      var ei = parseInt(ek.slice(3), 10);
-      var exState = state.exercises[ek];
-      var meta = exState.exerciseMeta || { name: 'Exercise', weight_mode: 'total' };
-      h += renderHistoryExerciseCard(ei, exState, meta.name, effectiveWeightMode(exState.sets[0], meta), null, workout.id);
+    var ahRuns = groupRunsForRender(null, state.exercises);
+    for (var ari = 0; ari < ahRuns.length; ari++) {
+      var ahRun = ahRuns[ari];
+      if (ahRun.kind === 'standalone') {
+        var ahMeta = (ahRun.exState && ahRun.exState.exerciseMeta) || { name: 'Exercise', weight_mode: 'total' };
+        h += renderHistoryExerciseCard(ahRun.ei, ahRun.exState, ahMeta.name,
+          effectiveWeightMode(ahRun.exState.sets[0], ahMeta), null, workout.id, null);
+      } else {
+        // Block: each member is read-only; block structure read-only too.
+        var ahMembers = [];
+        var ahMinDone = Infinity, ahMaxSets = 0;
+        for (var ami = 0; ami < ahRun.items.length; ami++) {
+          var ahItem = ahRun.items[ami];
+          var ahMemMeta = (ahItem.exState && ahItem.exState.exerciseMeta) || { name: 'Exercise', weight_mode: 'total' };
+          var ahBadge = String.fromCharCode(65) + (ami + 1);
+          var ahCardHtml = renderHistoryExerciseCard(ahItem.ei, ahItem.exState, ahMemMeta.name,
+            effectiveWeightMode(ahItem.exState.sets[0], ahMemMeta), null, workout.id, ahBadge);
+          ahMembers.push({ ei: ahItem.ei, cardHtml: ahCardHtml });
+          var ahDone = countDoneSets(ahItem.exState);
+          var ahTotal = (ahItem.exState && Array.isArray(ahItem.exState.sets)) ? ahItem.exState.sets.length : 0;
+          if (ahDone < ahMinDone) ahMinDone = ahDone;
+          if (ahTotal > ahMaxSets) ahMaxSets = ahTotal;
+        }
+        var ahCurrentRound = (ahMinDone === Infinity ? 1 : Math.min(ahMinDone + 1, ahMaxSets || 1));
+        var ahRoundComplete = (ahMinDone >= ahMaxSets && ahMaxSets > 0);
+        h += renderSupersetBlock(null, ahMembers, {
+          key: ahRun.groupKey,
+          rest: ahRun.rest,
+          currentRound: ahRoundComplete ? ahMaxSets : ahCurrentRound,
+          totalRounds: ahMaxSets
+        }, true);
+      }
     }
   } else if (dayPlan) {
-    var planLen = dayPlan.exercises.length;
-    for (var j = 0; j < planLen; j++) {
-      var ex = dayPlan.exercises[j];
-      var ek2 = 'ex_' + j;
-      var exState2 = state.exercises[ek2];
-      if (!exState2) continue; // nothing logged for this prescribed exercise
-      // Library default by name + per-set override (v3.1.0).
-      var wm = (exState2.sets[0] && exState2.sets[0].weight_mode) || weightModeForName(ex.name);
-      h += renderHistoryExerciseCard(j, exState2, ex.name, wm, ex.sets, workout.id);
+    // Walk via state runs (workouts.superset_groups is the truth for
+    // historical structure, not the possibly-mutated plan.data). Prescribed
+    // sets lookup falls back to dayPlan.exercises by member name when the
+    // member's name matches an entry — best-effort because plan.data may
+    // have been mutated since the workout was logged.
+    var pdRuns = groupRunsForRender(null, state.exercises);
+    // Track the member-eis we render via runs; anything beyond that flat
+    // range is an "extra" (added exercise on a plan day).
+    var renderedEis = {};
+    function pdResolveMemberMeta(item) {
+      var meta = (item.exState && item.exState.exerciseMeta) || null;
+      var nameFromMeta = meta && meta.name;
+      var planLenLocal = dayPlan.exercises.length;
+      // For plan-day prescribed members: when the workout's exercise_order
+      // is within plan length AND plan still has a regular exercise at that
+      // flat slot, pull the prescribed sets and library-default weight_mode.
+      var exLocal = (item.ei < planLenLocal) ? dayPlan.exercises[item.ei] : null;
+      var isPlanRegular = exLocal && !exLocal.superset && exLocal.name;
+      if (isPlanRegular) {
+        return {
+          name: exLocal.name,
+          weightMode: (item.exState.sets[0] && item.exState.sets[0].weight_mode) || weightModeForName(exLocal.name),
+          prescribedSets: exLocal.sets || null
+        };
+      }
+      // Fallback: use exerciseMeta (works for ad-hoc-style extras and for
+      // members that don't align with current plan structure — common when
+      // plan.data has been mutated since the workout was logged).
+      return {
+        name: nameFromMeta || ('Exercise ' + (item.ei + 1)),
+        weightMode: effectiveWeightMode(item.exState.sets[0], meta || { weight_mode: 'total' }),
+        prescribedSets: null
+      };
     }
-    var extraKeys = Object.keys(state.exercises || {}).filter(function(k) {
-      return parseInt(k.slice(3), 10) >= planLen;
-    }).sort(function(a, b) {
-      return parseInt(a.slice(3), 10) - parseInt(b.slice(3), 10);
-    });
-    if (extraKeys.length) h += '<div class="extras-divider">Added exercises</div>';
-    for (var k = 0; k < extraKeys.length; k++) {
-      var ek3 = extraKeys[k];
-      var ei3 = parseInt(ek3.slice(3), 10);
-      var exState3 = state.exercises[ek3];
-      var meta3 = exState3.exerciseMeta || { name: 'Exercise', weight_mode: 'total' };
-      h += renderHistoryExerciseCard(ei3, exState3, meta3.name, effectiveWeightMode(exState3.sets[0], meta3), null, workout.id);
+    for (var pri = 0; pri < pdRuns.length; pri++) {
+      var pdRun = pdRuns[pri];
+      if (pdRun.kind === 'standalone') {
+        var pdMeta = pdResolveMemberMeta({ ei: pdRun.ei, exState: pdRun.exState });
+        h += renderHistoryExerciseCard(pdRun.ei, pdRun.exState, pdMeta.name,
+          pdMeta.weightMode, pdMeta.prescribedSets, workout.id, null);
+        renderedEis[pdRun.ei] = true;
+      } else {
+        var pdMembers = [];
+        var pdMinDone = Infinity, pdMaxSets = 0;
+        for (var pmi = 0; pmi < pdRun.items.length; pmi++) {
+          var pdItem = pdRun.items[pmi];
+          var pdMemMeta = pdResolveMemberMeta(pdItem);
+          var pdBadge = String.fromCharCode(65) + (pmi + 1);
+          var pdCardHtml = renderHistoryExerciseCard(pdItem.ei, pdItem.exState, pdMemMeta.name,
+            pdMemMeta.weightMode, pdMemMeta.prescribedSets, workout.id, pdBadge);
+          pdMembers.push({ ei: pdItem.ei, cardHtml: pdCardHtml });
+          renderedEis[pdItem.ei] = true;
+          var pdDone = countDoneSets(pdItem.exState);
+          var pdTotal = (pdItem.exState && Array.isArray(pdItem.exState.sets)) ? pdItem.exState.sets.length : 0;
+          if (pdDone < pdMinDone) pdMinDone = pdDone;
+          if (pdTotal > pdMaxSets) pdMaxSets = pdTotal;
+        }
+        var pdCurrentRound = (pdMinDone === Infinity ? 1 : Math.min(pdMinDone + 1, pdMaxSets || 1));
+        var pdRoundComplete = (pdMinDone >= pdMaxSets && pdMaxSets > 0);
+        h += renderSupersetBlock(null, pdMembers, {
+          key: pdRun.groupKey,
+          rest: pdRun.rest,
+          currentRound: pdRoundComplete ? pdMaxSets : pdCurrentRound,
+          totalRounds: pdMaxSets
+        }, true);
+      }
+    }
+    // Extras: state.exercises entries with ei beyond the runs walker
+    // already rendered via renderedEis (ad-hoc cards added on a plan day).
+    // Pre-task this was filtered by `>= planLen` based on dayPlan length;
+    // we now use the runs walker's accounting so blocks correctly mark
+    // their own members as rendered.
+    var extraEis = [];
+    for (var ekX in state.exercises) {
+      if (!state.exercises.hasOwnProperty(ekX)) continue;
+      var eiX = parseInt(ekX.slice(3), 10);
+      if (!renderedEis[eiX]) extraEis.push(eiX);
+    }
+    extraEis.sort(function(a, b) { return a - b; });
+    if (extraEis.length) h += '<div class="extras-divider">Added exercises</div>';
+    for (var ex_i = 0; ex_i < extraEis.length; ex_i++) {
+      var eiE = extraEis[ex_i];
+      var ekE = 'ex_' + eiE;
+      var stE = state.exercises[ekE];
+      var metaE = stE.exerciseMeta || { name: 'Exercise', weight_mode: 'total' };
+      h += renderHistoryExerciseCard(eiE, stE, metaE.name,
+        effectiveWeightMode(stE.sets[0], metaE), null, workout.id, null);
     }
   } else {
     h += '<div class="history-empty">Plan data for this workout isn\'t available; showing raw sets instead.</div>';
-    var fallbackKeys = Object.keys(state.exercises || {}).sort(function(a, b) {
-      return parseInt(a.slice(3), 10) - parseInt(b.slice(3), 10);
-    });
-    for (var m = 0; m < fallbackKeys.length; m++) {
-      var ek4 = fallbackKeys[m];
-      var ei4 = parseInt(ek4.slice(3), 10);
-      var exState4 = state.exercises[ek4];
-      var meta4 = exState4.exerciseMeta || { name: 'Exercise ' + (ei4 + 1), weight_mode: 'total' };
-      h += renderHistoryExerciseCard(ei4, exState4, meta4.name, effectiveWeightMode(exState4.sets[0], meta4), null, workout.id);
+    var fbRuns = groupRunsForRender(null, state.exercises);
+    for (var fri = 0; fri < fbRuns.length; fri++) {
+      var fbRun = fbRuns[fri];
+      if (fbRun.kind === 'standalone') {
+        var fbMeta = (fbRun.exState && fbRun.exState.exerciseMeta) || { name: 'Exercise ' + (fbRun.ei + 1), weight_mode: 'total' };
+        h += renderHistoryExerciseCard(fbRun.ei, fbRun.exState, fbMeta.name,
+          effectiveWeightMode(fbRun.exState.sets[0], fbMeta), null, workout.id, null);
+      } else {
+        var fbMembers = [];
+        var fbMinDone = Infinity, fbMaxSets = 0;
+        for (var fmi = 0; fmi < fbRun.items.length; fmi++) {
+          var fbItem = fbRun.items[fmi];
+          var fbMemMeta = (fbItem.exState && fbItem.exState.exerciseMeta) || { name: 'Exercise ' + (fbItem.ei + 1), weight_mode: 'total' };
+          var fbBadge = String.fromCharCode(65) + (fmi + 1);
+          var fbCardHtml = renderHistoryExerciseCard(fbItem.ei, fbItem.exState, fbMemMeta.name,
+            effectiveWeightMode(fbItem.exState.sets[0], fbMemMeta), null, workout.id, fbBadge);
+          fbMembers.push({ ei: fbItem.ei, cardHtml: fbCardHtml });
+          var fbDone = countDoneSets(fbItem.exState);
+          var fbTotal = (fbItem.exState && Array.isArray(fbItem.exState.sets)) ? fbItem.exState.sets.length : 0;
+          if (fbDone < fbMinDone) fbMinDone = fbDone;
+          if (fbTotal > fbMaxSets) fbMaxSets = fbTotal;
+        }
+        var fbCurrentRound = (fbMinDone === Infinity ? 1 : Math.min(fbMinDone + 1, fbMaxSets || 1));
+        var fbRoundComplete = (fbMinDone >= fbMaxSets && fbMaxSets > 0);
+        h += renderSupersetBlock(null, fbMembers, {
+          key: fbRun.groupKey,
+          rest: fbRun.rest,
+          currentRound: fbRoundComplete ? fbMaxSets : fbCurrentRound,
+          totalRounds: fbMaxSets
+        }, true);
+      }
     }
   }
   // Lifecycle actions — discard + reactivate. Placed at the bottom of the
@@ -2423,7 +2533,7 @@ function onHistoryWorkoutNotesChange(input) {
   });
 }
 
-function renderHistoryExerciseCard(ei, exState, name, weightMode, prescribedSets, histWorkoutId) {
+function renderHistoryExerciseCard(ei, exState, name, weightMode, prescribedSets, histWorkoutId, badgeLabel) {
   var dn = 0;
   var setCount = exState.sets.length;
   for (var i = 0; i < exState.sets.length; i++) {
@@ -2455,7 +2565,8 @@ function renderHistoryExerciseCard(ei, exState, name, weightMode, prescribedSets
   var histChipCtx = historyEditMode ? 'history-edit' : 'history-readonly';
   var histChipMeta = exState.exerciseMeta || exerciseLibraryByName[normName(name)] || null;
   var histChipHtml = renderWeightModeChip(ei, weightMode, histChipMeta, histChipCtx, histWorkoutId);
-  h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + escapeHtml(name) + '</div>' + histChipHtml + '</div><div class="exercise-status ' + sc + '">' + stat + '</div></div>';
+  var histBadgeHtml = badgeLabel ? '<span class="superset-badge">' + escapeHtml(badgeLabel) + '</span>' : '';
+  h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + histBadgeHtml + escapeHtml(name) + '</div>' + histChipHtml + '</div><div class="exercise-status ' + sc + '">' + stat + '</div></div>';
   h += '<div class="sets-container">';
   var histStdSetNum = 0;
   for (var si = 0; si < setCount; si++) {
