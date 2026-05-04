@@ -403,6 +403,34 @@ function stateFromWorkout(row) {
       }
     }
   }
+
+  // Stamp supersetGroup on members based on row.superset_groups
+  // (v3.4.0 column). Format: row.superset_groups = [{exercise_orders:
+  // [int,...], rest: int}, ...]. Group key 'g0', 'g1', ... is assigned
+  // in array order so members in the same group sort-stable to the
+  // same key. Standalone exercises stay at supersetGroup: null.
+  var groups = Array.isArray(row.superset_groups) ? row.superset_groups : [];
+  for (var gi = 0; gi < groups.length; gi++) {
+    var g = groups[gi];
+    if (!g || !Array.isArray(g.exercise_orders)) continue;
+    var groupKey = 'g' + gi;
+    for (var oi = 0; oi < g.exercise_orders.length; oi++) {
+      var order = g.exercise_orders[oi];
+      var ek = 'ex_' + order;
+      if (state.exercises[ek]) {
+        state.exercises[ek].supersetGroup = groupKey;
+        state.exercises[ek].supersetRest = Number.isInteger(g.rest) ? g.rest : 60;
+      }
+    }
+  }
+  // Initialize null on any entry that was not grouped.
+  for (var sek in state.exercises) {
+    if (state.exercises.hasOwnProperty(sek) && state.exercises[sek].supersetGroup === undefined) {
+      state.exercises[sek].supersetGroup = null;
+      state.exercises[sek].supersetRest = null;
+    }
+  }
+
   return state;
 }
 
