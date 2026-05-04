@@ -473,6 +473,115 @@ function buildTabs() {
   }
 }
 
+function countDoneSets(exState) {
+  if (!exState || !Array.isArray(exState.sets)) return 0;
+  var n = 0;
+  for (var i = 0; i < exState.sets.length; i++) {
+    if (exState.sets[i] && exState.sets[i].done) n++;
+  }
+  return n;
+}
+
+// Group consecutive same-supersetGroup exercises together for block
+// rendering. Returns an array of runs:
+//   { kind: 'standalone', ei, planEx, exState }   // planEx may be null for ad-hoc
+//   { kind: 'block', groupKey, rest, items: [{ei, planEx, exState}, ...] }
+//
+// planDayExercises is the plan day's exercises array (plan.days[di].exercises)
+//   -- pass null for ad-hoc; the function falls into a state-only walk.
+// stateExercises is state.exercises (the in-memory per-exercise map).
+function groupRunsForRender(planDayExercises, stateExercises) {
+  var runs = [];
+  if (!Array.isArray(planDayExercises)) {
+    // Ad-hoc / state-only path: walk stateExercises sorted by ei,
+    // grouping by supersetGroup.
+    var keys = Object.keys(stateExercises || {}).sort(function(a, b) {
+      return parseInt(a.slice(3), 10) - parseInt(b.slice(3), 10);
+    });
+    var current = null;
+    for (var ki = 0; ki < keys.length; ki++) {
+      var ek = keys[ki];
+      var ei = parseInt(ek.slice(3), 10);
+      var ex = stateExercises[ek];
+      var group = ex && ex.supersetGroup;
+      if (group) {
+        if (current && current.kind === 'block' && current.groupKey === group) {
+          current.items.push({ei: ei, planEx: null, exState: ex});
+        } else {
+          if (current) runs.push(current);
+          current = { kind: 'block', groupKey: group, rest: ex.supersetRest || 60, items: [{ei: ei, planEx: null, exState: ex}] };
+        }
+      } else {
+        if (current) { runs.push(current); current = null; }
+        runs.push({ kind: 'standalone', ei: ei, planEx: null, exState: ex });
+      }
+    }
+    if (current) runs.push(current);
+    return runs;
+  }
+  // Plan-day path: walk plan.days[di].exercises[] and detect blocks.
+  var flatEi = 0;
+  for (var i = 0; i < planDayExercises.length; i++) {
+    var entry = planDayExercises[i];
+    if (entry && entry.superset === true && Array.isArray(entry.exercises)) {
+      var items = [];
+      for (var ci = 0; ci < entry.exercises.length; ci++) {
+        var ek2 = 'ex_' + flatEi;
+        items.push({ei: flatEi, planEx: entry.exercises[ci], exState: stateExercises[ek2] || null});
+        flatEi++;
+      }
+      runs.push({ kind: 'block', groupKey: 'p' + i, rest: Number.isInteger(entry.rest) ? entry.rest : 60, items: items });
+    } else {
+      var ek3 = 'ex_' + flatEi;
+      runs.push({ kind: 'standalone', ei: flatEi, planEx: entry, exState: stateExercises[ek3] || null });
+      flatEi++;
+    }
+  }
+  return runs;
+}
+
+// Render one superset block. members is an array of pre-rendered
+// member entries: [{ei, cardHtml}, ...]. blockMeta carries
+// {key, rest, currentRound, totalRounds}. di is needed for the rest-
+// edit and add-round buttons (null for read-only history use).
+// readOnly suppresses the rest-edit and add-round affordances.
+function renderSupersetBlock(di, members, blockMeta, readOnly) {
+  if (!members || !members.length) return '';
+  var h = '';
+  var diAttr = (di === null || di === undefined) ? '' : ' data-di="' + escapeAttr(String(di)) + '"';
+  h += '<div class="superset-block" data-superset-group="' + escapeAttr(blockMeta.key) + '">';
+  h += '<div class="superset-block-header">';
+  var roundLabel;
+  if (blockMeta.totalRounds <= 0) {
+    roundLabel = 'Round 0';
+  } else if (blockMeta.currentRound > blockMeta.totalRounds) {
+    roundLabel = blockMeta.totalRounds + ' / ' + blockMeta.totalRounds + ' ✓';
+  } else {
+    roundLabel = 'Round ' + blockMeta.currentRound + ' of ' + blockMeta.totalRounds;
+  }
+  h += '<span>⟷ Superset \xb7 ' + roundLabel + '</span>';
+  h += '<span class="superset-block-header-meta">';
+  h += '<span>' + (blockMeta.rest || 60) + 's rest</span>';
+  if (!readOnly) {
+    h += '<button class="superset-block-header-rest-edit" type="button" data-edit-superset-rest="' + escapeAttr(blockMeta.key) + '"' + diAttr + ' aria-label="Edit block rest">✎</button>';
+  }
+  h += '</span>';
+  h += '</div>';
+  h += '<div class="superset-members-zone" data-sort-zone="superset-' + escapeAttr(blockMeta.key) + '"' + diAttr + '>';
+  for (var mi = 0; mi < members.length; mi++) {
+    var m = members[mi];
+    h += '<div class="superset-member" data-member-ei="' + m.ei + '">';
+    h += m.cardHtml;
+    h += '</div>';
+  }
+  h += '</div>';
+  if (!readOnly) {
+    h += '<button class="superset-add-round" type="button" data-add-round="' + escapeAttr(blockMeta.key) + '"' + diAttr + '>+ Add round</button>';
+  }
+  h += '</div>';
+  return h;
+}
+
 // Returns {html, totalSets, doneSets} for one prescribed plan-day exercise card.
 // Outer caller accumulates totalSets/doneSets for the summary bar.
 // badgeLabel (e.g., 'A1') is prepended to the .exercise-name span when set;
@@ -802,13 +911,37 @@ function buildDay(di) {
   // Ad-hoc extras below live in a separate sort zone — they reorder among
   // themselves only, no plan mutation.
   h += '<div class="sort-zone" data-sort-zone="plan" data-di="' + di + '">';
-  for (var ei = 0; ei < dayPlan.exercises.length; ei++) {
-    var ex = dayPlan.exercises[ei];
-    var ek = 'ex_' + ei;
-    var exState = (state && state.exercises[ek]) || { sets: [], rpe: null, note: '', sub: '' };
-    var card = renderPlanDayExerciseCard(di, ei, ex, exState, mode, readOnly, null);
-    ts += card.totalSets; cs += card.doneSets;
-    h += card.html;
+  var runs = groupRunsForRender(dayPlan.exercises, state ? state.exercises : {});
+  for (var ri = 0; ri < runs.length; ri++) {
+    var run = runs[ri];
+    if (run.kind === 'standalone') {
+      var card = renderPlanDayExerciseCard(di, run.ei, run.planEx, run.exState || { sets: [], rpe: null, note: '', sub: '' }, mode, readOnly, null);
+      ts += card.totalSets; cs += card.doneSets;
+      h += card.html;
+    } else {
+      var members = [];
+      var minDone = Infinity, maxSets = 0;
+      for (var mi = 0; mi < run.items.length; mi++) {
+        var item = run.items[mi];
+        var memBadge = String.fromCharCode(65) + (mi + 1);
+        var memCard = renderPlanDayExerciseCard(di, item.ei, item.planEx, item.exState || { sets: [], rpe: null, note: '', sub: '' }, mode, readOnly, memBadge);
+        members.push({ ei: item.ei, cardHtml: memCard.html });
+        ts += memCard.totalSets; cs += memCard.doneSets;
+        var doneCount = countDoneSets(item.exState);
+        var totalCount = (item.planEx && Array.isArray(item.planEx.sets)) ? item.planEx.sets.length
+                       : (item.exState && Array.isArray(item.exState.sets) ? item.exState.sets.length : 0);
+        if (doneCount < minDone) minDone = doneCount;
+        if (totalCount > maxSets) maxSets = totalCount;
+      }
+      var currentRound = (minDone === Infinity ? 1 : Math.min(minDone + 1, maxSets || 1));
+      var roundComplete = (minDone >= maxSets && maxSets > 0);
+      h += renderSupersetBlock(di, members, {
+        key: run.groupKey,
+        rest: run.rest,
+        currentRound: roundComplete ? maxSets : currentRound,
+        totalRounds: maxSets
+      }, readOnly);
+    }
   }
 
   h += '</div>';  // close plan sort-zone
@@ -891,22 +1024,44 @@ function buildAdHocDay(di) {
   h += renderSessionNotes(di, state, false);
 
   var ts = 0, cs = 0;
-  var keys = Object.keys(state.exercises || {}).sort(function(a, b) {
-    return parseInt(a.slice(3), 10) - parseInt(b.slice(3), 10);
-  });
+  var keys = Object.keys(state.exercises || {});
+  var hasExercises = keys.length > 0;
 
   // Ad-hoc session has a single sort zone — all exercises are ad-hoc.
   // Reorder within remaps sets for the current workout only (no plan).
-  if (keys.length) h += '<div class="sort-zone" data-sort-zone="adhoc" data-di="' + di + '">';
-  for (var xi = 0; xi < keys.length; xi++) {
-    var ek = keys[xi];
-    var ei = parseInt(ek.slice(3), 10);
-    var exState = state.exercises[ek];
-    var adCard = renderAdHocExerciseCard(di, ei, exState, null);
-    ts += adCard.totalSets; cs += adCard.doneSets;
-    h += adCard.html;
+  if (hasExercises) h += '<div class="sort-zone" data-sort-zone="adhoc" data-di="' + di + '">';
+  var adRuns = groupRunsForRender(null, state.exercises || {});
+  for (var ri = 0; ri < adRuns.length; ri++) {
+    var run = adRuns[ri];
+    if (run.kind === 'standalone') {
+      var adCard = renderAdHocExerciseCard(di, run.ei, run.exState, null);
+      ts += adCard.totalSets; cs += adCard.doneSets;
+      h += adCard.html;
+    } else {
+      var adMembers = [];
+      var adMinDone = Infinity, adMaxSets = 0;
+      for (var mi = 0; mi < run.items.length; mi++) {
+        var item = run.items[mi];
+        var memBadge = String.fromCharCode(65) + (mi + 1);
+        var memCard = renderAdHocExerciseCard(di, item.ei, item.exState, memBadge);
+        adMembers.push({ ei: item.ei, cardHtml: memCard.html });
+        ts += memCard.totalSets; cs += memCard.doneSets;
+        var doneCount = countDoneSets(item.exState);
+        var totalCount = item.exState && Array.isArray(item.exState.sets) ? item.exState.sets.length : 0;
+        if (doneCount < adMinDone) adMinDone = doneCount;
+        if (totalCount > adMaxSets) adMaxSets = totalCount;
+      }
+      var adCurrentRound = (adMinDone === Infinity ? 1 : Math.min(adMinDone + 1, adMaxSets || 1));
+      var adRoundComplete = (adMinDone >= adMaxSets && adMaxSets > 0);
+      h += renderSupersetBlock(di, adMembers, {
+        key: run.groupKey,
+        rest: run.rest,
+        currentRound: adRoundComplete ? adMaxSets : adCurrentRound,
+        totalRounds: adMaxSets
+      }, false);
+    }
   }
-  if (keys.length) h += '</div>';  // close ad-hoc sort-zone
+  if (hasExercises) h += '</div>';  // close ad-hoc sort-zone
 
   h += '<button class="add-exercise-btn" id="btnAddExercise" type="button">+ Add Exercise</button>';
   h += '<button class="add-exercise-btn" id="btnAddFromTemplate" type="button">+ Add from template</button>';
