@@ -2950,6 +2950,204 @@ async function endActivePlan() {
   if (container) container.innerHTML = '';
 }
 
+// ---- Superset merge / separate (v3.4.0) ----
+
+// Resolve a list of flat exercise_order values to (blockIdx, memberIdx)
+// tuples within dayPlan.exercises[]. blockIdx is the dayPlan.exercises[]
+// index of the block (or the standalone exercise); memberIdx is the
+// position within the block (or -1 for standalone).
+function _resolveFlatEi(dayPlan, flatEiList) {
+  var out = new Array(flatEiList.length);
+  var flatI = 0;
+  for (var i = 0; i < dayPlan.exercises.length; i++) {
+    var entry = dayPlan.exercises[i];
+    if (entry && entry.superset === true && Array.isArray(entry.exercises)) {
+      for (var ci = 0; ci < entry.exercises.length; ci++) {
+        var idx = flatEiList.indexOf(flatI);
+        if (idx >= 0) out[idx] = { flatEi: flatI, blockIdx: i, memberIdx: ci };
+        flatI++;
+      }
+    } else {
+      var idx2 = flatEiList.indexOf(flatI);
+      if (idx2 >= 0) out[idx2] = { flatEi: flatI, blockIdx: i, memberIdx: -1 };
+      flatI++;
+    }
+  }
+  return out;
+}
+
+// Re-stamp supersetGroup / supersetRest on state.exercises after the
+// column was rewritten. Mirrors the derivation in stateFromWorkout.
+function _restateFromSupersetGroups(state, groups) {
+  for (var ek in state.exercises) {
+    if (state.exercises.hasOwnProperty(ek)) {
+      state.exercises[ek].supersetGroup = null;
+      state.exercises[ek].supersetRest = null;
+    }
+  }
+  for (var gi = 0; gi < groups.length; gi++) {
+    var g = groups[gi];
+    if (!g || !Array.isArray(g.exercise_orders)) continue;
+    var key = 'g' + gi;
+    for (var oi = 0; oi < g.exercise_orders.length; oi++) {
+      var ek2 = 'ex_' + g.exercise_orders[oi];
+      if (state.exercises[ek2]) {
+        state.exercises[ek2].supersetGroup = key;
+        state.exercises[ek2].supersetRest = Number.isInteger(g.rest) ? g.rest : 60;
+      }
+    }
+  }
+}
+
+// Merge two exercises on the same day into a superset block. eiA is
+// the source (the user tapped the chain-link icon on this card); eiB is the target
+// (picker selection). If eiB is in an existing block, eiA joins that
+// block; if both are standalone, a new 2-member block is created.
+//
+// Plan-day path: mutates plan.data and persists via plans.update.
+// Recomputes today plan-day workout superset_groups if a workouts row
+// already exists. Ad-hoc path: rewrites workouts.superset_groups
+// directly. Either way, in-memory state is mirrored before returning.
+async function applySupersetMerge(di, eiA, eiB) {
+  if (!userId) throw new Error('Not signed in');
+  if (eiA === eiB) throw new Error('Cannot pair an exercise with itself');
+  if (isAdHocKey(di)) {
+    return _applySupersetMergeAdHoc(di, eiA, eiB);
+  }
+  return _applySupersetMergePlan(di, eiA, eiB);
+}
+
+async function _applySupersetMergePlan(di, eiA, eiB) {
+  if (!plan || !plan.days || !plan.days[di]) throw new Error('Plan day not found');
+  var dayPlan = plan.days[di];
+  var resolved = _resolveFlatEi(dayPlan, [eiA, eiB]);
+  if (!resolved || resolved.length !== 2 || !resolved[0] || !resolved[1]) {
+    throw new Error('Could not resolve ei to plan entries');
+  }
+
+  var rA = resolved[0], rB = resolved[1];
+  var entryA = dayPlan.exercises[rA.blockIdx];
+  var entryB = dayPlan.exercises[rB.blockIdx];
+
+  // Deep clone for atomic mutation. We will mutate newDay then assign
+  // it back into a cloned plan and persist.
+  var newDay = JSON.parse(JSON.stringify(dayPlan));
+
+  if (entryA.superset && !entryB.superset) {
+    newDay.exercises[rA.blockIdx].exercises.push(JSON.parse(JSON.stringify(entryB)));
+    newDay.exercises.splice(rB.blockIdx, 1);
+  } else if (!entryA.superset && entryB.superset) {
+    newDay.exercises[rB.blockIdx].exercises.push(JSON.parse(JSON.stringify(entryA)));
+    newDay.exercises.splice(rA.blockIdx, 1);
+  } else if (!entryA.superset && !entryB.superset) {
+    var rest = (Number.isInteger(entryA.rest) ? entryA.rest : null)
+            || (Number.isInteger(entryB.rest) ? entryB.rest : null)
+            || 60;
+    var memberA = JSON.parse(JSON.stringify(entryA)); delete memberA.rest;
+    var memberB = JSON.parse(JSON.stringify(entryB)); delete memberB.rest;
+    var block = { superset: true, rest: rest, exercises: [memberA, memberB] };
+    var lo = Math.min(rA.blockIdx, rB.blockIdx);
+    var hi = Math.max(rA.blockIdx, rB.blockIdx);
+    newDay.exercises[lo] = block;
+    newDay.exercises.splice(hi, 1);
+  } else {
+    // Both blocks -- concat B into A.
+    newDay.exercises[rA.blockIdx].exercises = newDay.exercises[rA.blockIdx].exercises.concat(
+      JSON.parse(JSON.stringify(entryB.exercises))
+    );
+    newDay.exercises.splice(rB.blockIdx, 1);
+  }
+
+  var newPlan = JSON.parse(JSON.stringify(plan));
+  newPlan.days[di] = newDay;
+  var pr = await sb.from('plans').update({ data: newPlan }).eq('id', activePlanId);
+  if (pr.error) throw new Error(pr.error.message);
+  plan = newPlan;
+  planCache[activePlanId] = plan;
+
+  var todayPlanState = todayPlanStates[di];
+  if (todayPlanState && todayPlanState.workoutId) {
+    var newGroups = supersetGroupsFromPlanDay(newDay);
+    var wr = await sb.from('workouts').update({ superset_groups: newGroups })
+      .eq('id', todayPlanState.workoutId);
+    if (wr.error) throw new Error(wr.error.message);
+    _restateFromSupersetGroups(todayPlanState, newGroups);
+  }
+}
+
+async function _applySupersetMergeAdHoc(di, eiA, eiB) {
+  var state = findAdHoc(di);
+  if (!state) throw new Error('Ad-hoc session not found');
+
+  // Compute current groups from state.
+  var orderedKeys = Object.keys(state.exercises).sort(function(a, b) {
+    return parseInt(a.slice(3), 10) - parseInt(b.slice(3), 10);
+  });
+  var currentGroups = [];
+  var groupKeyToGroupIdx = {};
+  for (var i = 0; i < orderedKeys.length; i++) {
+    var ek = orderedKeys[i];
+    var ex = state.exercises[ek];
+    var ei = parseInt(ek.slice(3), 10);
+    if (ex.supersetGroup) {
+      var idx = groupKeyToGroupIdx[ex.supersetGroup];
+      if (idx == null) {
+        groupKeyToGroupIdx[ex.supersetGroup] = currentGroups.length;
+        currentGroups.push({ orders: [ei], rest: ex.supersetRest || 60 });
+      } else {
+        currentGroups[idx].orders.push(ei);
+      }
+    }
+  }
+
+  var groupOfA = -1, groupOfB = -1;
+  for (var gi = 0; gi < currentGroups.length; gi++) {
+    if (currentGroups[gi].orders.indexOf(eiA) >= 0) groupOfA = gi;
+    if (currentGroups[gi].orders.indexOf(eiB) >= 0) groupOfB = gi;
+  }
+
+  var newGroups;
+  if (groupOfA < 0 && groupOfB < 0) {
+    newGroups = currentGroups.slice();
+    newGroups.push({ orders: [eiA, eiB].sort(function(a, b) { return a - b; }), rest: 60 });
+  } else if (groupOfA >= 0 && groupOfB < 0) {
+    newGroups = currentGroups.slice();
+    newGroups[groupOfA] = {
+      orders: newGroups[groupOfA].orders.concat([eiB]).sort(function(a, b) { return a - b; }),
+      rest: newGroups[groupOfA].rest
+    };
+  } else if (groupOfA < 0 && groupOfB >= 0) {
+    newGroups = currentGroups.slice();
+    newGroups[groupOfB] = {
+      orders: newGroups[groupOfB].orders.concat([eiA]).sort(function(a, b) { return a - b; }),
+      rest: newGroups[groupOfB].rest
+    };
+  } else if (groupOfA === groupOfB) {
+    return;  // Already paired; no-op.
+  } else {
+    newGroups = [];
+    for (var gj = 0; gj < currentGroups.length; gj++) {
+      if (gj === groupOfB) continue;
+      if (gj === groupOfA) {
+        newGroups.push({
+          orders: currentGroups[gj].orders.concat(currentGroups[groupOfB].orders)
+            .sort(function(a, b) { return a - b; }),
+          rest: currentGroups[gj].rest
+        });
+      } else {
+        newGroups.push(currentGroups[gj]);
+      }
+    }
+  }
+
+  var payload = newGroups.map(function(g) {
+    return { exercise_orders: g.orders, rest: g.rest };
+  });
+  var wr = await sb.from('workouts').update({ superset_groups: payload }).eq('id', state.workoutId);
+  if (wr.error) throw new Error(wr.error.message);
+  _restateFromSupersetGroups(state, payload);
+}
+
 // ---- Templates ----
 // Templates are plans rows with is_template = true, is_active = false.
 // They're never activated directly — they're copied into ad-hoc sessions
