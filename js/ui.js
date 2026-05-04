@@ -6977,6 +6977,26 @@ document.getElementById('workoutContainer').addEventListener('click', function(e
     openSupersetPicker(supDi, supEi);
     return;
   }
+  var addRoundBtn = target.closest && target.closest('[data-add-round]');
+  if (addRoundBtn) {
+    var addRoundDi = addRoundBtn.getAttribute('data-di');
+    if (!isAdHocKey(addRoundDi)) addRoundDi = parseInt(addRoundDi, 10);
+    var addRoundGroupKey = addRoundBtn.getAttribute('data-add-round');
+    (async function() {
+      try {
+        await addRoundToBlockMembers(addRoundDi, addRoundGroupKey);
+        if (isAdHocKey(addRoundDi)) {
+          buildAdHocDay(addRoundDi);
+        } else {
+          buildDay(addRoundDi);
+        }
+      } catch (err) {
+        console.error('addRoundToBlockMembers error:', err);
+        showToast("Couldn't add round: " + (err.message || 'unknown'), null);
+      }
+    })();
+    return;
+  }
   // Per-exercise recent history — handled before header-expand because this
   // button lives inside .exercise-header.
   var histBtn = target.closest ? target.closest('.ex-history-btn') : null;
