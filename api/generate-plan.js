@@ -633,8 +633,16 @@ function formatCurrentPlan(activePlan) {
   for (let i = 0; i < days.length; i++) {
     const day = days[i];
     const dur = day.duration ? ` (target ${day.duration})` : '';
-    const exs = Array.isArray(day.exercises) ? day.exercises.map(e => e.name).join(', ') : '';
-    out += `  Day ${i + 1}: ${day.name || ''}${dur} — ${exs}\n`;
+    const entries = Array.isArray(day.exercises) ? day.exercises : [];
+    const labels = entries.map(entry => {
+      if (entry && entry.superset === true && Array.isArray(entry.exercises)) {
+        const memberNames = entry.exercises.map(c => c && c.name).filter(Boolean);
+        const rest = Number.isInteger(entry.rest) ? entry.rest : 60;
+        return `⟷ ${memberNames.join(' / ')} (${rest}s rest)`;
+      }
+      return entry && entry.name ? entry.name : '';
+    }).filter(Boolean);
+    out += `  Day ${i + 1}: ${day.name || ''}${dur} — ${labels.join(', ')}\n`;
   }
   return out + '\n';
 }

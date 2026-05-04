@@ -3772,18 +3772,25 @@ function _formatPlanForCoach(planBlob) {
     // Skip empty days (active-recovery stubs from older plan blobs). They
     // inflate the day count and add noise for the coach without any data.
     if (!exs.length) continue;
-    // Compact format: "Day 1 — Back Width: Pull-ups 3×12, Cable Row 3×12 @120"
-    var exStrs = exs.map(function(ex) {
+    // Compact format: "Day 1 — Back Width: Pull-ups 3×12, ⟷ Cable Row 3×12 @120 / Lateral Raise 3×12 @20 (60s rest), Tricep Pushdown 3×10"
+    function _coachFmtRegular(ex) {
       if (!ex || !ex.name) return '';
       var sets = Array.isArray(ex.sets) ? ex.sets : [];
       var count = sets.length;
-      // Use the first set's reps/weight as the representative prescription;
-      // same-set exercises (the common case) get compact one-line form.
       var first = sets[0] || {};
       var repsTarget = first.reps_target || first.reps_range || '?';
       var weight = first.weight != null ? first.weight : '';
       var weightStr = weight !== '' ? ' @' + weight : '';
       return ex.name + ' ' + count + '×' + repsTarget + weightStr;
+    }
+    var exStrs = exs.map(function(ex) {
+      if (ex && ex.superset === true && Array.isArray(ex.exercises)) {
+        var memberStrs = ex.exercises.map(_coachFmtRegular).filter(Boolean);
+        if (!memberStrs.length) return '';
+        var rest = Number.isInteger(ex.rest) ? ex.rest : 60;
+        return '⟷ ' + memberStrs.join(' / ') + ' (' + rest + 's rest)';
+      }
+      return _coachFmtRegular(ex);
     }).filter(Boolean);
     // Plan day names already start with "Day N — ..." in most cases (Claude
     // emits them that way). Avoid double-prefixing — use the name as-is if
@@ -3976,18 +3983,18 @@ function getLiveContext() {
   // Prescribed exercises (if plan-day). Each line includes the plan
   // prescription inline so the coach can compare actuals against target
   // without cross-referencing the separate plan block in coachContext.
+  // For superset days: walks the nested plan structure with a flat-ei
+  // counter so block members resolve to the right state entry, and tags
+  // member lines with (superset) so the coach knows the grouping.
   var planDay = (!st.isAdHoc && plan && plan.days && plan.days[st.dayIndex]) ? plan.days[st.dayIndex] : null;
   var currentMarked = false;
   if (planDay && Array.isArray(planDay.exercises)) {
     lines.push('');
-    for (var i = 0; i < planDay.exercises.length; i++) {
-      var ex = planDay.exercises[i];
-      var exState = (st.exercises && st.exercises['ex_' + i]) || { sets: [] };
+
+    function _liveLineForExercise(ex, flatEi, supersetTag) {
+      var exState = (st.exercises && st.exercises['ex_' + flatEi]) || { sets: [] };
       var planSets = Array.isArray(ex.sets) ? ex.sets : [];
       var totalSets = planSets.length;
-      // Compact prescription: "3×12 @120" (first set is representative since
-      // same-weight sets are the common case). If sets vary, show the top
-      // set's weight / target reps — the coach gets the magnitude.
       var firstSet = planSets[0] || {};
       var prescWt = firstSet.weight != null ? firstSet.weight : '';
       var prescReps = firstSet.reps_target || firstSet.reps_range || '?';
@@ -4004,16 +4011,14 @@ function getLiveContext() {
           logged.push(wt + '×' + r);
         }
       }
-      // Substitution: if the user swapped this exercise for something else,
-      // show the label as "Prescribed → Substitute" so the coach knows what
-      // was actually performed and doesn't confuse it with the plan exercise.
       var displayName = ex.name;
       if (exState.subExercise && exState.subExercise.name) {
         displayName = ex.name + ' → ' + exState.subExercise.name;
       } else if (exState.sub) {
         displayName = ex.name + ' → ' + exState.sub + ' (legacy)';
       }
-      var line = '  ' + displayName + ' [plan: ' + prescStr + ']: ' +
+      var line = '  ' + displayName + (supersetTag ? ' (superset)' : '') +
+                 ' [plan: ' + prescStr + ']: ' +
                  (logged.length ? logged.join(', ') + ' — ' : '') +
                  doneCount + '/' + totalSets + ' done';
       if (exState.rpe != null) line += ' — RPE ' + exState.rpe;
@@ -4022,7 +4027,21 @@ function getLiveContext() {
         currentMarked = true;
       }
       if (exState.note) line += ' — note: "' + String(exState.note).slice(0, 80) + '"';
-      lines.push(line);
+      return line;
+    }
+
+    var liveFlatEi = 0;
+    for (var i = 0; i < planDay.exercises.length; i++) {
+      var entry = planDay.exercises[i];
+      if (entry && entry.superset === true && Array.isArray(entry.exercises)) {
+        for (var ci = 0; ci < entry.exercises.length; ci++) {
+          lines.push(_liveLineForExercise(entry.exercises[ci], liveFlatEi, true));
+          liveFlatEi++;
+        }
+      } else {
+        lines.push(_liveLineForExercise(entry, liveFlatEi, false));
+        liveFlatEi++;
+      }
     }
   }
 
