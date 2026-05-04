@@ -4480,6 +4480,22 @@ async function onMergeIntoSuperset(di, eiA, eiB) {
   }
 }
 
+async function onRemoveFromSuperset(di, ei) {
+  try {
+    await applySupersetSeparate(di, ei);
+    if (isAdHocKey(di)) {
+      buildAdHocDay(di);
+    } else {
+      buildDay(di);
+    }
+    showToast('Removed from superset.', null);
+    if (typeof saveHydrationSnapshot === 'function') saveHydrationSnapshot();
+  } catch (err) {
+    console.error('onRemoveFromSuperset error:', err);
+    showToast("Couldn't remove: " + (err.message || 'unknown'), null);
+  }
+}
+
 function closeSwapModal() {
   if (swapAbortController) {
     try { swapAbortController.abort(); } catch(e) { /* already aborted */ }
@@ -6955,7 +6971,7 @@ document.getElementById('workoutContainer').addEventListener('click', function(e
     if (!isAdHocKey(supDi)) supDi = parseInt(supDi, 10);
     var supEi = parseInt(supBtn.getAttribute('data-ei'), 10);
     if (supBtn.classList.contains('in-block')) {
-      // Task 10 -- unpair handler; stub for now.
+      onRemoveFromSuperset(supDi, supEi);
       return;
     }
     openSupersetPicker(supDi, supEi);
