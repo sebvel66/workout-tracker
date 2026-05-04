@@ -1545,21 +1545,19 @@ function stripJsonFences(text) {
 // copies of the same set (without the `repeat` field). Used to keep
 // Claude's output small when all sets of an exercise are identical.
 // Clamps N to [1, 10] as a defense against model hallucinations.
+//
+// Recurses into superset block children so the repeat shorthand works
+// inside member sets exactly as it does for regular exercises.
 function expandSetRepeats(plan) {
   if (!plan || !Array.isArray(plan.days)) return plan;
   for (const day of plan.days) {
     if (!Array.isArray(day.exercises)) continue;
-    for (const ex of day.exercises) {
-      if (!Array.isArray(ex.sets)) continue;
-      const expanded = [];
-      for (const set of ex.sets) {
-        const raw = typeof set.repeat === 'number' ? set.repeat : parseInt(set.repeat, 10);
-        const n = Math.min(10, Math.max(1, Number.isFinite(raw) ? raw : 1));
-        const clean = { ...set };
-        delete clean.repeat;
-        for (let i = 0; i < n; i++) expanded.push({ ...clean });
+    for (const entry of day.exercises) {
+      if (entry && entry.superset === true && Array.isArray(entry.exercises)) {
+        for (const child of entry.exercises) expandSetRepeatsForOneExercise(child);
+      } else {
+        expandSetRepeatsForOneExercise(entry);
       }
-      ex.sets = expanded;
     }
   }
   return plan;
