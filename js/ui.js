@@ -163,12 +163,14 @@ function initSortableZones(di, isAdHoc) {
   var ANIM_MS = 150;
   var DRAG_FILTER = 'input, textarea, button, select, .set-row, .exercise-note, .exercise-note-input, .sub-row, .rpe-row';
 
+  var BLOCK_FILTER = ', .superset-block, .superset-block-header, .superset-members-zone, .superset-add-round';
+
   if (isAdHoc) {
     var adhocEl = document.querySelector('#workoutContainer [data-sort-zone="adhoc"]');
     if (adhocEl) {
       Sortable.create(adhocEl, {
         group: 'exercise-adhoc-session',
-        filter: DRAG_FILTER,
+        filter: DRAG_FILTER + BLOCK_FILTER,
         preventOnFilter: false,
         delay: LONG_PRESS_MS,
         delayOnTouchOnly: true,
@@ -180,6 +182,30 @@ function initSortableZones(di, isAdHoc) {
         },
       });
     }
+
+    // Per-block sort zones (v3.4.0). Each block container has its own
+    // unique data-sort-zone="superset-<groupKey>" so SortableJS treats
+    // them as independent -- drops from outside are rejected by the
+    // unique group key.
+    var supersetZonesAdHoc = document.querySelectorAll('#workoutContainer [data-sort-zone^="superset-"]');
+    for (var za = 0; za < supersetZonesAdHoc.length; za++) {
+      var zoneA = supersetZonesAdHoc[za];
+      var groupKeyForZoneA = zoneA.getAttribute('data-sort-zone').replace(/^superset-/, '');
+      Sortable.create(zoneA, {
+        group: 'exercise-superset-' + groupKeyForZoneA,
+        filter: DRAG_FILTER,
+        preventOnFilter: false,
+        delay: LONG_PRESS_MS,
+        delayOnTouchOnly: true,
+        animation: ANIM_MS,
+        onEnd: (function(zoneEl) {
+          return function(evt) {
+            if (evt.oldIndex === evt.newIndex) return;
+            onMemberReordered(zoneEl);
+          };
+        })(zoneA)
+      });
+    }
     return;
   }
 
@@ -187,7 +213,7 @@ function initSortableZones(di, isAdHoc) {
   if (planEl) {
     Sortable.create(planEl, {
       group: 'exercise-plan-zone',
-      filter: DRAG_FILTER,
+      filter: DRAG_FILTER + BLOCK_FILTER,
       preventOnFilter: false,
       delay: LONG_PRESS_MS,
       delayOnTouchOnly: true,
@@ -204,7 +230,7 @@ function initSortableZones(di, isAdHoc) {
     var planLen = parseInt(extrasEl.getAttribute('data-plan-len'), 10) || 0;
     Sortable.create(extrasEl, {
       group: 'exercise-extras-zone',
-      filter: DRAG_FILTER,
+      filter: DRAG_FILTER + BLOCK_FILTER,
       preventOnFilter: false,
       delay: LONG_PRESS_MS,
       delayOnTouchOnly: true,
@@ -215,6 +241,30 @@ function initSortableZones(di, isAdHoc) {
         // reorderAdHocExtras; zoneStartEi = planLen anchors the boundary.
         reorderAdHocExtras(evt.oldIndex, evt.newIndex, planLen);
       },
+    });
+  }
+
+  // Per-block sort zones (v3.4.0). Each block container has its own
+  // unique data-sort-zone="superset-<groupKey>" so SortableJS treats
+  // them as independent -- drops from outside are rejected by the
+  // unique group key.
+  var supersetZones = document.querySelectorAll('#workoutContainer [data-sort-zone^="superset-"]');
+  for (var z = 0; z < supersetZones.length; z++) {
+    var zone = supersetZones[z];
+    var groupKeyForZone = zone.getAttribute('data-sort-zone').replace(/^superset-/, '');
+    Sortable.create(zone, {
+      group: 'exercise-superset-' + groupKeyForZone,
+      filter: DRAG_FILTER,
+      preventOnFilter: false,
+      delay: LONG_PRESS_MS,
+      delayOnTouchOnly: true,
+      animation: ANIM_MS,
+      onEnd: (function(zoneEl) {
+        return function(evt) {
+          if (evt.oldIndex === evt.newIndex) return;
+          onMemberReordered(zoneEl);
+        };
+      })(zone)
     });
   }
 }
@@ -4493,6 +4543,36 @@ async function onRemoveFromSuperset(di, ei) {
   } catch (err) {
     console.error('onRemoveFromSuperset error:', err);
     showToast("Couldn't remove: " + (err.message || 'unknown'), null);
+  }
+}
+
+async function onMemberReordered(zoneEl) {
+  if (!zoneEl) return;
+  var groupKey = zoneEl.getAttribute('data-sort-zone').replace(/^superset-/, '');
+  var diAttr = zoneEl.getAttribute('data-di');
+  var di = isAdHocKey(diAttr) ? diAttr : parseInt(diAttr, 10);
+  var memberEls = zoneEl.querySelectorAll('[data-member-ei]');
+  var newMemberEis = [];
+  for (var i = 0; i < memberEls.length; i++) {
+    newMemberEis.push(parseInt(memberEls[i].getAttribute('data-member-ei'), 10));
+  }
+  if (newMemberEis.length < 2) return;
+  try {
+    await applySupersetReorderMembers(di, groupKey, newMemberEis);
+    if (isAdHocKey(di)) {
+      buildAdHocDay(di);
+    } else {
+      buildDay(di);
+    }
+    if (typeof saveHydrationSnapshot === 'function') saveHydrationSnapshot();
+  } catch (err) {
+    console.error('onMemberReordered error:', err);
+    showToast("Couldn't reorder superset members: " + (err.message || 'unknown'), null);
+    if (isAdHocKey(di)) {
+      buildAdHocDay(di);
+    } else {
+      buildDay(di);
+    }
   }
 }
 
