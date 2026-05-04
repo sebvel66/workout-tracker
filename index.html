@@ -20,6 +20,7 @@
   --text2: #9898a4;
   --text3: #5c5c6a;
   --accent: #4ade80;
+  --accent-indigo: #6366f1;
   --accent2: #22c55e;
   --warn: #fbbf24;
   --danger: #f87171;
@@ -2283,6 +2284,75 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
   font-size: 16px;
   font-weight: 700;
 }
+
+/* Superset blocks (v3.4.0). Indigo-accented bordered container that
+ * groups N exercises performed as alternating rounds. Members render
+ * as nested mini-cards using the existing exercise-card markup with
+ * an A1/A2/A3 badge prefix. The block header carries the round
+ * indicator and inter-round rest; +Add round at the bottom adds a
+ * set to every member at once. */
+.superset-block {
+  background: var(--surface);
+  border: 2px solid var(--accent-indigo);
+  border-radius: 14px;
+  padding: 10px;
+  margin-bottom: 12px;
+}
+.superset-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  color: var(--accent-indigo);
+  text-transform: uppercase;
+  margin-bottom: 8px;
+  padding: 0 4px;
+}
+.superset-block-header-meta { display: flex; gap: 8px; align-items: center; }
+.superset-block-header-rest-edit {
+  background: none; border: none; color: inherit;
+  cursor: pointer; padding: 0 4px; font-size: 12px;
+}
+.superset-member { margin-bottom: 8px; }
+.superset-member:last-child { margin-bottom: 0; }
+.superset-badge {
+  display: inline-block;
+  background: var(--accent-indigo);
+  color: white;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 8px;
+  margin-right: 6px;
+  letter-spacing: 0.04em;
+}
+.superset-add-round {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 8px;
+  background: transparent;
+  border: 1px dashed var(--accent-indigo);
+  border-radius: 10px;
+  color: var(--accent-indigo);
+  font-family: 'Outfit', sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.superset-add-round:hover { background: rgba(99, 102, 241, 0.08); }
+.ex-superset-btn {
+  background: none;
+  border: none;
+  color: var(--text2);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.ex-superset-btn.in-block { color: var(--accent-indigo); }
 
 .set-row.deletable { grid-template-columns: 32px 1fr 1fr 40px 28px; }
 .set-delete {
