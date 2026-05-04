@@ -1699,7 +1699,8 @@ async function _toggleSetCommit(di, ei, si, sl, wasDone) {
         // For manually-added drops past the prescribed count,
         // plan.sets[ci] is undefined and carry-forward (set in
         // addDropSet) already populated weight/reps.
-        var childPrescribed = plan.days && plan.days[di] && plan.days[di].exercises[ei] && plan.days[di].exercises[ei].sets[ci];
+        var planMemberForCascade = (plan && plan.days) ? _flatEiToPlanMember(plan.days[di], ei) : null;
+        var childPrescribed = planMemberForCascade && Array.isArray(planMemberForCascade.sets) ? planMemberForCascade.sets[ci] : null;
         if (childPrescribed) {
           if (child.weight == null && childPrescribed.weight != null) child.weight = childPrescribed.weight;
           if (child.reps == null && childPrescribed.reps_target != null) child.reps = childPrescribed.reps_target;
@@ -1713,21 +1714,39 @@ async function _toggleSetCommit(di, ei, si, sl, wasDone) {
 
   buildTabs();
   buildDay(di);
-  // Auto-start rest timer on set-done (v2.4.14): fires for every set
-  // regardless of whether the exercise is prescribed, extras, ad-hoc,
-  // or template-imported. Prescribed sets use plan's per-exercise rest;
-  // everything else falls back to 90s. User can disable in hamburger →
-  // "Auto rest timer".
+  // Auto-start rest timer on set-done (v2.4.14, v3.4 superset gating):
+  // fires for every set regardless of whether the exercise is prescribed,
+  // extras, ad-hoc, or template-imported. Prescribed sets use the plan's
+  // per-exercise rest; everything else falls back to 90s. User can
+  // disable in hamburger → "Auto rest timer".
+  //
+  // Superset gating (v3.4.0): when the just-toggled set is in a block,
+  // only fire the timer when this tap brought min(completed-set-count)
+  // across members up by one -- i.e., the round just completed. Block
+  // members suppress the timer on intermediate done-taps. Out-of-order
+  // taps still resolve correctly because the gate checks state, not tap
+  // order.
   //
   // For drop-set chains, the rest timer fires once -- when the parent
-  // is marked done, the cascade finishes synchronously above, and
-  // we hit this block once for the whole chain.
+  // is marked done, the cascade finishes synchronously above, and we
+  // hit this block once for the whole chain.
   if (sl.done && getRestTimerAuto()) {
-    var prescribedRest =
-      (plan && plan.days && plan.days[di] && plan.days[di].exercises[ei])
-        ? plan.days[di].exercises[ei].rest
+    var stForRest = (typeof todayState !== 'undefined' && todayState) ? todayState : null;
+    var ekForRest = 'ex_' + ei;
+    var exStateForRest = stForRest && stForRest.exercises ? stForRest.exercises[ekForRest] : null;
+    if (exStateForRest && exStateForRest.supersetGroup) {
+      // In a superset -- gate via shouldFireRestForBlockMember.
+      if (shouldFireRestForBlockMember(stForRest, ei, si)) {
+        startRestTimer(exStateForRest.supersetRest || 60);
+      }
+      // If not last-of-round: silently suppress (round not yet complete).
+    } else {
+      var planMemberForRest = (plan && plan.days) ? _flatEiToPlanMember(plan.days[di], ei) : null;
+      var prescribedRest = (planMemberForRest && Number.isInteger(planMemberForRest.rest))
+        ? planMemberForRest.rest
         : null;
-    startRestTimer(prescribedRest || 90);
+      startRestTimer(prescribedRest || 90);
+    }
   }
 }
 
@@ -2974,6 +2993,72 @@ function _resolveFlatEi(dayPlan, flatEiList) {
     }
   }
   return out;
+}
+
+// Resolve a FLAT exercise_order ei to its prescribed exercise object
+// in dayPlan.exercises[]. Walks the nested structure: block entries
+// expand into their members, standalone entries occupy one flat slot.
+// Returns null when ei is past the day flat range (e.g., extras).
+function _flatEiToPlanMember(dayPlan, ei) {
+  if (!dayPlan || !Array.isArray(dayPlan.exercises)) return null;
+  var flatI = 0;
+  for (var i = 0; i < dayPlan.exercises.length; i++) {
+    var entry = dayPlan.exercises[i];
+    if (entry && entry.superset === true && Array.isArray(entry.exercises)) {
+      for (var ci = 0; ci < entry.exercises.length; ci++) {
+        if (flatI === ei) return entry.exercises[ci];
+        flatI++;
+      }
+    } else {
+      if (flatI === ei) return entry;
+      flatI++;
+    }
+  }
+  return null;
+}
+
+// Check whether the just-toggled set in a block is "last of round" --
+// i.e., this tap brought min(completed-set-count) across members up
+// by one. Used by _toggleSetCommit to decide whether to fire the
+// rest timer when the exercise is a superset member.
+//
+// Returns true when the round is complete (fire timer).
+// Returns false when the round is NOT complete (suppress timer).
+//
+// Members with fewer sets than the block's max round count don't
+// gate the round -- the check uses min only across members that have
+// a set at the current round index si.
+function shouldFireRestForBlockMember(state, ei, si) {
+  var ek = 'ex_' + ei;
+  var exState = state && state.exercises && state.exercises[ek];
+  if (!exState || !exState.supersetGroup) return false;
+  var groupKey = exState.supersetGroup;
+
+  var memberDoneCounts = [];
+  var memberHasSetAtSi = [];
+  for (var ek2 in state.exercises) {
+    if (!state.exercises.hasOwnProperty(ek2)) continue;
+    var mEx = state.exercises[ek2];
+    if (mEx.supersetGroup !== groupKey) continue;
+    var doneCount = 0;
+    if (Array.isArray(mEx.sets)) {
+      for (var j = 0; j < mEx.sets.length; j++) {
+        if (mEx.sets[j] && mEx.sets[j].done) doneCount++;
+      }
+    }
+    memberDoneCounts.push(doneCount);
+    memberHasSetAtSi.push(Array.isArray(mEx.sets) && mEx.sets[si] != null);
+  }
+  if (!memberDoneCounts.length) return false;
+
+  // Round just completed = min(doneCount across members with a set at si)
+  // is at least si + 1.
+  var minDone = Infinity;
+  for (var k = 0; k < memberDoneCounts.length; k++) {
+    if (memberHasSetAtSi[k] && memberDoneCounts[k] < minDone) minDone = memberDoneCounts[k];
+  }
+  if (minDone === Infinity) return false;
+  return minDone >= (si + 1);
 }
 
 // Re-stamp supersetGroup / supersetRest on state.exercises after the
