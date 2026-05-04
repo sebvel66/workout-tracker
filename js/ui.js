@@ -554,7 +554,7 @@ function renderSupersetBlock(di, members, blockMeta, readOnly) {
   var roundLabel;
   if (blockMeta.totalRounds <= 0) {
     roundLabel = 'Round 0';
-  } else if (blockMeta.currentRound > blockMeta.totalRounds) {
+  } else if (blockMeta.currentRound >= blockMeta.totalRounds) {
     roundLabel = blockMeta.totalRounds + ' / ' + blockMeta.totalRounds + ' ✓';
   } else {
     roundLabel = 'Round ' + blockMeta.currentRound + ' of ' + blockMeta.totalRounds;
