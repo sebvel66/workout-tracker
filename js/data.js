@@ -3341,6 +3341,37 @@ async function _applySupersetSeparateAdHoc(di, ei) {
   _restateFromSupersetGroups(state, payload);
 }
 
+// Add one set to every member of a superset block. Mirrors the
+// existing addExtraSet semantics per-member (carry-forward applied,
+// set.done = false, weight_mode inherited). Used by the block-level
+// "+ Add round" button at the bottom of each block.
+//
+// di: 'ah_<workoutId>' for ad-hoc, integer day index for plan-day.
+// groupKey: the supersetGroup string ('g0', 'g1', ...) -- the renderer
+// stamps this on data-add-round so we can find affected members.
+async function addRoundToBlockMembers(di, groupKey) {
+  var state;
+  if (isAdHocKey(di)) {
+    state = findAdHoc(di);
+  } else {
+    state = stateForDay(di);
+  }
+  if (!state) return;
+  // Snapshot member eis BEFORE mutating; addExtraSet pushes to
+  // state.exercises[ek].sets so the iteration order matters.
+  var memberEis = [];
+  for (var ek in state.exercises) {
+    if (!state.exercises.hasOwnProperty(ek)) continue;
+    if (state.exercises[ek].supersetGroup === groupKey) {
+      memberEis.push(parseInt(ek.slice(3), 10));
+    }
+  }
+  memberEis.sort(function(a, b) { return a - b; });
+  for (var i = 0; i < memberEis.length; i++) {
+    addExtraSet(memberEis[i]);
+  }
+}
+
 // ---- Templates ----
 // Templates are plans rows with is_template = true, is_active = false.
 // They're never activated directly — they're copied into ad-hoc sessions
