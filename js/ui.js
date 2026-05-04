@@ -5764,6 +5764,26 @@ async function runExport() {
   }
 }
 
+// Export the coaching profile blob as JSON for pasting into external tools
+// (e.g. a separate Claude project). Lazy-loads the profile if the user hasn't
+// opened the editor yet this session. Empty profiles still export (with an
+// empty object) so the user can confirm the feature works before filling out.
+async function exportCoachingProfile() {
+  if (coachingProfile === null) {
+    await loadCoachingProfile();
+  }
+  var profile = coachingProfile || {};
+  var payload = {
+    exported_at: new Date().toISOString(),
+    app_version: (typeof APP_VERSION === 'string') ? APP_VERSION : null,
+    coaching_profile: profile,
+  };
+  downloadBlob(
+    new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }),
+    'coaching-profile-' + localDateString(new Date()) + '.json'
+  );
+}
+
 // ---- Event listeners ----
 document.getElementById('btnMenu').addEventListener('click', openMenu);
 document.getElementById('btnMenuClose').addEventListener('click', closeMenu);
@@ -5777,6 +5797,10 @@ document.getElementById('menuImport').addEventListener('click', function() {
 document.getElementById('menuExport').addEventListener('click', function() {
   closeMenu();
   openExportModal();
+});
+document.getElementById('menuExportProfile').addEventListener('click', function() {
+  closeMenu();
+  exportCoachingProfile();
 });
 document.getElementById('menuStartAnother').addEventListener('click', function() {
   closeMenu();
