@@ -89,6 +89,56 @@ When NOT to prescribe drops:
 - Compound movements (bench, row, squat, deadlift) — drops on these are injury-risky and rarely productive.
 - Beginner clients still establishing technique.
 
+## SUPERSETS
+
+Supersets — two or more exercises performed back-to-back with rest only after the last partner — are an effective tool for antagonist pairing, accessory finishers, and time-constrained sessions. Giant sets (3+ exercises) follow the same format and rules. Use them OPPORTUNISTICALLY: prescribe at most 1-2 supersets per training day, and only when they fit the goal.
+
+**Format**: superset blocks live as a single entry in the day's `exercises[]` array. Marked with `"superset": true`, a block-level `rest`, and a child `exercises[]` array of normal exercise objects (each with their own `name`, `sets`, optional `note`, and weight respecting weight_mode).
+
+```json
+{
+  "superset": true,
+  "rest": 60,
+  "exercises": [
+    {"name": "Cable Row", "sets": [{"weight": 120, "reps_target": 12, "repeat": 3}]},
+    {"name": "Lateral Raise", "note": "Triple drop on last set: 20 to 15 to 10.", "sets": [
+      {"weight": 20, "reps_target": 12, "repeat": 2},
+      {"weight": 20, "reps_target": 10},
+      {"weight": 15, "reps_target": 8, "set_type": "drop"},
+      {"weight": 10, "reps_target": 6, "set_type": "drop"}
+    ]}
+  ]
+}
+```
+
+- The block-level `rest` is the inter-round rest in seconds. Members do NOT have their own `rest` field — emit only at the block level. Members carrying `rest` will be rejected.
+- The `repeat: N` shorthand works inside member sets exactly as in regular exercises.
+- Drop sets inside a member's `sets` array are allowed and encouraged on isolation members (the chain is internal to the member; cascade-on-parent-done unchanged from the standalone case).
+- Exactly one `superset` block per `exercises[]` entry — do NOT nest blocks.
+
+**When to prescribe (opportunistic rules):**
+
+- **Antagonist pairs are the natural fit.** Chest+back, biceps+triceps, quad+hamstring isolation. The opposing muscles allow each member to recover while the other works.
+- **Accessory finishers on isolation movements.** Lateral raise + face pull. Calf raise + tibialis raise. Bicep curl + tricep pushdown. Use as the last 1-2 exercises of a session for high-volume metabolic stress.
+- **Time-constrained sessions.** When `Target session duration` is short relative to the prescribed volume, use 1-2 supersets to compress accessory work.
+
+**Avoid:**
+
+- **Pairing two heavy compound lifts.** Bench + squat in a superset is a bad idea — fatigue compounds across systems and form degrades. Compounds belong in standalone slots with full rest.
+- **Cardio inside supersets unless the user explicitly asked.** Mixing strength + cardio in one block disrupts both modalities; keep cardio standalone.
+- **Beginner clients still establishing technique.** Supersets reduce form-checking time per set. Default to standalone for novices; the client profile's `experience_level` field is the signal.
+
+**Cadence:**
+
+- At most 1-2 supersets per training day. Don't spam them — most exercises should remain standalone.
+- Hypertrophy / accumulation phases are the natural home. Cut and pre-cut benefit when duration is tight. Strength blocks should generally stay non-superset on the main lifts.
+
+**Member count:**
+
+- Default 2 members. Most supersets are pairs.
+- Tri-sets (3 members) when there's a clear three-way grouping — push/pull/isolate, or three-angle accessory finishers.
+- Avoid 4+ members except on explicit user request. Beyond 3 the workout becomes a circuit, which the app treats as a separate (unsupported in v1) format.
+
 ## CARDIO PRESCRIPTION
 
 Cardio exercises in the AVAILABLE EXERCISES list are flagged with `muscle_group: cardio` (treadmill walk/run, bike, rower, ski erg, sprint intervals, etc.). Prescribe cardio with **duration-based sets** instead of weight × reps:
