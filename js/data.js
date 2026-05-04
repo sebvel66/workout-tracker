@@ -3148,6 +3148,114 @@ async function _applySupersetMergeAdHoc(di, eiA, eiB) {
   _restateFromSupersetGroups(state, payload);
 }
 
+// Remove the card at ei from its superset block. If the block now has
+// only 1 member, the whole block dissolves (the leftover becomes
+// standalone). Mutates plan.data (plan-day) or workouts.superset_groups
+// (ad-hoc); persists; mirrors to in-memory state.
+async function applySupersetSeparate(di, ei) {
+  if (!userId) throw new Error('Not signed in');
+  if (isAdHocKey(di)) {
+    return _applySupersetSeparateAdHoc(di, ei);
+  }
+  return _applySupersetSeparatePlan(di, ei);
+}
+
+async function _applySupersetSeparatePlan(di, ei) {
+  if (!plan || !plan.days || !plan.days[di]) throw new Error('Plan day not found');
+  var dayPlan = plan.days[di];
+  var resolved = _resolveFlatEi(dayPlan, [ei]);
+  if (!resolved || !resolved[0]) throw new Error('Could not resolve ei');
+  var r = resolved[0];
+  if (r.memberIdx < 0) {
+    return;  // already standalone -- no-op
+  }
+
+  var newDay = JSON.parse(JSON.stringify(dayPlan));
+  var block = newDay.exercises[r.blockIdx];
+  var poppedMember = block.exercises.splice(r.memberIdx, 1)[0];
+
+  if (block.exercises.length === 1) {
+    // Dissolve the block: the remaining member becomes standalone in
+    // place of the block; the popped member is inserted right after.
+    var soleSurvivor = block.exercises[0];
+    if (soleSurvivor.rest == null) soleSurvivor.rest = block.rest;
+    if (poppedMember.rest == null) poppedMember.rest = block.rest;
+    newDay.exercises[r.blockIdx] = soleSurvivor;
+    newDay.exercises.splice(r.blockIdx + 1, 0, poppedMember);
+  } else {
+    // Block survives with N-1 members. Insert popped member after the
+    // block as a standalone.
+    if (poppedMember.rest == null) poppedMember.rest = block.rest;
+    // newDay.exercises[r.blockIdx] is already the mutated block; just
+    // splice the popped member after it.
+    newDay.exercises.splice(r.blockIdx + 1, 0, poppedMember);
+  }
+
+  var newPlan = JSON.parse(JSON.stringify(plan));
+  newPlan.days[di] = newDay;
+  var pr = await sb.from('plans').update({ data: newPlan }).eq('id', activePlanId);
+  if (pr.error) throw new Error(pr.error.message);
+  plan = newPlan;
+  planCache[activePlanId] = plan;
+
+  var todayPlanState = todayPlanStates[di];
+  if (todayPlanState && todayPlanState.workoutId) {
+    var newGroups = supersetGroupsFromPlanDay(newDay);
+    var wr = await sb.from('workouts').update({ superset_groups: newGroups })
+      .eq('id', todayPlanState.workoutId);
+    if (wr.error) throw new Error(wr.error.message);
+    _restateFromSupersetGroups(todayPlanState, newGroups);
+  }
+}
+
+async function _applySupersetSeparateAdHoc(di, ei) {
+  var state = findAdHoc(di);
+  if (!state) throw new Error('Ad-hoc session not found');
+
+  var orderedKeys = Object.keys(state.exercises).sort(function(a, b) {
+    return parseInt(a.slice(3), 10) - parseInt(b.slice(3), 10);
+  });
+  var currentGroups = [];
+  var groupKeyToGroupIdx = {};
+  for (var i = 0; i < orderedKeys.length; i++) {
+    var ek = orderedKeys[i];
+    var ex = state.exercises[ek];
+    var eiCur = parseInt(ek.slice(3), 10);
+    if (ex.supersetGroup) {
+      var idx = groupKeyToGroupIdx[ex.supersetGroup];
+      if (idx == null) {
+        groupKeyToGroupIdx[ex.supersetGroup] = currentGroups.length;
+        currentGroups.push({ orders: [eiCur], rest: ex.supersetRest || 60 });
+      } else {
+        currentGroups[idx].orders.push(eiCur);
+      }
+    }
+  }
+
+  // Find the group containing ei and remove ei from it.
+  var newGroups = [];
+  for (var gj = 0; gj < currentGroups.length; gj++) {
+    var g = currentGroups[gj];
+    var has = g.orders.indexOf(ei) >= 0;
+    if (!has) {
+      newGroups.push(g);
+      continue;
+    }
+    var withoutEi = g.orders.filter(function(o) { return o !== ei; });
+    if (withoutEi.length >= 2) {
+      newGroups.push({ orders: withoutEi, rest: g.rest });
+    }
+    // If withoutEi has 1 entry, the block dissolves -- just don't push it.
+  }
+
+  var payload = newGroups.map(function(g) {
+    return { exercise_orders: g.orders, rest: g.rest };
+  });
+  var wr = await sb.from('workouts').update({ superset_groups: payload }).eq('id', state.workoutId);
+  if (wr.error) throw new Error(wr.error.message);
+  _restateFromSupersetGroups(state, payload);
+}
+
 // ---- Templates ----
 // Templates are plans rows with is_template = true, is_active = false.
 // They're never activated directly — they're copied into ad-hoc sessions
