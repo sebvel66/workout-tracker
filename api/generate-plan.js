@@ -1565,6 +1565,36 @@ function expandSetRepeats(plan) {
   return plan;
 }
 
+function validateRegularExercise(e, dayIdx, exIdx) {
+  if (!e.name) return `day ${dayIdx + 1} exercise ${exIdx + 1}: missing name`;
+  if (!Array.isArray(e.sets) || !e.sets.length) return `day ${dayIdx + 1} exercise "${e.name}": missing or empty sets`;
+  return null;
+}
+
+function validateSupersetBlock(block, dayIdx, exIdx) {
+  if (!Array.isArray(block.exercises) || block.exercises.length < 2) {
+    return `day ${dayIdx + 1} block ${exIdx + 1}: superset block must have at least 2 exercises`;
+  }
+  if (!Number.isInteger(block.rest)) {
+    return `day ${dayIdx + 1} block ${exIdx + 1}: superset block rest must be an integer (seconds)`;
+  }
+  for (let ci = 0; ci < block.exercises.length; ci++) {
+    const child = block.exercises[ci];
+    if (!child) {
+      return `day ${dayIdx + 1} block ${exIdx + 1} member ${ci + 1}: missing entry`;
+    }
+    if (child.rest != null) {
+      return `day ${dayIdx + 1} block ${exIdx + 1} member ${ci + 1}: superset members may not carry their own rest field — use block-level rest`;
+    }
+    if (child.superset === true) {
+      return `day ${dayIdx + 1} block ${exIdx + 1} member ${ci + 1}: nested supersets not supported`;
+    }
+    const childErr = validateRegularExercise(child, dayIdx, exIdx);
+    if (childErr) return childErr;
+  }
+  return null;
+}
+
 function validatePlan(plan, expectedDays) {
   if (!plan || typeof plan !== 'object') return 'plan is not an object';
   if (!plan.title) return 'missing title';
@@ -1580,8 +1610,13 @@ function validatePlan(plan, expectedDays) {
     if (!Array.isArray(d.exercises) || !d.exercises.length) return `day ${i + 1}: missing or empty exercises`;
     for (let j = 0; j < d.exercises.length; j++) {
       const e = d.exercises[j];
-      if (!e.name) return `day ${i + 1} exercise ${j + 1}: missing name`;
-      if (!Array.isArray(e.sets) || !e.sets.length) return `day ${i + 1} exercise "${e.name}": missing or empty sets`;
+      if (e && e.superset === true) {
+        const blockErr = validateSupersetBlock(e, i, j);
+        if (blockErr) return blockErr;
+      } else {
+        const exErr = validateRegularExercise(e, i, j);
+        if (exErr) return exErr;
+      }
     }
   }
   return null;
