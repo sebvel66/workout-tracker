@@ -1325,6 +1325,41 @@ async function persistWorkoutLocation(di, locationId) {
 }
 
 // ---- Workout creation & set persistence ----
+
+// Build the workouts.superset_groups payload from a plan-day's
+// exercises array. Walks day.exercises[] and emits one entry per
+// {superset:true} block: {exercise_orders: [int,...], rest: int}.
+// exercise_orders are the *flat* day.exercises[] index range that
+// the block occupies — i.e., if the block is at index 2 with 3
+// members, exercise_orders = [2, 3, 4] and the next standalone
+// exercise (if any) is at flat index 5.
+//
+// This mirrors how stateFromWorkout maps sets back to exercise_order:
+// each set exercise_order is the flat positional index in the day
+// exercises array, with block members occupying contiguous indices.
+function supersetGroupsFromPlanDay(dayPlan) {
+  var groups = [];
+  if (!dayPlan || !Array.isArray(dayPlan.exercises)) return groups;
+  var flatOrder = 0;
+  for (var i = 0; i < dayPlan.exercises.length; i++) {
+    var entry = dayPlan.exercises[i];
+    if (entry && entry.superset === true && Array.isArray(entry.exercises)) {
+      var orders = [];
+      for (var ci = 0; ci < entry.exercises.length; ci++) {
+        orders.push(flatOrder);
+        flatOrder++;
+      }
+      groups.push({
+        exercise_orders: orders,
+        rest: Number.isInteger(entry.rest) ? entry.rest : 60
+      });
+    } else {
+      flatOrder++;
+    }
+  }
+  return groups;
+}
+
 async function ensureWorkout(di) {
   var st = getOrInitToday(di);
   if (st.workoutId) return st.workoutId;
@@ -1333,11 +1368,14 @@ async function ensureWorkout(di) {
   // Location precedence: explicit pending pick (including null = "no gym")
   // wins over the recent default. undefined = user hasn't touched it.
   var effectiveLocationId = st.pendingLocationId !== undefined ? st.pendingLocationId : (recentLocationId || null);
+  var dayPlan = (plan && plan.days && plan.days[di]) ? plan.days[di] : null;
+  var supersetGroupsPayload = supersetGroupsFromPlanDay(dayPlan);
   var res = await sb.from('workouts').insert({
     user_id: userId, plan_id: activePlanId, day_index: di,
     performed_at: now, started_at: now,
     performed_on: performedOn,
     location_id: effectiveLocationId,
+    superset_groups: supersetGroupsPayload,
   }).select().single();
   // 23505 = unique_violation. Means another tab or a retried insert already
   // created the row for (user_id, plan_id, day_index, performed_on) — the
