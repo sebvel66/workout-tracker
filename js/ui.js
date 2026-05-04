@@ -4384,6 +4384,102 @@ function openSwapModal(di, ei) {
   renderSwapModal();
 }
 
+// Open the merge picker for the chain-link icon on a standalone card. Lists other
+// items on this day: standalone exercises (each pickable individually) and
+// existing supersets (pickable as join targets). Excludes the source.
+function openSupersetPicker(di, ei) {
+  var state, exercisesArr;
+  if (isAdHocKey(di)) {
+    state = findAdHoc(di);
+    exercisesArr = null;
+  } else {
+    state = stateForDay(di);
+    var planBlob = (typeof _planForState === 'function' ? _planForState(state) : null) || plan;
+    exercisesArr = (planBlob && planBlob.days && planBlob.days[di]) ? planBlob.days[di].exercises : null;
+  }
+  if (!state) return;
+
+  var runs = groupRunsForRender(exercisesArr, state.exercises);
+
+  var options = [];
+  for (var ri = 0; ri < runs.length; ri++) {
+    var run = runs[ri];
+    if (run.kind === 'standalone') {
+      if (run.ei === ei) continue;
+      var name = (run.planEx && run.planEx.name)
+        || (run.exState && run.exState.exerciseMeta && run.exState.exerciseMeta.name)
+        || ('Exercise ' + (run.ei + 1));
+      options.push({ label: name, type: 'standalone', targetEi: run.ei });
+    } else {
+      var sourceInBlock = false;
+      for (var sii = 0; sii < run.items.length; sii++) {
+        if (run.items[sii].ei === ei) { sourceInBlock = true; break; }
+      }
+      if (sourceInBlock) continue;
+      var firstMember = run.items[0];
+      var firstName = (firstMember.planEx && firstMember.planEx.name)
+        || (firstMember.exState && firstMember.exState.exerciseMeta && firstMember.exState.exerciseMeta.name)
+        || 'Block';
+      options.push({ label: 'Superset: ' + firstName + ' + others', type: 'block', targetEi: run.items[0].ei });
+    }
+  }
+
+  if (!options.length) {
+    showToast('Nothing else on this day to pair with', null);
+    return;
+  }
+
+  // Render in a programmatic modal (reuse the existing modal-overlay pattern).
+  var modal = document.getElementById('supersetPickerOverlay');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'supersetPickerOverlay';
+    modal.className = 'modal-overlay';
+    modal.innerHTML = '<div class="modal" style="max-width:420px"><h3 style="margin-top:0">Pair with…</h3><div id="supersetPickerBody"></div><div class="modal-actions"><button class="modal-btn" id="btnSupersetPickerCancel" type="button">Cancel</button></div></div>';
+    document.body.appendChild(modal);
+    document.getElementById('btnSupersetPickerCancel').addEventListener('click', function() {
+      modal.classList.remove('show');
+    });
+    modal.addEventListener('click', function(e) {
+      if (e.target === modal) modal.classList.remove('show');
+    });
+    document.getElementById('supersetPickerBody').addEventListener('click', function(e) {
+      var t = e.target.closest && e.target.closest('[data-target-ei]');
+      if (!t) return;
+      modal.classList.remove('show');
+      var savedDi = modal.getAttribute('data-source-di');
+      var savedSrcEi = parseInt(modal.getAttribute('data-source-ei'), 10);
+      var tgtEi = parseInt(t.getAttribute('data-target-ei'), 10);
+      var diVal = (savedDi && savedDi.indexOf('ah_') === 0) ? savedDi : parseInt(savedDi, 10);
+      onMergeIntoSuperset(diVal, savedSrcEi, tgtEi);
+    });
+  }
+  // Stash the source for the click handler above.
+  modal.setAttribute('data-source-di', String(di));
+  modal.setAttribute('data-source-ei', String(ei));
+  var body = document.getElementById('supersetPickerBody');
+  body.innerHTML = options.map(function(o) {
+    return '<button class="modal-btn" type="button" style="display:block;width:100%;margin-bottom:8px;text-align:left" data-target-ei="' + escapeAttr(String(o.targetEi)) + '">' + escapeHtml(o.label) + '</button>';
+  }).join('');
+  modal.classList.add('show');
+}
+
+async function onMergeIntoSuperset(di, eiA, eiB) {
+  try {
+    await applySupersetMerge(di, eiA, eiB);
+    if (isAdHocKey(di)) {
+      buildAdHocDay(di);
+    } else {
+      buildDay(di);
+    }
+    showToast('Superset created.', null);
+    if (typeof saveHydrationSnapshot === 'function') saveHydrationSnapshot();
+  } catch (err) {
+    console.error('onMergeIntoSuperset error:', err);
+    showToast("Couldn't create superset: " + (err.message || 'unknown'), null);
+  }
+}
+
 function closeSwapModal() {
   if (swapAbortController) {
     try { swapAbortController.abort(); } catch(e) { /* already aborted */ }
@@ -6848,6 +6944,21 @@ document.getElementById('workoutContainer').addEventListener('click', function(e
       parseInt(swapBtnEarly.getAttribute('data-swap-di'), 10),
       parseInt(swapBtnEarly.getAttribute('data-swap-ei'), 10)
     );
+    return;
+  }
+  // Superset pair / unpair (v3.4.0). On standalone cards opens the merge
+  // picker. On cards inside a block, removes from the superset (Task 10
+  // wires the unpair branch; here a no-op stub).
+  var supBtn = target.closest && target.closest('.ex-superset-btn');
+  if (supBtn) {
+    var supDi = supBtn.getAttribute('data-di');
+    if (!isAdHocKey(supDi)) supDi = parseInt(supDi, 10);
+    var supEi = parseInt(supBtn.getAttribute('data-ei'), 10);
+    if (supBtn.classList.contains('in-block')) {
+      // Task 10 -- unpair handler; stub for now.
+      return;
+    }
+    openSupersetPicker(supDi, supEi);
     return;
   }
   // Per-exercise recent history — handled before header-expand because this
