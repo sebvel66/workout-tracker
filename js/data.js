@@ -3341,6 +3341,127 @@ async function _applySupersetSeparateAdHoc(di, ei) {
   _restateFromSupersetGroups(state, payload);
 }
 
+// Reorder members within a superset block. newMemberEisInOrder is the
+// new member exercise_order sequence as derived from the DOM after the
+// drag drop. Plan-day path: rewrites block.exercises[] in plan.data
+// AND rewrites today plan-day workout superset_groups exercise_orders
+// to match (so renders see the new order). Ad-hoc path: rewrites
+// workouts.superset_groups exercise_orders directly.
+//
+// No set remap -- members keep their exercise_order values. Only
+// metadata (block member order in plan.data, exercise_orders[] in
+// the workouts.superset_groups column) changes.
+async function applySupersetReorderMembers(di, groupKey, newMemberEisInOrder) {
+  if (!userId) throw new Error('Not signed in');
+  if (!Array.isArray(newMemberEisInOrder) || newMemberEisInOrder.length < 2) return;
+
+  if (isAdHocKey(di)) {
+    return _applySupersetReorderAdHoc(di, groupKey, newMemberEisInOrder);
+  }
+  return _applySupersetReorderPlan(di, groupKey, newMemberEisInOrder);
+}
+
+async function _applySupersetReorderPlan(di, groupKey, newMemberEisInOrder) {
+  if (!plan || !plan.days || !plan.days[di]) throw new Error('Plan day not found');
+  var dayPlan = plan.days[di];
+  // Find the block's nested index by walking dayPlan.exercises[] flat.
+  // Use _resolveFlatEi on the first member ei to locate the block.
+  var resolved = _resolveFlatEi(dayPlan, [newMemberEisInOrder[0]]);
+  if (!resolved || !resolved[0] || resolved[0].memberIdx < 0) return;
+  var blockIdx = resolved[0].blockIdx;
+
+  // Reconstruct the OLD member order by enumerating exercise_orders
+  // contiguously from the block's flat-start.
+  var newDayClone = JSON.parse(JSON.stringify(dayPlan));
+  var blockClone = newDayClone.exercises[blockIdx];
+
+  // Resolve flat-start for the block: walk exercises[] up to blockIdx
+  // and accumulate flat sizes (1 for standalone, N for block).
+  var blockFlatStart = 0;
+  for (var ki = 0; ki < blockIdx; ki++) {
+    var ke = newDayClone.exercises[ki];
+    if (ke && ke.superset === true && Array.isArray(ke.exercises)) {
+      blockFlatStart += ke.exercises.length;
+    } else {
+      blockFlatStart += 1;
+    }
+  }
+  var oldOrderToMemberIdx = {};
+  for (var oi = 0; oi < blockClone.exercises.length; oi++) {
+    oldOrderToMemberIdx[blockFlatStart + oi] = oi;
+  }
+
+  // Build new member array in the new order.
+  var newMembers = newMemberEisInOrder.map(function(newEi) {
+    var srcMemberIdx = oldOrderToMemberIdx[newEi];
+    if (srcMemberIdx == null) return null;
+    return blockClone.exercises[srcMemberIdx];
+  });
+  if (newMembers.indexOf(null) >= 0) return;  // resolution failure -- bail safely
+  blockClone.exercises = newMembers;
+  newDayClone.exercises[blockIdx] = blockClone;
+
+  var newPlan = JSON.parse(JSON.stringify(plan));
+  newPlan.days[di] = newDayClone;
+  var pr = await sb.from('plans').update({ data: newPlan }).eq('id', activePlanId);
+  if (pr.error) throw new Error(pr.error.message);
+  plan = newPlan;
+  planCache[activePlanId] = plan;
+
+  var todayPlanState = todayPlanStates[di];
+  if (todayPlanState && todayPlanState.workoutId) {
+    var newGroups = supersetGroupsFromPlanDay(newDayClone);
+    var wr = await sb.from('workouts').update({ superset_groups: newGroups })
+      .eq('id', todayPlanState.workoutId);
+    if (wr.error) throw new Error(wr.error.message);
+    _restateFromSupersetGroups(todayPlanState, newGroups);
+  }
+}
+
+async function _applySupersetReorderAdHoc(di, groupKey, newMemberEisInOrder) {
+  var state = findAdHoc(di);
+  if (!state) throw new Error('Ad-hoc session not found');
+
+  // Rebuild current groups from state.
+  var orderedKeys = Object.keys(state.exercises).sort(function(a, b) {
+    return parseInt(a.slice(3), 10) - parseInt(b.slice(3), 10);
+  });
+  var currentGroups = [];
+  var groupKeyToGroupIdx = {};
+  for (var i = 0; i < orderedKeys.length; i++) {
+    var ek = orderedKeys[i];
+    var ex = state.exercises[ek];
+    var ei = parseInt(ek.slice(3), 10);
+    if (ex.supersetGroup) {
+      var idx = groupKeyToGroupIdx[ex.supersetGroup];
+      if (idx == null) {
+        groupKeyToGroupIdx[ex.supersetGroup] = currentGroups.length;
+        currentGroups.push({ orders: [ei], rest: ex.supersetRest || 60, key: ex.supersetGroup });
+      } else {
+        currentGroups[idx].orders.push(ei);
+      }
+    }
+  }
+
+  // Replace target group's orders with the new sequence (preserve rest).
+  var found = false;
+  for (var gj = 0; gj < currentGroups.length; gj++) {
+    if (currentGroups[gj].key === groupKey) {
+      currentGroups[gj].orders = newMemberEisInOrder.slice();
+      found = true;
+      break;
+    }
+  }
+  if (!found) return;
+
+  var payload = currentGroups.map(function(g) {
+    return { exercise_orders: g.orders, rest: g.rest };
+  });
+  var wr = await sb.from('workouts').update({ superset_groups: payload }).eq('id', state.workoutId);
+  if (wr.error) throw new Error(wr.error.message);
+  _restateFromSupersetGroups(state, payload);
+}
+
 // Add one set to every member of a superset block. Mirrors the
 // existing addExtraSet semantics per-member (carry-forward applied,
 // set.done = false, weight_mode inherited). Used by the block-level
