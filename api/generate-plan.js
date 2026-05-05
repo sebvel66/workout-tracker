@@ -1293,9 +1293,11 @@ async function handleRefine(res, userId, rawInputs) {
   ]);
   console.log('[generate-plan:refine] data fetch:', Date.now() - t0, 'ms', '· iterations_so_far:', iterationHistory.length, '· coach_msgs:', coachHistory.length, '· profile:', coachingProfile ? 'yes' : 'no');
 
-  if (!activePlan) {
-    return jsonError(res, 400, 'No active plan. Refinement requires an existing plan context.');
-  }
+  // No activePlan check: refine targets the plan-in-flight (rawInputs.current_plan,
+  // already validated at the top of this handler), not whatever is saved in the
+  // DB. Pre-v3.4.3 this bailed with "No active plan" when a user generated a
+  // brand-new plan in no-plan state and immediately tried to refine the review.
+  // buildUserMessage is null-safe for activePlan (v3.3.0 cold-start path).
 
   // Build the FIRST user message exactly as the initial plan-gen call did.
   // buildUserMessage returns an array of content blocks (library block has
