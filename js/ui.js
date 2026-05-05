@@ -3270,19 +3270,47 @@ function renderGenerateReview(body) {
   var days = Array.isArray(p.days) ? p.days : [];
   for (var di = 0; di < days.length; di++) {
     var day = days[di];
-    var exCount = Array.isArray(day.exercises) ? day.exercises.length : 0;
-    var setCount = 0;
-    for (var i = 0; i < exCount; i++) {
-      setCount += Array.isArray(day.exercises[i].sets) ? day.exercises[i].sets.length : 0;
+    var entries = Array.isArray(day.exercises) ? day.exercises : [];
+    // Count members + sets (block entries expand into N members; their
+    // sets sum across members for the day-meta total).
+    var memberCount = 0, setCount = 0;
+    for (var ci = 0; ci < entries.length; ci++) {
+      var e = entries[ci];
+      if (e && e.superset === true && Array.isArray(e.exercises)) {
+        for (var ki = 0; ki < e.exercises.length; ki++) {
+          memberCount++;
+          setCount += Array.isArray(e.exercises[ki].sets) ? e.exercises[ki].sets.length : 0;
+        }
+      } else {
+        memberCount++;
+        setCount += Array.isArray(e && e.sets) ? e.sets.length : 0;
+      }
     }
     h += '<div class="generate-day-card">';
     h += '<div class="generate-day-header">';
     h += '<div class="generate-day-name">' + escapeHtml(day.name || 'Day ' + (di + 1)) + '</div>';
-    h += '<div class="generate-day-meta">' + exCount + ' exercise' + (exCount === 1 ? '' : 's') +
+    h += '<div class="generate-day-meta">' + memberCount + ' exercise' + (memberCount === 1 ? '' : 's') +
          ' · ' + setCount + ' set' + (setCount === 1 ? '' : 's') + '</div>';
     h += '</div>';
-    for (var j = 0; j < exCount; j++) {
-      h += renderGenerateExercise(day.exercises[j]);
+    // Walk entries with a flat-ei counter so block members get the right
+    // ei when wired into the review-state swap handler.
+    var flatEi = 0;
+    for (var j = 0; j < entries.length; j++) {
+      var entry = entries[j];
+      if (entry && entry.superset === true && Array.isArray(entry.exercises)) {
+        var rest = Number.isInteger(entry.rest) ? entry.rest : 60;
+        h += '<div class="generate-superset-block">';
+        h += '<div class="generate-superset-header">⟷ Superset · ' + entry.exercises.length + ' exercises · ' + rest + 's rest</div>';
+        for (var mi = 0; mi < entry.exercises.length; mi++) {
+          var badge = String.fromCharCode(65) + (mi + 1);
+          h += renderGenerateExercise(entry.exercises[mi], di, flatEi, badge);
+          flatEi++;
+        }
+        h += '</div>';
+      } else {
+        h += renderGenerateExercise(entry, di, flatEi, null);
+        flatEi++;
+      }
     }
     h += '</div>';
   }
@@ -3653,13 +3681,20 @@ function useAnalysisForNextPlan() {
   showToast('Analysis carried forward. Review, then Generate Plan.', null);
 }
 
-function renderGenerateExercise(ex) {
+function renderGenerateExercise(ex, di, flatEi, badgeLabel) {
+  if (!ex) return '';
   var name = ex.name || 'exercise';
   var mode = weightModeForName(name);
   var sets = Array.isArray(ex.sets) ? ex.sets : [];
   var setsLine = formatGenerateSets(sets, mode);
+  var swapBtn = (di != null && flatEi != null)
+    ? '<button class="card-swap generate-exercise-swap" data-swap-review-di="' + di + '" data-swap-review-ei="' + flatEi + '" aria-label="Swap exercise" title="Swap exercise" type="button">⇄</button>'
+    : '';
+  var badgeHtml = badgeLabel
+    ? '<span class="superset-badge">' + escapeHtml(badgeLabel) + '</span>'
+    : '';
   var h = '<div class="generate-exercise">';
-  h += '<div class="generate-exercise-name">' + escapeHtml(name) + '</div>';
+  h += '<div class="generate-exercise-name">' + badgeHtml + escapeHtml(name) + swapBtn + '</div>';
   h += '<div class="generate-exercise-sets">' + escapeHtml(setsLine) + '</div>';
   if (ex.note) {
     h += '<div class="generate-exercise-note">' + escapeHtml(ex.note) + '</div>';
@@ -4421,6 +4456,7 @@ function openSwapModal(di, ei) {
   if (!ex) return;
   var meta = exerciseLibraryByName ? exerciseLibraryByName[normName(ex.name)] : null;
   swapState = {
+    context: 'live',
     di: di,
     ei: ei,
     // originalExercise holds a deep clone of the plan slot, used to revert
@@ -4441,6 +4477,70 @@ function openSwapModal(di, ei) {
   };
   document.getElementById('swapExerciseOverlay').classList.add('show');
   renderSwapModal();
+}
+
+// Swap a single exercise inside the in-review generated plan (post-Generate,
+// pre-Accept). Mutates generatedPlan instead of plan; no DB persist on
+// accept (the whole plan persists on the user's Accept tap). flatEi is
+// the flat exercise_order across the day (block members occupy contiguous
+// flat slots), resolved through plan structure via _flatEiToPlanMember.
+function openSwapModalForReview(di, flatEi) {
+  if (!generatedPlan || !generatedPlan.days || !generatedPlan.days[di]) return;
+  var dayPlan = generatedPlan.days[di];
+  var ex = (typeof _flatEiToPlanMember === 'function')
+    ? _flatEiToPlanMember(dayPlan, flatEi)
+    : null;
+  if (!ex || !ex.name) return;
+  var meta = exerciseLibraryByName ? exerciseLibraryByName[normName(ex.name)] : null;
+  swapState = {
+    context: 'review',
+    di: di,
+    ei: flatEi,
+    originalExercise: JSON.parse(JSON.stringify(ex)),
+    snapshot: {
+      name: ex.name,
+      sets: Array.isArray(ex.sets) ? ex.sets.slice() : [],
+      muscle_group: meta ? (meta.muscle_group || null) : null,
+      movement_pattern: meta ? (meta.movement_pattern || null) : null,
+      equipment: meta ? (meta.equipment || null) : null,
+      weight_mode: meta ? (meta.weight_mode || 'total') : 'total',
+    },
+    dayName: dayPlan.name || ('Day ' + (di + 1)),
+    view: 'input',
+    replacement: null,
+    reason: '',
+  };
+  document.getElementById('swapExerciseOverlay').classList.add('show');
+  renderSwapModal();
+}
+
+// Build the "other_today" name list for a swap source in the in-review
+// plan: every member on the same day except the source. Walks block
+// entries so block members are included. Used by fireSwapFetch when
+// swapState.context === 'review'.
+function _otherTodayForReview(di, sourceFlatEi) {
+  var out = [];
+  if (!generatedPlan || !generatedPlan.days || !generatedPlan.days[di]) return out;
+  var entries = generatedPlan.days[di].exercises;
+  if (!Array.isArray(entries)) return out;
+  var flatI = 0;
+  for (var i = 0; i < entries.length; i++) {
+    var entry = entries[i];
+    if (entry && entry.superset === true && Array.isArray(entry.exercises)) {
+      for (var ci = 0; ci < entry.exercises.length; ci++) {
+        if (flatI !== sourceFlatEi && entry.exercises[ci] && entry.exercises[ci].name) {
+          out.push(entry.exercises[ci].name);
+        }
+        flatI++;
+      }
+    } else {
+      if (flatI !== sourceFlatEi && entry && entry.name) {
+        out.push(entry.name);
+      }
+      flatI++;
+    }
+  }
+  return out;
 }
 
 // Open the merge picker for the chain-link icon on a standalone card. Lists other
@@ -4734,6 +4834,13 @@ async function fireSwapFetch() {
       reason: swapState.reason || '',
       day_name: swapState.dayName,
     };
+    // Review-context swap: the source plan only exists in the frontend
+    // (post-Generate, pre-Accept). The server's DB lookup for "other
+    // exercises on this day" would miss or pull from a stale active
+    // plan — send the names list explicitly instead.
+    if (swapState.context === 'review') {
+      payload.other_today = _otherTodayForReview(swapState.di, swapState.ei);
+    }
     var res = await fetch('/api/generate-plan', {
       method: 'POST',
       headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
@@ -4765,9 +4872,74 @@ async function fireSwapFetch() {
   }
 }
 
+// Write a replacement exercise object into a plan day at a flat
+// exercise_order slot. Walks block entries (block.exercises[]) so block
+// members can be overwritten in place while preserving the block
+// container around them. Returns true on success, false if the flat ei
+// is out of range. Used by the review-context branch in acceptSwap.
+function _writeFlatEiInPlanDay(dayPlan, flatEi, replacement) {
+  if (!dayPlan || !Array.isArray(dayPlan.exercises)) return false;
+  var flatI = 0;
+  for (var i = 0; i < dayPlan.exercises.length; i++) {
+    var entry = dayPlan.exercises[i];
+    if (entry && entry.superset === true && Array.isArray(entry.exercises)) {
+      for (var ci = 0; ci < entry.exercises.length; ci++) {
+        if (flatI === flatEi) {
+          // Members never carry their own rest; the block holds it.
+          var memberRepl = {
+            name: replacement.name,
+            note: replacement.note || '',
+            sets: Array.isArray(replacement.sets) ? replacement.sets.slice() : [],
+          };
+          dayPlan.exercises[i].exercises[ci] = memberRepl;
+          return true;
+        }
+        flatI++;
+      }
+    } else {
+      if (flatI === flatEi) {
+        dayPlan.exercises[i] = {
+          name: replacement.name,
+          note: replacement.note || '',
+          rest: replacement.rest,
+          sets: Array.isArray(replacement.sets) ? replacement.sets.slice() : [],
+        };
+        return true;
+      }
+      flatI++;
+    }
+  }
+  return false;
+}
+
 async function acceptSwap() {
   if (!swapState || !swapState.replacement) return;
   var di = swapState.di, ei = swapState.ei;
+  // Review-context branch: source is generatedPlan; mutate it in
+  // place at the flat-ei slot (resolves through block.exercises[] for
+  // members) and re-render the review. No DB persist — generatedPlan
+  // only persists when the user taps Accept on the whole plan. No
+  // coach log either; logging happens once at plan acceptance.
+  if (swapState.context === 'review') {
+    if (!generatedPlan || !generatedPlan.days || !generatedPlan.days[di]) {
+      showToast('Plan no longer in review', null);
+      closeSwapModal();
+      return;
+    }
+    var ok = _writeFlatEiInPlanDay(generatedPlan.days[di], ei, swapState.replacement);
+    if (!ok) {
+      showToast('Exercise no longer in plan', null);
+      closeSwapModal();
+      return;
+    }
+    var swappedFrom = swapState.snapshot.name;
+    var swappedTo = swapState.replacement.name;
+    closeSwapModal();
+    var generateBody = document.getElementById('generateBody');
+    if (generateBody) renderGenerateReview(generateBody);
+    showToast('Swapped ' + swappedFrom + ' → ' + swappedTo + ' in the review.', null);
+    return;
+  }
   if (!plan || !plan.days || !plan.days[di] || !plan.days[di].exercises[ei]) {
     showToast('Exercise no longer in plan', null);
     closeSwapModal();
@@ -6571,6 +6743,15 @@ document.getElementById('generateBody').addEventListener('click', function(e) {
   if (e.target.closest('#btnAnalyzeApplyProfile')) { onAnalyzeApplyProfileUpdates(); return; }
   if (e.target.closest('#btnGenerateCancel')) { closeGenerate(); return; }
   if (e.target.closest('#btnGenerateAbort')) { cancelGenerate(); return; }
+  // Per-exercise swap inside the in-review plan (post-Generate, pre-Accept).
+  // Mutates generatedPlan in place; the whole plan persists on Accept.
+  var reviewSwapBtn = e.target.closest('[data-swap-review-di]');
+  if (reviewSwapBtn) {
+    var rsdi = parseInt(reviewSwapBtn.getAttribute('data-swap-review-di'), 10);
+    var rsei = parseInt(reviewSwapBtn.getAttribute('data-swap-review-ei'), 10);
+    if (!isNaN(rsdi) && !isNaN(rsei)) openSwapModalForReview(rsdi, rsei);
+    return;
+  }
 });
 document.getElementById('menuWeightUnit').addEventListener('click', function() {
   setWeightUnit(getWeightUnit() === 'lbs' ? 'kg' : 'lbs');

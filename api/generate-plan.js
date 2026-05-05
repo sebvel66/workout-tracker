@@ -1109,10 +1109,18 @@ async function handleSwap(res, userId, rawInputs) {
   const libraryNames = new Set(exercises.map(e => e.name));
 
   // Compute other exercises on the same day so Claude avoids duplicates.
-  // Match on day name rather than day_index — plan days can be re-ordered
-  // or renamed, and the frontend knows the current day by label.
+  // Frontend can pass `other_today` directly when the swap source is a
+  // plan-in-review (post-Generate, pre-Accept) since that plan only
+  // exists in the frontend; the DB lookup below would find nothing or
+  // pull from a coincidentally-named day in a stale active plan. When
+  // the payload omits `other_today`, fall back to the DB active plan
+  // matched by dayName (live-tracker swap path).
   let otherToday = [];
-  if (activePlan && activePlan.data && Array.isArray(activePlan.data.days)) {
+  if (Array.isArray(rawInputs && rawInputs.other_today)) {
+    otherToday = rawInputs.other_today
+      .filter(n => typeof n === 'string' && n && n !== exercise.name)
+      .slice(0, 30);  // defensive cap
+  } else if (activePlan && activePlan.data && Array.isArray(activePlan.data.days)) {
     for (const d of activePlan.data.days) {
       if (d.name === dayName && Array.isArray(d.exercises)) {
         otherToday = d.exercises
