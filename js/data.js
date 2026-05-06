@@ -2043,7 +2043,19 @@ function addDropSet(ei) {
   var st = getOrInitToday(currentDay);
   if (!st) return;
   var exState = getOrInitExercise(st, ei);
-  if (!exState || !exState.sets || exState.sets.length === 0) return;
+  if (!exState || !exState.sets) return;
+  // Find the actual last populated set. exState.sets may have trailing
+  // holes (e.g., after deleting an extra past the prescribed range, where
+  // length stays at prescribedLen but no entry lives at length-1) — the
+  // raw length-1 lookup would land on a hole and the chain logic would
+  // fall back to lastIdx, creating a drop that points at a "static plan"
+  // slot.
+  var lastIdx = -1;
+  for (var li = exState.sets.length - 1; li >= 0; li--) {
+    if (exState.sets[li] != null) { lastIdx = li; break; }
+  }
+  if (lastIdx < 0) return;
+  var lastSet = exState.sets[lastIdx];
 
   // Pre-session on a plan day: stack the drop in-memory only. parentSetIdx
   // is enough to render the chain; the toggleSet cascade later persists
@@ -2051,21 +2063,17 @@ function addDropSet(ei) {
   // (parent → persistSet writes parent.setId → child's persistSet picks
   // it up via parentSetIdx → buildSetPayload → parent_set_id FK).
   if (!isAdHocKey(currentDay) && !st.workoutId) {
-    var lastIdx = exState.sets.length - 1;
-    var lastSet = exState.sets[lastIdx];
-    var parentIdx = (lastSet && lastSet.setType === 'drop' && lastSet.parentSetIdx != null)
+    var parentIdx = (lastSet.setType === 'drop' && lastSet.parentSetIdx != null)
       ? lastSet.parentSetIdx : lastIdx;
     var dropSet = {
       setType: 'drop',
       parentSetIdx: parentIdx,
       isExtra: true,
     };
-    if (lastSet) {
-      if (lastSet.weight != null) dropSet.weight = lastSet.weight;
-      if (lastSet.reps != null) dropSet.reps = lastSet.reps;
-      if (lastSet.duration_seconds != null) dropSet.duration_seconds = lastSet.duration_seconds;
-      if (lastSet.distance != null) dropSet.distance = lastSet.distance;
-    }
+    if (lastSet.weight != null) dropSet.weight = lastSet.weight;
+    if (lastSet.reps != null) dropSet.reps = lastSet.reps;
+    if (lastSet.duration_seconds != null) dropSet.duration_seconds = lastSet.duration_seconds;
+    if (lastSet.distance != null) dropSet.distance = lastSet.distance;
     dropSet.weight_mode = (exState.sets[0] && exState.sets[0].weight_mode) || null;
     exState.sets.push(dropSet);
     buildDay(currentDay);
@@ -2082,7 +2090,13 @@ function addDropSet(ei) {
 
 async function _addDropSetInner(ei) {
   var exState = todayState.exercises['ex_' + ei];
-  var lastIdx = exState.sets.length - 1;
+  // Scan for the actual last populated set — sparse arrays (post-delete or
+  // partial mid-prescription state) can have trailing holes.
+  var lastIdx = -1;
+  for (var li = exState.sets.length - 1; li >= 0; li--) {
+    if (exState.sets[li] != null) { lastIdx = li; break; }
+  }
+  if (lastIdx < 0) return;
   var lastSet = exState.sets[lastIdx];
   // Determine parent: if last is a drop, link to its parent (sibling
   // drop). If last is a parent (standard), link directly to it.
@@ -2143,20 +2157,42 @@ async function deleteSet(di, ei, si) {
   var sl = exState.sets[si];
   if (!sl) return;
   if (!sl.isExtra && !exState.isExtra && !todayState.isAdHoc) return;  // safety: only user-added
+  // Cascade-collect drop children of a non-drop parent. Drops can only
+  // chain to a set earlier in the array, so children all live at indices
+  // > si. Without cascade, deleting a parent extra would orphan its drops
+  // in-memory — they'd render past the prescribed range with parentSetIdx
+  // pointing at a deleted slot. DB-side, sets.parent_set_id ON DELETE
+  // CASCADE removes drop rows automatically when the parent is deleted,
+  // so we just need to mirror in-memory.
+  var dropChildren = [];
+  if (sl.setType !== 'drop') {
+    for (var ci = si + 1; ci < exState.sets.length; ci++) {
+      var c = exState.sets[ci];
+      if (c && c.setType === 'drop' && c.parentSetIdx === si) {
+        dropChildren.push(ci);
+      }
+    }
+  }
+  var indicesToRemove = [si].concat(dropChildren);
   var persisted = !!sl.setId;
   if (persisted && !confirm('Delete this set?')) return;
   try {
     if (persisted) {
       var r = await sb.from('sets').delete().eq('id', sl.setId);
       if (r.error) throw r.error;
-      // Decrement set_order on any persisted higher-indexed sets for this
-      // exercise. Parallel .update() calls — small N in practice.
+      // Update set_order on surviving persisted sets to close the gap left
+      // by ALL removed indices (parent + cascaded drops). Skip rows being
+      // removed; new set_order = old k minus number of removed indices < k.
       var updates = [];
       for (var k = si + 1; k < exState.sets.length; k++) {
+        if (indicesToRemove.indexOf(k) >= 0) continue;
         var row = exState.sets[k];
-        if (row && row.setId) {
-          updates.push(sb.from('sets').update({ set_order: k - 1 }).eq('id', row.setId));
+        if (!row || !row.setId) continue;
+        var removedBefore = 0;
+        for (var ri2 = 0; ri2 < indicesToRemove.length; ri2++) {
+          if (indicesToRemove[ri2] < k) removedBefore++;
         }
+        updates.push(sb.from('sets').update({ set_order: k - removedBefore }).eq('id', row.setId));
       }
       if (updates.length) {
         var results = await Promise.all(updates);
@@ -2170,7 +2206,23 @@ async function deleteSet(di, ei, si) {
     showToast("Couldn't delete set: " + err.message, null);
     return;
   }
-  exState.sets.splice(si, 1);
+  // Splice in descending order so earlier indices stay valid during the
+  // splices, then walk surviving drops and decrement parentSetIdx where
+  // the parent's array position has shifted (parent at an index past one
+  // of the removals).
+  var sortedDesc = indicesToRemove.slice().sort(function(a, b) { return b - a; });
+  for (var ridx = 0; ridx < sortedDesc.length; ridx++) {
+    exState.sets.splice(sortedDesc[ridx], 1);
+  }
+  for (var fi = 0; fi < exState.sets.length; fi++) {
+    var f = exState.sets[fi];
+    if (!f || f.setType !== 'drop' || f.parentSetIdx == null) continue;
+    var dec = 0;
+    for (var ridx2 = 0; ridx2 < indicesToRemove.length; ridx2++) {
+      if (indicesToRemove[ridx2] < f.parentSetIdx) dec++;
+    }
+    if (dec) f.parentSetIdx -= dec;
+  }
   buildTabs();
   buildDay(currentDay);
 }

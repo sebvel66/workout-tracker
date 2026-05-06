@@ -752,9 +752,13 @@ function renderPlanDayExerciseCard(di, ei, planEx, exState, mode, readOnly, badg
   }
   if (mode === 'editable') {
     h += '<button class="add-set-btn" data-add-set-ei="' + ei + '">+ Add Set</button>';
-    // Drop Set affordance — only when there's a set to chain off of and
-    // the exercise isn't cardio (drops don't apply to duration-based work).
-    if (!isCardioRow && exState.sets && exState.sets.length > 0) {
+    // Drop Set affordance — only when there's a populated set to chain
+    // off of and the exercise isn't cardio. Length alone is misleading
+    // (sparse arrays after delete-extra still report length > 0 from
+    // prescribed-range holes); .some() skips holes and only visits
+    // populated entries.
+    var hasParentForDrop = (exState.sets || []).some(function(s) { return s != null; });
+    if (!isCardioRow && hasParentForDrop) {
       h += '<button class="add-set-btn add-drop-btn" data-add-drop-ei="' + ei + '">+ Drop Set</button>';
     }
   }
@@ -842,7 +846,8 @@ function renderPlanDayExtraCard(di, xei, xState, mode, readOnly, badgeLabel) {
   }
   if (mode === 'editable') {
     h += '<button class="add-set-btn" data-add-set-ei="' + xei + '">+ Add Set</button>';
-    if (!xIsCardio && xState.sets && xState.sets.length > 0) {
+    var xHasParentForDrop = (xState.sets || []).some(function(s) { return s != null; });
+    if (!xIsCardio && xHasParentForDrop) {
       h += '<button class="add-set-btn add-drop-btn" data-add-drop-ei="' + xei + '">+ Drop Set</button>';
     }
   }
@@ -900,7 +905,8 @@ function renderAdHocExerciseCard(di, ei, exState, badgeLabel) {
     h += renderSetRow(di, ei, si, sl, null, (sl.weight_mode || weightMode), dis, '—', true, isCardioRow, adLabelNum);
   }
   h += '<button class="add-set-btn" data-add-set-ei="' + ei + '">+ Add Set</button>';
-  if (!isCardioRow && exState.sets && exState.sets.length > 0) {
+  var adHasParentForDrop = (exState.sets || []).some(function(s) { return s != null; });
+  if (!isCardioRow && adHasParentForDrop) {
     h += '<button class="add-set-btn add-drop-btn" data-add-drop-ei="' + ei + '">+ Drop Set</button>';
   }
   h += '</div>';
