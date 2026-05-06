@@ -1,6 +1,21 @@
 # Roadmap
 
-Forward-looking scope for the workout tracker. Last updated 2026-05-04. Each entry notes whether an explicit design exists (→ `DECISIONS.md`) or it's just a recorded idea.
+Forward-looking scope for the workout tracker. Last updated 2026-05-06. Each entry notes whether an explicit design exists (→ `DECISIONS.md`) or it's just a recorded idea.
+
+## Shipped — v3.4.x patches (2026-05-04 → 2026-05-06)
+
+Live at www.sebvel.app as of `v3.4.10`. Patch line layered on top of v3.4.0 supersets — fixes plus a coherent push to make the active plan's day tab editable pre-session (superset pair/unpair, +Add Set, +Drop Set, delete + cascade) without touching `plan.data`.
+
+- **`v3.4.10` — cascade-delete drop children + harden +Drop Set gating.** `deleteSet` now cascade-collects drops with `parentSetIdx === si` and removes them alongside the parent (DB cascade via `parent_set_id ON DELETE CASCADE` handles persisted children; in-memory splice + parentSetIdx adjustment for survivors). +Drop Set button gate flipped from `exState.sets.length > 0` to `exState.sets.some(s => s != null)` so the button hides when the array is all holes. `addDropSet` and `_addDropSetInner` scan for the actual last populated index instead of using `length - 1`.
+- **`v3.4.9` — pre-session +Add Set / +Drop Set as session extras.** Lazy-init via `getOrInitToday` / `getOrInitExercise` so the affordances work pre-session. Adds are session-scoped extras (`isExtra: true`), in-memory until session start and the existing `toggleSet` cascade persists them. Indexed-assignment placement at `Math.max(prescribedLen, exState.sets.length)` fixes a latent sparse-array bug where `.push()` could land an extra inside the prescribed range.
+- **`v3.4.8` — explored mutating `plan.data` on pre-session +Add Set; reverted in v3.4.9** per design feedback.
+- **`v3.4.7` — pre-session superset pair / unpair on plan days.** `openSupersetPicker` no longer requires non-null state on the plan-day branch (the picker walks `plan.days[di].exercises` directly for block detection). `inBlock` derives from `badgeLabel != null` as the primary signal, with the state-derived `supersetGroup` as fallback. Downstream merge / separate already gated the workouts-row update on `todayPlanState.workoutId`, so DB writes are correctly skipped pre-session.
+- **`v3.4.6` — preserve analyze-form inputs on "Use for next plan" chain.** `renderGenerateInputs` now reads from `generatedInputs` when set instead of always emitting hardcoded defaults.
+- **`v3.4.5` — scope `loadHistorical` to the active plan.** The query was filtered only on `(user_id, day_index)`, so a brand-new plan's Day N rendered as "historical" with the most-recent Day N workout from a *previous* plan. Added `.eq('plan_id', activePlanId)` mirroring `loadDaysWithHistory`.
+- **`v3.4.4` — block-aware exercise swap on the in-review plan.** Pre-fix, swap on a superset member in the Generate → review screen would corrupt the block container.
+- **`v3.4.3` — refine no longer bails in no-plan state.**
+- **`v3.4.2` — workout-class library seeds** (Barry's, Pilates, etc.).
+- **`v3.4.1` — recent-workouts row click no longer clobbered by the History week render.**
 
 ## Shipped — v3.4.0 (2026-05-04)
 
