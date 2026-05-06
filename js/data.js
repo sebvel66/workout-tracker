@@ -1968,22 +1968,16 @@ function addTemplateExerciseToSession(exerciseRow, templateExerciseBlob) {
 
 function addExtraSet(ei) {
   if (viewModeFor(currentDay) !== 'editable') return;
-  // Pre-session on a plan day: append to plan.data so the new set is
-  // part of the prescription, not a session-only extra. Symmetric with
-  // pre-session superset pairing. Block-aware via _resolveFlatEi.
-  if (!isAdHocKey(currentDay) && (!todayState || !todayState.workoutId)) {
-    addPrescribedSetToPlan(currentDay, ei).then(function() {
-      buildDay(currentDay);
-      if (typeof saveHydrationSnapshot === 'function') saveHydrationSnapshot();
-    }).catch(function(err) {
-      console.error('addPrescribedSetToPlan error:', err);
-      showToast("Couldn't add set: " + (err.message || 'unknown'), null);
-    });
-    return;
-  }
-  if (!todayState || !todayState.exercises['ex_' + ei]) return;
+  // Lazy-init state so +Add Set works pre-session on a plan day. Adds a
+  // session-scoped extra (isExtra: true) that renders with a delete
+  // affordance and supports drop-set chaining. No DB writes pre-session;
+  // the in-memory entry persists when the session is started and the
+  // user toggles a set done (existing persistSet path handles it).
+  var st = getOrInitToday(currentDay);
+  if (!st) return;
+  var exState = getOrInitExercise(st, ei);
+  if (!exState) return;
   promptResumeIfEnded(function() {
-    var exState = todayState.exercises['ex_' + ei];
     var newSet = { isExtra: true };
     // Carry forward values from the most-recent populated set in this
     // exercise so the user doesn't have to retype the same weight/reps
@@ -2015,7 +2009,19 @@ function addExtraSet(ei) {
     // toggled placement should carry the same override so renders + volume
     // math + persistence are consistent.
     newSet.weight_mode = (exState.sets[0] && exState.sets[0].weight_mode) || null;
-    exState.sets.push(newSet);
+    // Place extras past the prescribed range so the render's extras loop
+    // (siExtra >= ex.sets.length) picks them up. .push() alone is wrong
+    // when exState.sets is sparse — e.g., user toggled only set #0 done
+    // (length 1) on a 3-set prescription; pushing would land at [1],
+    // corrupting prescribed set #1's state. Pre-session this matters
+    // even more (length 0 → push would land at [0]).
+    var prescribedLen = 0;
+    if (!isAdHocKey(currentDay) && plan && plan.days && plan.days[currentDay]) {
+      var planEx = _flatEiToPlanMember(plan.days[currentDay], ei);
+      if (planEx && Array.isArray(planEx.sets)) prescribedLen = planEx.sets.length;
+    }
+    var insertIdx = Math.max(prescribedLen, exState.sets.length);
+    exState.sets[insertIdx] = newSet;
     buildDay(currentDay);
   });
 }
@@ -2034,9 +2040,38 @@ function addExtraSet(ei) {
 // to done=true and the child to done=true with the same completed_at.
 function addDropSet(ei) {
   if (viewModeFor(currentDay) !== 'editable') return;
-  if (!todayState || !todayState.exercises['ex_' + ei]) return;
-  var exState = todayState.exercises['ex_' + ei];
-  if (!exState.sets || exState.sets.length === 0) return;
+  var st = getOrInitToday(currentDay);
+  if (!st) return;
+  var exState = getOrInitExercise(st, ei);
+  if (!exState || !exState.sets || exState.sets.length === 0) return;
+
+  // Pre-session on a plan day: stack the drop in-memory only. parentSetIdx
+  // is enough to render the chain; the toggleSet cascade later persists
+  // both parent and child correctly when the user marks the parent done
+  // (parent → persistSet writes parent.setId → child's persistSet picks
+  // it up via parentSetIdx → buildSetPayload → parent_set_id FK).
+  if (!isAdHocKey(currentDay) && !st.workoutId) {
+    var lastIdx = exState.sets.length - 1;
+    var lastSet = exState.sets[lastIdx];
+    var parentIdx = (lastSet && lastSet.setType === 'drop' && lastSet.parentSetIdx != null)
+      ? lastSet.parentSetIdx : lastIdx;
+    var dropSet = {
+      setType: 'drop',
+      parentSetIdx: parentIdx,
+      isExtra: true,
+    };
+    if (lastSet) {
+      if (lastSet.weight != null) dropSet.weight = lastSet.weight;
+      if (lastSet.reps != null) dropSet.reps = lastSet.reps;
+      if (lastSet.duration_seconds != null) dropSet.duration_seconds = lastSet.duration_seconds;
+      if (lastSet.distance != null) dropSet.distance = lastSet.distance;
+    }
+    dropSet.weight_mode = (exState.sets[0] && exState.sets[0].weight_mode) || null;
+    exState.sets.push(dropSet);
+    buildDay(currentDay);
+    return;
+  }
+
   promptResumeIfEnded(function() {
     _addDropSetInner(ei).catch(function(err) {
       console.error('addDropSet error:', err);
@@ -3099,42 +3134,6 @@ function _restateFromSupersetGroups(state, groups) {
       }
     }
   }
-}
-
-// Append a set to a prescribed plan-day exercise. Used by the +Add Set
-// affordance when no session has started yet — the set becomes part of
-// the plan's prescription (persisted via plans.update) rather than a
-// session-only extra. Block-aware via _resolveFlatEi: ei is the flat
-// exercise_order, which may resolve to a member inside a superset block.
-// Clones the last prescribed set's weight / reps targets so the user
-// doesn't have to re-enter them; strips set_type so the new set is a
-// standard set even when the cloned-from set is a drop in a chain.
-async function addPrescribedSetToPlan(di, ei) {
-  if (!plan || !plan.days || !plan.days[di]) throw new Error('Plan day not found');
-  if (!activePlanId) throw new Error('No active plan');
-  var dayPlan = plan.days[di];
-  var resolved = _resolveFlatEi(dayPlan, [ei]);
-  if (!resolved || !resolved[0]) throw new Error('Could not resolve ei');
-  var r = resolved[0];
-
-  var newDay = JSON.parse(JSON.stringify(dayPlan));
-  var target = (r.memberIdx >= 0)
-    ? newDay.exercises[r.blockIdx].exercises[r.memberIdx]
-    : newDay.exercises[r.blockIdx];
-  if (!target || !Array.isArray(target.sets)) throw new Error('Exercise has no sets array');
-
-  var lastSet = target.sets.length ? target.sets[target.sets.length - 1] : null;
-  var newSet = lastSet ? JSON.parse(JSON.stringify(lastSet)) : {};
-  delete newSet.set_type;
-  delete newSet.parent_set_id;
-  target.sets.push(newSet);
-
-  var newPlan = JSON.parse(JSON.stringify(plan));
-  newPlan.days[di] = newDay;
-  var pr = await sb.from('plans').update({ data: newPlan }).eq('id', activePlanId);
-  if (pr.error) throw new Error(pr.error.message);
-  plan = newPlan;
-  planCache[activePlanId] = plan;
 }
 
 // Merge two exercises on the same day into a superset block. eiA is
