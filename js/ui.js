@@ -672,7 +672,11 @@ function renderPlanDayExerciseCard(di, ei, planEx, exState, mode, readOnly, badg
 
   h += '<div class="exercise-card' + cc + '">';
   var swapBtn = readOnly ? '' : '<button class="card-swap" data-swap-di="' + di + '" data-swap-ei="' + ei + '" aria-label="Swap exercise" type="button">⇄</button>';
-  var inBlock = !!(exState && exState.supersetGroup);
+  // badgeLabel is the canonical "this card is a member of a block" signal —
+  // set by the buildDay caller when emitting a block run, null for
+  // standalones. Reliable pre-session too, where exState.supersetGroup
+  // isn't populated yet (state lazy-creates on session start).
+  var inBlock = badgeLabel != null || !!(exState && exState.supersetGroup);
   var supersetBtn = readOnly ? '' :
     '<button class="ex-superset-btn' + (inBlock ? ' in-block' : '') +
     '" type="button" data-di="' + escapeAttr(String(di)) + '" data-ei="' + ei +
@@ -4563,14 +4567,18 @@ function openSupersetPicker(di, ei) {
   if (isAdHocKey(di)) {
     state = findAdHoc(di);
     exercisesArr = null;
+    if (!state) return;
   } else {
+    // Plan-day path: state is null until the user starts a session, but
+    // pairing pre-session is supported (mutates plan.data only). Walk the
+    // plan structure for block detection and pass {} for stateExercises.
     state = stateForDay(di);
     var planBlob = (typeof _planForState === 'function' ? _planForState(state) : null) || plan;
     exercisesArr = (planBlob && planBlob.days && planBlob.days[di]) ? planBlob.days[di].exercises : null;
+    if (!exercisesArr) return;
   }
-  if (!state) return;
 
-  var runs = groupRunsForRender(exercisesArr, state.exercises);
+  var runs = groupRunsForRender(exercisesArr, (state && state.exercises) || {});
 
   var options = [];
   for (var ri = 0; ri < runs.length; ri++) {
