@@ -1968,6 +1968,19 @@ function addTemplateExerciseToSession(exerciseRow, templateExerciseBlob) {
 
 function addExtraSet(ei) {
   if (viewModeFor(currentDay) !== 'editable') return;
+  // Pre-session on a plan day: append to plan.data so the new set is
+  // part of the prescription, not a session-only extra. Symmetric with
+  // pre-session superset pairing. Block-aware via _resolveFlatEi.
+  if (!isAdHocKey(currentDay) && (!todayState || !todayState.workoutId)) {
+    addPrescribedSetToPlan(currentDay, ei).then(function() {
+      buildDay(currentDay);
+      if (typeof saveHydrationSnapshot === 'function') saveHydrationSnapshot();
+    }).catch(function(err) {
+      console.error('addPrescribedSetToPlan error:', err);
+      showToast("Couldn't add set: " + (err.message || 'unknown'), null);
+    });
+    return;
+  }
   if (!todayState || !todayState.exercises['ex_' + ei]) return;
   promptResumeIfEnded(function() {
     var exState = todayState.exercises['ex_' + ei];
@@ -3086,6 +3099,42 @@ function _restateFromSupersetGroups(state, groups) {
       }
     }
   }
+}
+
+// Append a set to a prescribed plan-day exercise. Used by the +Add Set
+// affordance when no session has started yet — the set becomes part of
+// the plan's prescription (persisted via plans.update) rather than a
+// session-only extra. Block-aware via _resolveFlatEi: ei is the flat
+// exercise_order, which may resolve to a member inside a superset block.
+// Clones the last prescribed set's weight / reps targets so the user
+// doesn't have to re-enter them; strips set_type so the new set is a
+// standard set even when the cloned-from set is a drop in a chain.
+async function addPrescribedSetToPlan(di, ei) {
+  if (!plan || !plan.days || !plan.days[di]) throw new Error('Plan day not found');
+  if (!activePlanId) throw new Error('No active plan');
+  var dayPlan = plan.days[di];
+  var resolved = _resolveFlatEi(dayPlan, [ei]);
+  if (!resolved || !resolved[0]) throw new Error('Could not resolve ei');
+  var r = resolved[0];
+
+  var newDay = JSON.parse(JSON.stringify(dayPlan));
+  var target = (r.memberIdx >= 0)
+    ? newDay.exercises[r.blockIdx].exercises[r.memberIdx]
+    : newDay.exercises[r.blockIdx];
+  if (!target || !Array.isArray(target.sets)) throw new Error('Exercise has no sets array');
+
+  var lastSet = target.sets.length ? target.sets[target.sets.length - 1] : null;
+  var newSet = lastSet ? JSON.parse(JSON.stringify(lastSet)) : {};
+  delete newSet.set_type;
+  delete newSet.parent_set_id;
+  target.sets.push(newSet);
+
+  var newPlan = JSON.parse(JSON.stringify(plan));
+  newPlan.days[di] = newDay;
+  var pr = await sb.from('plans').update({ data: newPlan }).eq('id', activePlanId);
+  if (pr.error) throw new Error(pr.error.message);
+  plan = newPlan;
+  planCache[activePlanId] = plan;
 }
 
 // Merge two exercises on the same day into a superset block. eiA is
