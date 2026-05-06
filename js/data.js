@@ -459,10 +459,14 @@ function seedExerciseIdCache(state) {
 // ---- Queries ----
 async function loadHistorical(di) {
   if (historicalCache[di]) return historicalCache[di];
+  // Scope to the active plan so a brand-new plan's Day N doesn't pull in
+  // the most recent Day N from a previous plan as "historical". Mirrors
+  // the plan_id filter in loadDaysWithHistory.
+  if (!activePlanId) return null;
   try {
     var bounds = sessionBounds();
     var res = await sb.from('workouts').select('*, sets(*)')
-      .eq('user_id', userId).eq('day_index', di)
+      .eq('user_id', userId).eq('plan_id', activePlanId).eq('day_index', di)
       .lt('performed_at', bounds.start.toISOString())
       .order('performed_at', { ascending: false }).limit(1);
     if (res.error) { showToast('Failed to load history for this day', null); return null; }
