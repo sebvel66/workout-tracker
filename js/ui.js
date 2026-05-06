@@ -3167,40 +3167,52 @@ function renderGenerateInputs(body) {
   d.setDate(d.getDate() + (dow === 0 ? 0 : (7 - dow)));
   var defaultStart = localDateString(d);
 
+  // Restore prior selections when generatedInputs is set — chained from
+  // analyze → "Use for next plan" or any future re-render of the inputs
+  // view after a submit. Fresh open clears generatedInputs (openGenerate),
+  // so we fall through to first-open defaults in that case.
+  var prev = generatedInputs || {};
+  var startVal = prev.start_date || defaultStart;
+  var durVal = (prev.target_duration != null) ? prev.target_duration : 60;
+  var daysVal = (prev.training_days != null) ? prev.training_days : 5;
+  var weeksVal = (prev.history_weeks != null) ? prev.history_weeks : 4;
+  var photosAttr = prev.include_photos ? ' checked' : '';
+  var notesVal = prev.notes || '';
+
   var h = '<div class="generate-inputs">';
   h += '<label class="generate-form-row">';
   h += '<span class="generate-form-label">Start date</span>';
-  h += '<input type="date" id="genFormStartDate" class="generate-form-input" value="' + escapeAttr(defaultStart) + '">';
+  h += '<input type="date" id="genFormStartDate" class="generate-form-input" value="' + escapeAttr(startVal) + '">';
   h += '<span class="generate-form-hint">When does this plan take effect. Typically the upcoming Sunday.</span>';
   h += '</label>';
 
   h += '<label class="generate-form-row">';
   h += '<span class="generate-form-label">Target session duration</span>';
-  h += '<input type="number" id="genFormDuration" class="generate-form-input" value="60" min="30" max="120" step="5">';
+  h += '<input type="number" id="genFormDuration" class="generate-form-input" value="' + durVal + '" min="30" max="120" step="5">';
   h += '<span class="generate-form-hint">Minutes per session. Claude will program toward this.</span>';
   h += '</label>';
 
   h += '<label class="generate-form-row">';
   h += '<span class="generate-form-label">Training days</span>';
-  h += '<input type="number" id="genFormTrainingDays" class="generate-form-input" value="5" min="1" max="6" step="1">';
+  h += '<input type="number" id="genFormTrainingDays" class="generate-form-input" value="' + daysVal + '" min="1" max="6" step="1">';
   h += '<span class="generate-form-hint">Sessions per week (1-6). Claude adapts the split to the count.</span>';
   h += '</label>';
 
   h += '<label class="generate-form-row">';
   h += '<span class="generate-form-label">History context</span>';
-  h += '<input type="number" id="genFormHistoryWeeks" class="generate-form-input" value="4" min="1" max="12" step="1">';
+  h += '<input type="number" id="genFormHistoryWeeks" class="generate-form-input" value="' + weeksVal + '" min="1" max="12" step="1">';
   h += '<span class="generate-form-hint">Weeks of past training to feed the AI (1-12). More = broader context, slightly longer prompts.</span>';
   h += '</label>';
 
   h += '<label class="generate-form-row generate-form-row-inline">';
-  h += '<input type="checkbox" id="genFormIncludePhotos" class="generate-form-checkbox">';
+  h += '<input type="checkbox" id="genFormIncludePhotos" class="generate-form-checkbox"' + photosAttr + '>';
   h += '<span class="generate-form-label">Include physique photos in analysis</span>';
   h += '<span class="generate-form-hint">Off by default. Turn on when you\'ve updated a progress photo or want visual-driven recommendations. Adds ~1-2s to generation.</span>';
   h += '</label>';
 
   h += '<label class="generate-form-row">';
   h += '<span class="generate-form-label">Notes to coach (optional)</span>';
-  h += '<textarea id="genFormNotes" class="generate-form-textarea" rows="3" placeholder="e.g., knee acting up this week, traveling Mon-Wed (dumbbells only)"></textarea>';
+  h += '<textarea id="genFormNotes" class="generate-form-textarea" rows="3" placeholder="e.g., knee acting up this week, traveling Mon-Wed (dumbbells only)">' + escapeHtml(notesVal) + '</textarea>';
   h += '</label>';
 
   h += '<div class="generate-inputs-actions">';
@@ -3663,10 +3675,10 @@ function useAnalysisForNextPlan() {
   if (a.concerns) bits.push('CONCERNS: ' + a.concerns);
   if (a.next_week) bits.push('NEXT WEEK FOCUS: ' + a.next_week);
   var carry = bits.join('\n\n');
-  // Switch back to the inputs view, re-render, then populate the textarea
-  // after DOM is ready. Existing inputs (training_days, duration, photos,
-  // etc.) are preserved via generatedInputs — the form reads values from
-  // the DOM only if the elements exist yet.
+  // Switch back to the inputs view, re-render, then overwrite the textarea
+  // with the carry text after DOM is ready. The form's other fields
+  // (start_date, duration, training_days, history_weeks, photos) are
+  // restored from generatedInputs by renderGenerateInputs.
   generatedAnalysis = null;
   generateView = 'inputs';
   renderGenerate();
