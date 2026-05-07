@@ -4382,6 +4382,12 @@ async function sendCoachMessage() {
   appendTypingIndicator();
 
   var userMsg = text;
+  // Stamp the user message at the moment they sent it — before the API
+  // call. The assistant message gets stamped after the reply arrives
+  // (~1-2s later). Passing explicit created_at to logCoachMessage keeps
+  // the persisted ordering stable across the two concurrent INSERTs that
+  // would otherwise race for `default now()` server-side.
+  var userMsgAt = new Date().toISOString();
   var outcome = await attemptCoachCall(userMsg);
   if (outcome.retry) {
     chatAttempt = 2;
@@ -4399,8 +4405,9 @@ async function sendCoachMessage() {
     chatHistory.push({ role: 'assistant', content: reply });
     // Durable log alongside the in-memory ring buffer. Survives sign-out
     // and powers cross-session continuity in Claude prompts (v2.5+ B3).
-    logCoachMessage('user', userMsg, 'chat', null);
-    logCoachMessage('assistant', reply, 'chat', null);
+    var assistantMsgAt = new Date().toISOString();
+    logCoachMessage('user', userMsg, 'chat', null, userMsgAt);
+    logCoachMessage('assistant', reply, 'chat', null, assistantMsgAt);
     if (chatHistory.length > CHAT_HISTORY_MAX) {
       // Drop the two oldest entries (one Q/A pair). Keep length aligned on
       // pair boundaries so context ordering stays user/assistant/user/...

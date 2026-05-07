@@ -2882,16 +2882,24 @@ function applyProfileUpdatesFrom(profile, updates) {
 // CHECK on the table — anything else throws at the DB layer).
 // exerciseName: populated for 'swap' rows so the prompt can render
 // "[exercise swap: Cable Row]" inline. Null for chat / plan_generation.
-function logCoachMessage(role, content, contextType, exerciseName) {
+function logCoachMessage(role, content, contextType, exerciseName, createdAt) {
   if (!userId || !content) return;
   try {
-    sb.from('coach_messages').insert({
+    var payload = {
       user_id: userId,
       role: role,
       content: content,
       context_type: contextType || null,
       exercise_name: exerciseName || null,
-    }).then(function(r) {
+    };
+    // Optional client-stamped timestamp. Used by the chat path to
+    // disambiguate the user/assistant pair that fires back-to-back —
+    // server-side `default now()` can race when two concurrent INSERTs
+    // arrive in either order over HTTP/2, leaving the assistant row
+    // with an earlier created_at than the user's question and rendering
+    // the transcript out-of-order on app restart.
+    if (createdAt) payload.created_at = createdAt;
+    sb.from('coach_messages').insert(payload).then(function(r) {
       if (r && r.error) {
         console.warn('coach_messages insert failed:', r.error.message);
       }

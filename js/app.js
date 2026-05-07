@@ -7,7 +7,7 @@
 
 // Bump this on every deploy. Displayed at the bottom of the app so stale-
 // cache issues can be diagnosed from the client ("which version am I on?").
-var APP_VERSION = 'v3.4.10';
+var APP_VERSION = 'v3.4.11';
 
 // Paint the version tag in the bottom-right as soon as APP_VERSION is declared.
 // DOM is already parsed here (all the script tags sit at the end of <body>).
