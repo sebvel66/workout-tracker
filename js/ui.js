@@ -5698,6 +5698,7 @@ function renderTemplates() {
     h += '<button type="button" class="plans-btn view" data-view-plan-id="' + escapeAttr(t.id) + '">View</button>';
     h += '<button type="button" class="plans-btn rename" data-template-id="' + escapeAttr(t.id) + '">Rename</button>';
     h += '<button type="button" class="plans-btn activate" data-edit-template-id="' + escapeAttr(t.id) + '">Edit</button>';
+    h += '<button type="button" class="plans-btn activate" data-use-template-id="' + escapeAttr(t.id) + '">Use as plan</button>';
     h += '<button type="button" class="plans-btn delete" data-template-id="' + escapeAttr(t.id) + '">Delete</button>';
     h += '</div>';
     h += '</div>';
@@ -6451,6 +6452,48 @@ function onAtfSubmit() {
   showToast(msg, null);
 }
 
+// Activate a template as the active plan (v3.5.9). Multi-day templates
+// previously could only be used to seed an ad-hoc session one day at a
+// time — there was no path to make a multi-day template the active week-
+// long plan. Deep-clones the template's data blob (so future edits to
+// plan.data don't write back to the template), passes it through
+// savePlanAsActive which stamps start_date = today, normalizes the week
+// label, deactivates any prior active plan, and inserts as a NEW plans
+// row with is_active=true. Template row is untouched and stays a
+// reusable template.
+async function onUseTemplateAsPlan(templateId) {
+  var t = null;
+  for (var i = 0; i < templatesList.length; i++) {
+    if (templatesList[i].id === templateId) { t = templatesList[i]; break; }
+  }
+  if (!t) return;
+  if (!t.data || !Array.isArray(t.data.days) || !t.data.days.length) {
+    showToast('Template has no days to activate', null);
+    return;
+  }
+  var msg = 'Activate "' + t.template_name + '" as your active plan?';
+  if (plan && plan.title) {
+    msg += '\n\nThis will replace your current active plan ("' + plan.title + '"). Past workouts and sets stay intact.';
+  }
+  if (!confirm(msg)) return;
+  try {
+    var blob = JSON.parse(JSON.stringify(t.data));
+    blob.title = blob.title || t.template_name;
+    // Strip any inherited start_date / week so savePlanAsActive stamps
+    // them fresh from today's date (templates don't carry a calendar
+    // anchor; saveAsTemplate already strips these, but defense in depth
+    // for hand-edited / imported templates).
+    delete blob.start_date;
+    delete blob.week;
+    await savePlanAsActive(blob);
+    closeTemplates();
+    showToast('Activated: ' + (blob.title || t.template_name), null);
+  } catch(err) {
+    console.error('onUseTemplateAsPlan error:', err);
+    showToast("Couldn't activate template: " + (err.message || 'unknown'), null);
+  }
+}
+
 async function onDeleteTemplate(templateId) {
   var t = null;
   for (var i = 0; i < templatesList.length; i++) {
@@ -7069,6 +7112,12 @@ document.getElementById('templatesBody').addEventListener('click', function(e) {
   if (editBtn && !editBtn.disabled) {
     var eid = editBtn.getAttribute('data-edit-template-id');
     if (eid) openTemplateEditor(eid);
+    return;
+  }
+  var useBtn = e.target.closest('.plans-btn[data-use-template-id]');
+  if (useBtn && !useBtn.disabled) {
+    var uid = useBtn.getAttribute('data-use-template-id');
+    if (uid) onUseTemplateAsPlan(uid);
     return;
   }
   var deleteBtn = e.target.closest('.plans-btn.delete');
