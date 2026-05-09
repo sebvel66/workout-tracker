@@ -1681,8 +1681,7 @@ function renderEmptyStateRecent() {
     var wid = row.getAttribute('data-recent-workout-id');
     document.getElementById('historyOverlay').classList.add('show');
     if (!historyWeekStart) {
-      var currentStart = weekStartForLocalDate(new Date(sessionTodayDateString() + 'T00:00:00'));
-      historyWeekStart = addDaysToDateString(currentStart, -7);
+      historyWeekStart = weekStartForLocalDate(new Date(sessionTodayDateString() + 'T00:00:00'));
     }
     openHistoryDetail(wid);
   });
@@ -2052,16 +2051,17 @@ async function openHistory() {
     await loadEarliestWorkoutDate();
   }
 
-  // Default to the most recent completed week (= current week - 7 days).
-  // If the user's first workout is newer than that window, default to
-  // their earliest-workout week so the view isn't empty out of the gate.
+  // Default to the current week (Sun-anchored). v3.6.5: was previously
+  // "current - 7" so mid-week opens didn't show a partial view, but
+  // showing this week is more intuitive — the user just logged here.
+  // If the user's first workout is in a future week (essentially never,
+  // but defensive), fall back to the earliest-workout week.
   if (!historyWeekStart) {
     var currentStart = weekStartForLocalDate(new Date(sessionTodayDateString() + 'T00:00:00'));
-    var prevStart = addDaysToDateString(currentStart, -7);
-    if (earliestWorkoutDate && addDaysToDateString(prevStart, 6) < earliestWorkoutDate) {
+    if (earliestWorkoutDate && addDaysToDateString(currentStart, 6) < earliestWorkoutDate) {
       historyWeekStart = weekStartForLocalDate(new Date(earliestWorkoutDate + 'T00:00:00'));
     } else {
-      historyWeekStart = prevStart;
+      historyWeekStart = currentStart;
     }
   }
 
