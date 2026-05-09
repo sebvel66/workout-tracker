@@ -4497,3 +4497,48 @@ function handleImport(event) {
   reader.readAsText(file);
   event.target.value = '';
 }
+
+// Import a plan JSON as a saved template (v3.5.7). Mirrors handleImport
+// but writes via saveAsTemplate (is_template=true, is_active=false).
+// Accepts three input shapes for flexibility:
+//   1. Bare plan blob:                { title, days: [...] }
+//   2. Plan-import wrapper:           { plan: { title, days: [...] } }
+//   3. Full template-row export:      { template_name, data: { days: [...] }, ... }
+// Prompts for the template name with a sensible default (template_name
+// from the row export → blob.title → "Imported Template"), so a manually-
+// edited JSON without a name still imports cleanly.
+function handleImportTemplate(event) {
+  var file = event.target.files[0]; if (!file) return;
+  var reader = new FileReader();
+  reader.onload = async function(e) {
+    try {
+      var raw = JSON.parse(e.target.result);
+      var blob;
+      var nameHint = null;
+      if (raw && raw.template_name && raw.data && Array.isArray(raw.data.days)) {
+        blob = raw.data;
+        nameHint = raw.template_name;
+      } else if (raw && raw.plan && Array.isArray(raw.plan.days)) {
+        blob = raw.plan;
+      } else if (raw && Array.isArray(raw.days)) {
+        blob = raw;
+      } else {
+        showToast('Invalid template file format', null);
+        return;
+      }
+      var nameDefault = nameHint || blob.title || 'Imported Template';
+      var name = prompt('Template name:', nameDefault);
+      if (name == null) return;  // user cancelled
+      name = String(name).trim();
+      if (!name) { showToast('Template name required', null); return; }
+      await saveAsTemplate(name, blob);
+      document.getElementById('importTemplateModal').classList.remove('show');
+      showToast('Template imported: ' + name, null);
+    } catch(err) {
+      console.error('handleImportTemplate error:', err);
+      showToast('Import error: ' + (err.message || 'unknown'), null);
+    }
+  };
+  reader.readAsText(file);
+  event.target.value = '';
+}

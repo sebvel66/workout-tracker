@@ -6860,6 +6860,10 @@ document.getElementById('menuImport').addEventListener('click', function() {
   closeMenu();
   document.getElementById('importModal').classList.add('show');
 });
+document.getElementById('menuImportTemplate').addEventListener('click', function() {
+  closeMenu();
+  document.getElementById('importTemplateModal').classList.add('show');
+});
 document.getElementById('menuExport').addEventListener('click', function() {
   closeMenu();
   openExportModal();
@@ -7504,6 +7508,16 @@ document.getElementById('btnCancelImport').addEventListener('click', function() 
   document.getElementById('importModal').classList.remove('show');
 });
 document.getElementById('importModal').addEventListener('click', function(e) {
+  if (e.target === this) this.classList.remove('show');
+});
+document.getElementById('importTemplateZone').addEventListener('click', function() {
+  document.getElementById('templateFileInput').click();
+});
+document.getElementById('templateFileInput').addEventListener('change', handleImportTemplate);
+document.getElementById('btnCancelImportTemplate').addEventListener('click', function() {
+  document.getElementById('importTemplateModal').classList.remove('show');
+});
+document.getElementById('importTemplateModal').addEventListener('click', function(e) {
   if (e.target === this) this.classList.remove('show');
 });
 document.getElementById('btnRest').addEventListener('click', function() { startRestTimer(90); });

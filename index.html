@@ -2915,6 +2915,20 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
   </div>
 </div>
 
+<div class="modal-overlay" id="importTemplateModal">
+  <div class="modal">
+    <h3>Import Template</h3>
+    <div class="import-zone" id="importTemplateZone">
+      <div class="import-zone-icon">📋</div>
+      <div class="import-zone-text">Tap to select your template JSON file</div>
+    </div>
+    <input type="file" id="templateFileInput" class="file-input" accept=".json">
+    <div class="modal-actions">
+      <button class="modal-btn" id="btnCancelImportTemplate">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="pickerOverlay">
   <div class="picker-modal">
     <div class="picker-header">
@@ -3184,6 +3198,7 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
       <button class="menu-row" id="menuPlans" type="button">Plans</button>
       <button class="menu-row" id="menuTemplates" type="button">Templates</button>
       <button class="menu-row" id="menuImport" type="button">Import Plan</button>
+      <button class="menu-row" id="menuImportTemplate" type="button">Import Template</button>
       <button class="menu-row" id="menuExport" type="button">Export Data</button>
       <button class="menu-row" id="menuExportProfile" type="button">Export Coaching Profile</button>
       <button class="menu-row" id="menuHistory" type="button">History</button>
