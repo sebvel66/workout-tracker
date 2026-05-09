@@ -1778,10 +1778,37 @@ async function persistSet(di, ei, si) {
       var r = await sb.from('sets').update(payload).eq('id', sl.setId);
       if (r.error) throw r.error;
     } else {
-      var r2 = await sb.from('sets').insert(payload).select('id').single();
-      if (r2.error) throw r2.error;
-      sl.setId = r2.data.id;
-      if (sl.done && !sl.completedAt) sl.completedAt = payload.completed_at;
+      // Defensive read-before-insert (v3.6.4). The INSERT branch fires
+      // whenever in-memory `sl.setId` is null. If a row at the same
+      // (workout, exercise_id, exercise_order, set_order) already exists
+      // in DB but the in-memory setId was lost (hydration cache write
+      // timing, plan switch resetting state, etc.), a naive INSERT
+      // duplicates the row — and the partial unique index (`WHERE done
+      // = true`) doesn't catch it when one row is done=true and the
+      // duplicate is being inserted as done=false. The duplicate then
+      // surfaces in history edit as "duplicate key value violates unique
+      // constraint" when the user tries to flip the orphan row to
+      // done=true. Look up first and adopt the existing row's id —
+      // converts duplicate-prone INSERT into a safe UPDATE.
+      var lookup = await sb.from('sets')
+        .select('id')
+        .eq('workout_id', payload.workout_id)
+        .eq('exercise_id', payload.exercise_id)
+        .eq('exercise_order', payload.exercise_order)
+        .eq('set_order', payload.set_order)
+        .maybeSingle();
+      if (lookup.error) throw lookup.error;
+      if (lookup.data && lookup.data.id) {
+        sl.setId = lookup.data.id;
+        var ru = await sb.from('sets').update(payload).eq('id', sl.setId);
+        if (ru.error) throw ru.error;
+        if (sl.done && !sl.completedAt) sl.completedAt = payload.completed_at;
+      } else {
+        var r2 = await sb.from('sets').insert(payload).select('id').single();
+        if (r2.error) throw r2.error;
+        sl.setId = r2.data.id;
+        if (sl.done && !sl.completedAt) sl.completedAt = payload.completed_at;
+      }
     }
     // On successful done, promote this exercise to the top of recents.
     if (sl.done) {
