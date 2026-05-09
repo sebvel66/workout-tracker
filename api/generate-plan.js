@@ -340,7 +340,7 @@ async function fetchRecentWorkouts(userId, weeks) {
   // PostgREST FK disambiguation (v2.2.1+): sets has two FKs to exercises
   // (exercise_id and prescribed_exercise_id). "!exercise_id" picks the
   // actual-performed FK so the planner sees what the user actually did.
-  const select = encodeURIComponent('*,sets(*,exercises!exercise_id(name,equipment,muscle_group,movement_pattern,weight_mode))');
+  const select = encodeURIComponent('*,sets(*,exercises!exercise_id(name,equipment,muscle_group,secondary_muscles,movement_pattern,weight_mode))');
   const res = await sbFetch(
     `/workouts?user_id=eq.${userId}&performed_on=gte.${startStr}&order=performed_on.asc&select=${select}`
   );
@@ -351,7 +351,7 @@ async function fetchRecentWorkouts(userId, weeks) {
 async function fetchExerciseLibrary(userId) {
   // Seed library has user_id IS NULL; user-custom has user_id = userId.
   const res = await sbFetch(
-    `/exercises?or=(user_id.is.null,user_id.eq.${userId})&select=name,equipment,muscle_group,movement_pattern,weight_mode&order=name.asc`
+    `/exercises?or=(user_id.is.null,user_id.eq.${userId})&select=name,equipment,muscle_group,secondary_muscles,movement_pattern,weight_mode&order=name.asc`
   );
   if (!res.ok) throw new Error('Failed to fetch exercise library');
   return await res.json();
@@ -777,14 +777,14 @@ function volumeForSet(weight, reps, mode) {
   return weight * reps;
 }
 
-// Per-muscle completed-set count grouped by Sun-anchored week. Distinct
-// from formatWeekSummary's "Volume by muscle" which is lbs of work — this
-// is the hypertrophy literature's preferred metric (10-20 sets/wk per
-// major muscle group). Spans the full historyWeeks window so the coach
-// can flag week-over-week deficits / excesses. Cardio + mobility groups
-// are skipped (not relevant to hypertrophy volume tracking). Counts only
-// the primary muscle_group per exercise; secondary-muscle 0.5 weighting
-// is deferred until exercises.secondary_muscles ships.
+// Per-muscle set count grouped by Sun-anchored week with Schoenfeld-style
+// fractional counting: each completed set contributes 1.0 to its primary
+// muscle_group and 0.5 to each entry in secondary_muscles. This is the
+// hypertrophy literature's preferred volume metric (10-20 sets/wk per
+// major muscle group), distinct from formatWeekSummary's "Volume by
+// muscle" which is lbs of work. Spans the full historyWeeks window so
+// the coach can flag week-over-week deficits / excesses. Cardio + mobility
+// are skipped (not relevant to hypertrophy volume tracking).
 function formatVolumeByMuscleGroup(workouts, historyWeeks) {
   if (!workouts || !workouts.length) return '';
   const byWeek = {};  // weekStart -> muscle -> count
@@ -793,18 +793,29 @@ function formatVolumeByMuscleGroup(workouts, historyWeeks) {
     if (!byWeek[weekStart]) byWeek[weekStart] = {};
     for (const s of (w.sets || [])) {
       if (!s.done) continue;
-      const mg = s.exercises ? s.exercises.muscle_group : null;
-      if (!mg || mg === 'cardio' || mg === 'mobility') continue;
-      byWeek[weekStart][mg] = (byWeek[weekStart][mg] || 0) + 1;
+      const ex = s.exercises;
+      if (!ex) continue;
+      const primary = ex.muscle_group;
+      if (!primary || primary === 'cardio' || primary === 'mobility') continue;
+      byWeek[weekStart][primary] = (byWeek[weekStart][primary] || 0) + 1;
+      const secondaries = Array.isArray(ex.secondary_muscles) ? ex.secondary_muscles : [];
+      for (const mg2 of secondaries) {
+        if (!mg2 || mg2 === primary || mg2 === 'cardio' || mg2 === 'mobility') continue;
+        byWeek[weekStart][mg2] = (byWeek[weekStart][mg2] || 0) + 0.5;
+      }
     }
   }
   const weekKeys = Object.keys(byWeek).sort();
   if (!weekKeys.length) return '';
-  let out = `WEEKLY SETS BY MUSCLE GROUP (completed sets only, last ${historyWeeks} week${historyWeeks === 1 ? '' : 's'})\n`;
+  const fmt = (v) => {
+    const r = Math.round(v * 10) / 10;
+    return r === Math.floor(r) ? String(r) : r.toFixed(1);
+  };
+  let out = `WEEKLY SETS BY MUSCLE GROUP (Schoenfeld fractional counting: primary 1.0 + each secondary 0.5; last ${historyWeeks} week${historyWeeks === 1 ? '' : 's'})\n`;
   for (const wk of weekKeys) {
     const muscles = byWeek[wk];
     const ordered = Object.keys(muscles).sort((a, b) => muscles[b] - muscles[a]);
-    const parts = ordered.map(m => `${m} ${muscles[m]}`);
+    const parts = ordered.map(m => `${m} ${fmt(muscles[m])}`);
     out += `  ${wk}: ${parts.join(', ')}\n`;
   }
   return out + '\n';

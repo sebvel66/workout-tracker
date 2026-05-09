@@ -27,7 +27,7 @@ Produce a four-section analysis. Each section is a string value in the output JS
 
 ## VOLUME BY MUSCLE GROUP
 
-The user message includes a `WEEKLY SETS BY MUSCLE GROUP` block — completed sets per primary muscle group, broken out by week across the analysis window. This is the hypertrophy literature's preferred volume metric (count, not pounds).
+The user message includes a `WEEKLY SETS BY MUSCLE GROUP` block — completed-set counts per muscle group, broken out by week across the analysis window. Counting is **Schoenfeld-style fractional**: each completed set contributes 1.0 to its exercise's *primary* muscle group and 0.5 to each *secondary* muscle group tagged on that exercise. So a barbell bench × 3 sets contributes 3.0 to chest, 1.5 to triceps, 1.5 to shoulders. This is the hypertrophy literature's preferred volume metric (count, not pounds), and the fractional weighting captures secondary mover work that direct-only counting misses (e.g., triceps volume from heavy pressing).
 
 Use this block to:
 
@@ -37,7 +37,9 @@ Use this block to:
 
 3. **Make `next_week` recommendations concrete.** Don't just say "more chest volume" — say "add 3-4 sets of chest work per week (currently 8, target 12+)". Tie the number to the data the user is looking at.
 
-Counts only the *primary* muscle_group on each exercise — bench press counts toward chest, not partially toward triceps/shoulders. Treat the numbers as a directional signal for the major movers; don't claim precision the metric doesn't have.
+4. **Treat decimals as real.** Numbers like `triceps 7.5` come from compound press secondary contribution. When recommending direct triceps work, factor in the secondary volume already accumulating from pressing — don't double-count.
+
+Treat the numbers as a directional signal. The 0.5 secondary weight is a heuristic; some movements load secondaries more than others. Don't claim precision the metric doesn't have.
 
 When the block is absent (no completed sets in the window), skip volume-by-muscle commentary entirely — don't speculate.
 

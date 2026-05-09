@@ -2051,15 +2051,19 @@ function renderHistoryWeekSummary(summary) {
     });
     h += '<div class="history-week-plans">' + escapeHtml(parts.join(' · ')) + '</div>';
   }
-  // Per-muscle-group completed-set count for the week. Sorted high-to-low
-  // so the deficit / excess pattern reads at a glance. Counts only the
-  // primary muscle_group on each exercise — secondary-muscle fractional
-  // counting is a Phase 1b follow-up.
+  // Per-muscle-group set count for the week (Schoenfeld-style fractional
+  // counting: primary 1.0 + each secondary 0.5). Sorted high-to-low so
+  // the deficit / excess pattern reads at a glance. Halves render with
+  // one decimal (e.g., "12.5"); whole numbers render as integers.
   var vbm = summary.volumeByMuscleGroup || {};
   var muscles = Object.keys(vbm);
   if (muscles.length) {
     muscles.sort(function(a, b) { return vbm[b] - vbm[a]; });
-    var muscleParts = muscles.map(function(m) { return m + ' ' + vbm[m]; });
+    var muscleParts = muscles.map(function(m) {
+      var v = Math.round(vbm[m] * 10) / 10;
+      var label = (v === Math.floor(v)) ? String(v) : v.toFixed(1);
+      return m + ' ' + label;
+    });
     h += '<div class="history-week-volume">Sets by muscle: ' +
          escapeHtml(muscleParts.join(' · ')) + '</div>';
   }

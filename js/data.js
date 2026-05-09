@@ -685,7 +685,7 @@ async function fetchWeekSummary(userId, weekStartDate, weekEndDate) {
   // exercise_id FK — what was actually performed. Without this hint, the
   // query fails with PGRST201 ambiguous relationship.
   var wRes = await sb.from('workouts')
-    .select('*, sets(*, exercises!exercise_id(name, equipment, muscle_group, weight_mode))')
+    .select('*, sets(*, exercises!exercise_id(name, equipment, muscle_group, secondary_muscles, weight_mode))')
     .eq('user_id', userId)
     .gte('performed_on', weekStartDate)
     .lte('performed_on', weekEndDate)
@@ -857,6 +857,7 @@ function _summarizeWorkoutRow(row) {
         name: ex.name || null,
         equipment: ex.equipment || null,
         muscleGroup: ex.muscle_group || null,
+        secondaryMuscles: Array.isArray(ex.secondary_muscles) ? ex.secondary_muscles : [],
         weightMode: mode,
         sets: [],
       };
@@ -933,12 +934,16 @@ function _summarizeWorkoutRow(row) {
   };
 }
 
-// Per-workout completed-set count grouped by primary muscle_group.
-// Counts only sets with done=true, including ad-hoc and extras-on-plan
-// — every completed set contributes 1.0 to its exercise's primary muscle.
-// Secondary-muscle fractional counting is deferred (Phase 1b in ROADMAP);
-// Schoenfeld-style 0.5 weighting for secondary movers needs an
-// `exercises.secondary_muscles` column we don't have yet.
+// Per-workout completed-set count grouped by muscle_group with Schoenfeld-
+// style fractional counting: each completed set contributes 1.0 to its
+// exercise's primary muscle_group and 0.5 to each entry in secondary_muscles.
+// Counts include ad-hoc and extras-on-plan sets. Cardio + mobility groups
+// are filtered out (not relevant to hypertrophy volume tracking).
+//
+// Secondary tags come from exercises.secondary_muscles, populated for seed
+// rows by 20260509000000_secondary_muscles.sql. Custom user exercises with
+// no secondary tags simply contribute their primary count (no UI to edit
+// secondaries yet).
 function _setsByMuscleGroup(byOrder) {
   var out = {};
   if (!byOrder) return out;
@@ -946,14 +951,21 @@ function _setsByMuscleGroup(byOrder) {
   for (var i = 0; i < keys.length; i++) {
     var ex = byOrder[keys[i]];
     if (!ex || !ex.muscleGroup) continue;
-    var mg = ex.muscleGroup;
-    if (mg === 'cardio' || mg === 'mobility') continue;
+    var primary = ex.muscleGroup;
+    if (primary === 'cardio' || primary === 'mobility') continue;
     var done = 0;
     var sets = ex.sets || [];
     for (var s = 0; s < sets.length; s++) {
       if (sets[s] && sets[s].done) done++;
     }
-    if (done) out[mg] = (out[mg] || 0) + done;
+    if (!done) continue;
+    out[primary] = (out[primary] || 0) + done;
+    var secondaries = Array.isArray(ex.secondaryMuscles) ? ex.secondaryMuscles : [];
+    for (var si = 0; si < secondaries.length; si++) {
+      var mg2 = secondaries[si];
+      if (!mg2 || mg2 === primary || mg2 === 'cardio' || mg2 === 'mobility') continue;
+      out[mg2] = (out[mg2] || 0) + done * 0.5;
+    }
   }
   return out;
 }
