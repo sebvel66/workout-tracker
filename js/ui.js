@@ -6868,7 +6868,13 @@ function startRestTimer(sec) {
   // overlay is intentionally NOT toggled so the app stays interactive
   // while the user rests; CSS keeps .rest-timer-overlay { display: none }
   // unconditionally regardless of any .show class.
-  document.getElementById('restTimer').classList.add('show');
+  var pill = document.getElementById('restTimer');
+  pill.classList.add('show');
+  // Drag (v3.6.2): clear any inline transform so the new rest spawns at
+  // the default position, even if the previous rest was dragged. Also
+  // strips dragging class in case stopRestTimer didn't run cleanly.
+  pill.style.transform = '';
+  pill.classList.remove('dragging');
   updateRestDisplay();
   // 250ms tick so catch-up after backgrounding feels snappy; the callback
   // itself is cheap (one DOM read, one Date.now(), one DOM write).
@@ -7872,6 +7878,60 @@ document.getElementById('importTemplateModal').addEventListener('click', functio
 document.getElementById('btnRest').addEventListener('click', function() { startRestTimer(90); });
 document.getElementById('btnStopRest').addEventListener('click', stopRestTimer);
 document.getElementById('restOverlay').addEventListener('click', stopRestTimer);
+
+// Rest timer drag-to-move (v3.6.2). Pointer-events for unified mobile +
+// desktop. Drag only initiates on pointerdown to non-button regions of
+// the pill so the buttons (-15s / +15s / Skip) stay clickable. 5px
+// threshold before entering drag mode means short taps near the time
+// display don't shift the pill. Position resets to default on every
+// new rest period (startRestTimer clears inline transform).
+(function wireRestTimerDrag() {
+  var pill = document.getElementById('restTimer');
+  if (!pill) return;
+  var dragState = null;  // { startX, startY, dragging } | null
+  var DRAG_THRESHOLD = 5;
+
+  pill.addEventListener('pointerdown', function(e) {
+    if (e.target.closest && e.target.closest('button')) return;
+    dragState = {
+      startX: e.clientX,
+      startY: e.clientY,
+      dx: 0,
+      dy: 0,
+      pointerId: e.pointerId,
+      dragging: false,
+    };
+  });
+
+  pill.addEventListener('pointermove', function(e) {
+    if (!dragState || e.pointerId !== dragState.pointerId) return;
+    dragState.dx = e.clientX - dragState.startX;
+    dragState.dy = e.clientY - dragState.startY;
+    if (!dragState.dragging) {
+      var moved = Math.abs(dragState.dx) + Math.abs(dragState.dy);
+      if (moved < DRAG_THRESHOLD) return;
+      dragState.dragging = true;
+      pill.classList.add('dragging');
+      try { pill.setPointerCapture(e.pointerId); } catch (_) {}
+    }
+    e.preventDefault();
+    // Compose with the centering offset (-50%) so the pill moves
+    // relative to its default centered position.
+    pill.style.transform = 'translate(calc(-50% + ' + dragState.dx + 'px), ' + dragState.dy + 'px)';
+  });
+
+  function endDrag(e) {
+    if (!dragState) return;
+    if (e && dragState.pointerId !== e.pointerId) return;
+    if (dragState.dragging) {
+      try { pill.releasePointerCapture(dragState.pointerId); } catch (_) {}
+      pill.classList.remove('dragging');
+    }
+    dragState = null;
+  }
+  pill.addEventListener('pointerup', endDrag);
+  pill.addEventListener('pointercancel', endDrag);
+})();
 document.getElementById('btnRestPlus').addEventListener('click', function() {
   if (!restInterval) return;
   restTargetMs += 15000;

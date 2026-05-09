@@ -685,8 +685,25 @@ html, body {
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
   align-items: center;
   gap: 8px;
+  /* Drag (v3.6.2): pointer-events drag-to-move during a rest period.
+   * touch-action prevents scroll while dragging on mobile; cursor cue
+   * communicates "grabbable" outside the buttons. Position resets
+   * on every new rest period (startRestTimer clears inline transform). */
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
 .rest-timer.show { display: flex; }
+.rest-timer.dragging {
+  cursor: grabbing;
+  opacity: 0.88;
+  transition: none;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+}
+/* Buttons inside the pill stay clickable — drag only fires on
+ * pointerdown to non-button regions. Reset cursor so they look tappable. */
+.rest-timer-btn, .rest-timer-adjust { cursor: pointer; }
 .rest-timer-time {
   font-family: 'JetBrains Mono', monospace;
   font-size: 22px; font-weight: 700; color: var(--accent);
