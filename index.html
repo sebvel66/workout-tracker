@@ -1291,6 +1291,74 @@ body.unauthed #emptyState { display: none !important; }
  * Claude's reasoning. Left accent border marks them as actionable (vs. the
  * informational analysis sections above). Accept is opt-in per field; user
  * ticks boxes + clicks "Apply selected" in the footer. */
+/* Analyze-chat: in-modal Q&A on the analyze review (v3.5.3). Rides the
+ * analyze prompt cache via /api/generate-plan mode=analyze_chat. Each
+ * Q/A pair renders as right-aligned (you) / left-aligned (coach) bubbles
+ * to make the conversation read like a thread. The whole transcript
+ * folds into the "Use for next plan" carry text. */
+.analyze-chat-section { margin: 16px 0 6px; }
+.analyze-chat-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0;
+}
+.analyze-chat-msg {
+  padding: 8px 12px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-width: 92%;
+}
+.analyze-chat-user {
+  align-self: flex-end;
+  border-left: none;
+  border-right: 3px solid var(--accent);
+}
+.analyze-chat-coach {
+  align-self: flex-start;
+  border-left: 3px solid var(--accent2);
+  border-right: none;
+}
+.analyze-chat-role {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text2);
+  margin-bottom: 4px;
+}
+.analyze-chat-text {
+  font-size: 14px;
+  color: var(--text);
+  white-space: pre-wrap;
+  line-height: 1.45;
+}
+.analyze-chat-input {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  align-items: stretch;
+}
+.analyze-chat-input textarea {
+  flex: 1;
+  font-family: inherit;
+  font-size: 14px;
+  padding: 8px 10px;
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  resize: vertical;
+  min-height: 44px;
+}
+.analyze-chat-input button { white-space: nowrap; }
+.analyze-chat-hint {
+  font-size: 11px;
+  color: var(--text2);
+  margin-top: 6px;
+  font-style: italic;
+}
+
 .profile-updates-section { margin: 12px 0 6px; }
 .pu-card {
   display: grid;

@@ -63,6 +63,11 @@ var generateStartedAt = 0;          // ms timestamp when the API call started
 var generateInFlight = false;       // prevents double-fire of the generate button
 var generateAbortController = null; // wired to the in-flight fetch so Cancel can abort
 var generateAttempt = 0;            // 1 on first try, 2 on the silent retry (for loading-message swap)
+// Conversational follow-ups on the analyze review (v3.5.3). [{role, content}, …]
+// Reset on every fresh analyze submit + on modal close. Folds into the
+// "Use for next plan" carry alongside the four-section analysis.
+var analyzeChatHistory = [];
+var analyzeChatPending = false;     // disables Ask button while a follow-up is in flight
 
 // Refine-mode state (v2.5.3): when the user iterates on a freshly-generated
 // plan via the "What would you change?" input on the review screen.
@@ -2988,6 +2993,7 @@ function openGenerate() {
   generatedAnalysis = null;
   generatedMeta = null;
   generatedInputs = null;
+  analyzeChatHistory = [];
   document.getElementById('generateOverlay').classList.add('show');
   renderGenerate();
 }
@@ -3060,6 +3066,7 @@ async function submitGenerateInputs(mode) {
   generatedAnalysis = null;
   iterationHistory = [];
   generatedChangeNotes = null;
+  analyzeChatHistory = [];
   renderGenerate();
   // Option L (2026-04-22): plan-gen doesn't log its submit anymore —
   // only the accept row persists (onAcceptGeneratedPlan). Cancelled
@@ -3196,6 +3203,7 @@ function closeGenerate() {
   generatedMeta = null;
   iterationHistory = [];
   generatedChangeNotes = null;
+  analyzeChatHistory = [];
   refineInFlight = false;
 }
 
@@ -3561,6 +3569,35 @@ function renderAnalyzeReview(body) {
     h += '</div>';
   }
 
+  // Conversational Q&A on the analysis (v3.5.3). Rides the analyze prompt
+  // cache via /api/generate-plan mode=analyze_chat. Each turn appends to
+  // analyzeChatHistory and folds into the "Use for next plan" carry below.
+  h += '<div class="analyze-chat-section">';
+  h += '<div class="analyze-section-label">FOLLOW-UP QUESTIONS</div>';
+  if (analyzeChatHistory.length) {
+    h += '<div class="analyze-chat-thread">';
+    for (var ci = 0; ci < analyzeChatHistory.length; ci++) {
+      var m = analyzeChatHistory[ci];
+      var roleClass = m.role === 'user' ? 'analyze-chat-user' : 'analyze-chat-coach';
+      var roleLabel = m.role === 'user' ? 'You' : 'Coach';
+      h += '<div class="analyze-chat-msg ' + roleClass + '">';
+      h += '<div class="analyze-chat-role">' + roleLabel + '</div>';
+      h += '<div class="analyze-chat-text">' + escapeHtml(m.content) + '</div>';
+      h += '</div>';
+    }
+    h += '</div>';
+  }
+  if (analyzeChatPending) {
+    h += '<div class="analyze-chat-msg analyze-chat-coach"><div class="analyze-chat-role">Coach</div><div class="analyze-chat-text" style="opacity:0.6;">…</div></div>';
+  }
+  var disabled = analyzeChatPending ? ' disabled' : '';
+  h += '<div class="analyze-chat-input">';
+  h += '<textarea id="analyzeChatInput" rows="2" placeholder="Ask a follow-up — clarify a section, expand on a recommendation, or ask what it means for you"' + disabled + '></textarea>';
+  h += '<button class="generate-btn-secondary" id="btnAnalyzeChatSend" type="button"' + disabled + '>' + (analyzeChatPending ? 'Asking…' : 'Ask') + '</button>';
+  h += '</div>';
+  h += '<div class="analyze-chat-hint">Sonnet, ~5-8s/turn — rides the warm analyze cache. Each Q&amp;A folds into "Use for next plan" below.</div>';
+  h += '</div>';
+
   h += '<div class="generate-actions">';
   h += '<button class="generate-btn-cancel" id="btnGenerateCancel" type="button">Close</button>';
   if (updates.length > 0) {
@@ -3570,6 +3607,73 @@ function renderAnalyzeReview(body) {
   h += '</div>';
   h += '</div>';
   body.innerHTML = h;
+}
+
+async function submitAnalyzeChat() {
+  if (analyzeChatPending) return;
+  if (!generatedAnalysis) return;
+  var input = document.getElementById('analyzeChatInput');
+  var question = (input && input.value || '').trim();
+  if (!question) {
+    if (input) input.focus();
+    return;
+  }
+  // Optimistically push the user's question; re-render shows it + a
+  // pending "…" placeholder for the coach reply.
+  analyzeChatHistory.push({ role: 'user', content: question });
+  analyzeChatPending = true;
+  renderGenerate();
+  try {
+    var sessionRes = await sb.auth.getSession();
+    var token = sessionRes.data && sessionRes.data.session && sessionRes.data.session.access_token;
+    if (!token) throw new Error('Not signed in');
+    // Send all prior turns EXCEPT the user message we just optimistically
+    // pushed — server treats that one as the new question, not history.
+    var qaForServer = analyzeChatHistory.slice(0, -1);
+    var payload = {
+      mode: 'analyze_chat',
+      model: modelForAnalyze(),
+      original_analysis: {
+        trends: generatedAnalysis.trends || '',
+        progressing: generatedAnalysis.progressing || '',
+        concerns: generatedAnalysis.concerns || '',
+        next_week: generatedAnalysis.next_week || '',
+      },
+      qa_history: qaForServer,
+      question: question,
+      // Same window the original analyze used so the volume-by-muscle
+      // block in the cached prefix matches up.
+      history_weeks: (generatedMeta && generatedMeta.weeks_analyzed) || (generatedInputs && generatedInputs.history_weeks) || 4,
+    };
+    var res = await fetch('/api/generate-plan', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    var body = await res.json().catch(function() { return null; });
+    if (res.status !== 200 || !body || !body.reply) {
+      var msg = (body && body.error) || ('HTTP ' + res.status);
+      // Roll back the optimistic user push so the user can retry without
+      // a duplicate sitting in the transcript.
+      analyzeChatHistory.pop();
+      showToast('Follow-up failed: ' + msg, null);
+      return;
+    }
+    analyzeChatHistory.push({ role: 'assistant', content: String(body.reply).trim() });
+    if (input) input.value = '';
+  } catch (err) {
+    console.error('submitAnalyzeChat error:', err);
+    analyzeChatHistory.pop();
+    showToast('Follow-up failed: ' + (err.message || 'network error'), null);
+  } finally {
+    analyzeChatPending = false;
+    renderGenerate();
+    // Re-focus the input after the re-render mounts a fresh node.
+    setTimeout(function() {
+      var ta = document.getElementById('analyzeChatInput');
+      if (ta) ta.focus();
+    }, 0);
+  }
 }
 
 // Build one proposal card. Shape depends on field type: scalars get an
@@ -3730,12 +3834,25 @@ function useAnalysisForNextPlan() {
   if (a.progressing) bits.push('PROGRESSING: ' + a.progressing);
   if (a.concerns) bits.push('CONCERNS: ' + a.concerns);
   if (a.next_week) bits.push('NEXT WEEK FOCUS: ' + a.next_week);
+  // Append the in-modal Q&A transcript so plan-gen sees both the four
+  // sections AND the clarifications the user discussed before hitting
+  // "Use for next plan". Each pair renders as You: / Coach: lines.
+  if (analyzeChatHistory.length) {
+    var qaLines = ['FOLLOW-UP DISCUSSION:'];
+    for (var qi = 0; qi < analyzeChatHistory.length; qi++) {
+      var m = analyzeChatHistory[qi];
+      var who = m.role === 'user' ? 'You' : 'Coach';
+      qaLines.push(who + ': ' + m.content);
+    }
+    bits.push(qaLines.join('\n'));
+  }
   var carry = bits.join('\n\n');
   // Switch back to the inputs view, re-render, then overwrite the textarea
   // with the carry text after DOM is ready. The form's other fields
   // (start_date, duration, training_days, history_weeks, photos) are
   // restored from generatedInputs by renderGenerateInputs.
   generatedAnalysis = null;
+  analyzeChatHistory = [];
   generateView = 'inputs';
   renderGenerate();
   setTimeout(function() {
@@ -6825,6 +6942,7 @@ document.getElementById('generateBody').addEventListener('click', function(e) {
   if (e.target.closest('#btnRefinePlan')) { submitRefinePlan(); return; }
   if (e.target.closest('#btnAnalyzeUseForPlan')) { useAnalysisForNextPlan(); return; }
   if (e.target.closest('#btnAnalyzeApplyProfile')) { onAnalyzeApplyProfileUpdates(); return; }
+  if (e.target.closest('#btnAnalyzeChatSend')) { submitAnalyzeChat(); return; }
   if (e.target.closest('#btnGenerateCancel')) { closeGenerate(); return; }
   if (e.target.closest('#btnGenerateAbort')) { cancelGenerate(); return; }
   // Per-exercise swap inside the in-review plan (post-Generate, pre-Accept).

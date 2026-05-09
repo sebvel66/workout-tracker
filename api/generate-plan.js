@@ -149,6 +149,9 @@ export default async function handler(req, res) {
     if (rawInputs.mode === 'analyze') {
       return await handleAnalyze(res, userId, rawInputs);
     }
+    if (rawInputs.mode === 'analyze_chat') {
+      return await handleAnalyzeChat(res, userId, rawInputs);
+    }
     if (rawInputs.mode === 'refine') {
       return await handleRefine(res, userId, rawInputs);
     }
@@ -974,6 +977,157 @@ async function handleAnalyze(res, userId, rawInputs) {
     usage: claudeData.usage || null,
     generated_at: new Date().toISOString(),
   });
+}
+
+// Follow-up Q&A on a delivered analysis (v3.5.3). Rides the same Anthropic
+// prompt cache as `analyze` (system-prompt-analyze.md + library block at
+// the same cache_control breakpoint) so per-turn input cost on the cached
+// prefix stays at ~10% of cold rate. The cached SYSTEM_PROMPT_ANALYZE
+// describes both modes via its TWO REQUEST TYPES section; this handler
+// just builds a slimmed dynText (skipping verbatim/summarized history —
+// the original analysis already synthesized those) and ends with a
+// "FOLLOW-UP QUESTION" trailer instead of the JSON trailer so Claude
+// flips to free-form output.
+async function handleAnalyzeChat(res, userId, rawInputs) {
+  var requestedModel = (rawInputs && rawInputs.model) || null;
+  var model = resolveModel(requestedModel, 'analyze');
+  if (requestedModel && requestedModel !== model) {
+    console.warn('generate-plan/analyze_chat: model fallback', { requested: requestedModel, resolved: model });
+  }
+
+  const original = rawInputs && rawInputs.original_analysis;
+  if (!original || typeof original !== 'object') {
+    return jsonError(res, 400, 'Missing original_analysis');
+  }
+  const question = (typeof rawInputs.question === 'string' ? rawInputs.question.trim() : '').slice(0, 1000);
+  if (!question) return jsonError(res, 400, 'Empty question');
+
+  const qaHistoryRaw = Array.isArray(rawInputs.qa_history) ? rawInputs.qa_history : [];
+  const qaHistory = [];
+  for (let i = 0; i < qaHistoryRaw.length && qaHistory.length < 20; i++) {
+    const m = qaHistoryRaw[i];
+    if (!m || (m.role !== 'user' && m.role !== 'assistant')) continue;
+    if (typeof m.content !== 'string' || !m.content) continue;
+    qaHistory.push({ role: m.role, content: m.content.slice(0, 4000) });
+  }
+
+  const historyWeeks = clampInt(rawInputs.history_weeks, MIN_HISTORY_WEEKS, MAX_HISTORY_WEEKS, DEFAULT_HISTORY_WEEKS);
+
+  const t0 = Date.now();
+  const [activePlan, history, exercises, coachHistory, coachingProfile] = await Promise.all([
+    fetchActivePlan(userId),
+    fetchRecentWorkouts(userId, historyWeeks),
+    fetchExerciseLibrary(userId),
+    fetchRecentCoachHistory(userId, 2),
+    fetchCoachingProfile(userId),
+  ]);
+  console.log('[generate-plan:analyze_chat] data fetch:', Date.now() - t0, 'ms', '· history_weeks:', historyWeeks, '· qa_turns:', qaHistory.length, '· coach_msgs:', coachHistory.length);
+
+  const t1 = Date.now();
+  const userMessage = buildAnalyzeChatUserMessage({
+    activePlan, history, exercises, coachHistory, coachingProfile,
+    historyWeeks, original, qaHistory, question,
+  });
+  console.log('[generate-plan:analyze_chat] prompt build:', Date.now() - t1, 'ms');
+
+  const t2 = Date.now();
+  const claudeAbort = new AbortController();
+  const claudeTimeout = setTimeout(() => claudeAbort.abort(), 55000);
+  let claudeRes;
+  try {
+    claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: model,
+        max_tokens: 600,  // conversational follow-ups are short by design
+        ...(modelSupportsTemperature(model) ? { temperature: TEMPERATURE } : {}),
+        system: [{
+          type: 'text',
+          text: SYSTEM_PROMPT_ANALYZE,
+          cache_control: { type: 'ephemeral', ttl: '1h' },
+        }],
+        messages: [{ role: 'user', content: userMessage }],
+      }),
+      signal: claudeAbort.signal,
+    });
+  } catch (err) {
+    clearTimeout(claudeTimeout);
+    if (err && err.name === 'AbortError') {
+      console.error('[generate-plan:analyze_chat] TIMEOUT after', Date.now() - t2, 'ms');
+      return jsonError(res, 504, 'AI service timed out. Try again.');
+    }
+    throw err;
+  }
+  clearTimeout(claudeTimeout);
+
+  if (!claudeRes.ok) {
+    const errBody = await claudeRes.text();
+    console.error('[generate-plan:analyze_chat] Claude API error', claudeRes.status, errBody);
+    return jsonError(res, 502, 'AI service unavailable', { detail: errBody });
+  }
+
+  const claudeData = await claudeRes.json();
+  console.log('[generate-plan:analyze_chat] claude call:', Date.now() - t2, 'ms · usage:', JSON.stringify(claudeData.usage || {}));
+
+  const rawText = claudeData.content && claudeData.content[0] && claudeData.content[0].text;
+  if (!rawText) return jsonError(res, 422, 'No text in analyze_chat response', { raw: claudeData });
+
+  return res.status(200).json({
+    reply: rawText.trim(),
+    model: model,
+    usage: claudeData.usage || null,
+    generated_at: new Date().toISOString(),
+  });
+}
+
+function buildAnalyzeChatUserMessage({ activePlan, history, exercises, coachHistory, coachingProfile, historyWeeks, original, qaHistory, question }) {
+  const content = [];
+
+  // Same cache breakpoint as analyze: library block first, identical
+  // content + cache_control. Keeps the analyze cache hot across both
+  // modes — initial analyze writes, follow-ups ride.
+  content.push({
+    type: 'text',
+    text: formatExerciseLibrary(exercises),
+    cache_control: { type: 'ephemeral', ttl: '1h' },
+  });
+
+  let dynText = '';
+  dynText += formatCoachingProfile(coachingProfile);
+  if (activePlan) dynText += formatCurrentPlan(activePlan);
+  // Volume-by-muscle is the most-likely follow-up topic given v3.5.x; keep
+  // it present and cheap. Skip verbatim + summarized history -- the
+  // ORIGINAL ANALYSIS below already synthesized those.
+  dynText += formatVolumeByMuscleGroup(history, historyWeeks);
+  dynText += formatCoachHistory(coachHistory);
+
+  // The four-section analysis the client just received. Sonnet can cite
+  // its own prior phrasing back to the user without the user having to
+  // restate it.
+  dynText += 'ORIGINAL ANALYSIS (just delivered to the client):\n';
+  if (original.trends) dynText += `TRENDS: ${original.trends}\n\n`;
+  if (original.progressing) dynText += `PROGRESSING: ${original.progressing}\n\n`;
+  if (original.concerns) dynText += `CONCERNS: ${original.concerns}\n\n`;
+  if (original.next_week) dynText += `NEXT WEEK FOCUS: ${original.next_week}\n\n`;
+
+  if (qaHistory.length) {
+    dynText += 'PRIOR FOLLOW-UPS (this conversation, in order):\n';
+    for (const m of qaHistory) {
+      const who = m.role === 'user' ? 'You' : 'Coach';
+      dynText += `${who}: ${m.content}\n\n`;
+    }
+  }
+
+  dynText += `FOLLOW-UP QUESTION:\n${question}\n\n`;
+  dynText += 'Answer conversationally — no JSON, no four-section structure, no markdown fences. Plain text. 2-4 sentences typically; longer only if the question demands depth. Reference specific numbers and exercise names when relevant.\n';
+
+  content.push({ type: 'text', text: dynText });
+  return content;
 }
 
 async function buildAnalyzeUserMessage({ activePlan, history, exercises, photos, historyWeeks, verbatimWeeks, notes, coachHistory, coachingProfile }) {
