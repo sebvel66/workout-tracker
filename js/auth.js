@@ -163,6 +163,10 @@ function applySession(session) {
     photosSignedUrls = {};
     coachingProfile = null;
     if (typeof resetCoachForSignOut === 'function') resetCoachForSignOut();
+    // Reset bottom-tab state so the next sign-in lands on Workout, not
+    // whatever tab the previous session left active.
+    document.body.removeAttribute('data-view');
+    if (typeof activeView !== 'undefined') activeView = 'workout';
     document.body.classList.add('unauthed');
   }
 }

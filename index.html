@@ -171,7 +171,11 @@ html, body {
 
 .workout-container {
   padding: 16px;
-  padding-bottom: calc(90px + var(--safe-bottom));
+  /* Clear: bottom tab bar (60px) + summary bar (~60px above the tab bar
+   * when an active session is running) + ~30px breathing. v3.6.0 added
+   * the tab bar; pre-v3.6.0 this was 90px when only the summary bar
+   * needed clearance. */
+  padding-bottom: calc(150px + var(--safe-bottom));
 }
 
 .day-header { margin-bottom: 20px; }
@@ -575,7 +579,14 @@ html, body {
 .import-zone-icon { font-size: 32px; margin-bottom: 8px; }
 .import-zone-text { font-size: 14px; color: var(--text2); }
 
-.empty-state { text-align: center; padding: 60px 20px; }
+.empty-state {
+  text-align: center;
+  padding: 60px 20px;
+  /* Clear the bottom tab bar (60px) + safe-area + breathing. Summary
+   * bar is hidden in no-plan state so we only need to clear the tab
+   * bar itself, not the summary bar. */
+  padding-bottom: calc(90px + var(--safe-bottom, 0px));
+}
 .empty-state-icon { font-size: 48px; margin-bottom: 16px; }
 .empty-state h3 { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
 .empty-state p { font-size: 14px; color: var(--text2); line-height: 1.6; }
@@ -722,7 +733,9 @@ body.unauthed .auth-gate { display: flex; }
 body.unauthed .header,
 body.unauthed .workout-container,
 body.unauthed .summary-bar,
-body.unauthed #emptyState { display: none !important; }
+body.unauthed #emptyState,
+body.unauthed #bodyView,
+body.unauthed #logView { display: none !important; }
 
 .auth-card {
   width: 100%;
