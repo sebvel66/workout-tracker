@@ -1291,6 +1291,99 @@ body.unauthed #emptyState { display: none !important; }
  * Claude's reasoning. Left accent border marks them as actionable (vs. the
  * informational analysis sections above). Accept is opt-in per field; user
  * ticks boxes + clicks "Apply selected" in the footer. */
+/* Per-exercise modal tabs + Form Notes section (v3.5.8). Recent tab
+ * keeps the existing history rendering; Form tab renders saved AI
+ * coach notes (with regenerate) + user's own notes (autosaved). */
+.ex-modal-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+.ex-modal-tab {
+  padding: 8px 14px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text2);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+}
+.ex-modal-tab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+.ex-modal-pane {
+  padding: 12px 0;
+}
+.form-notes-section {
+  margin: 14px;
+  padding: 12px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.form-notes-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.form-notes-section-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text2);
+  font-weight: 600;
+}
+.form-notes-regen-btn {
+  padding: 5px 10px;
+  background: var(--accent);
+  color: var(--bg);
+  border: none;
+  border-radius: 6px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.form-notes-regen-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.form-notes-text {
+  font-size: 14px;
+  color: var(--text);
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+.form-notes-empty {
+  font-size: 13px;
+  color: var(--text2);
+  font-style: italic;
+  line-height: 1.4;
+}
+.form-notes-meta {
+  font-size: 10px;
+  color: var(--text2);
+  margin-top: 6px;
+  font-style: italic;
+}
+.form-notes-input {
+  width: 100%;
+  font-family: inherit;
+  font-size: 14px;
+  padding: 8px 10px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  resize: vertical;
+  min-height: 80px;
+  box-sizing: border-box;
+}
+
 /* Plan-volume summary (v3.5.5). Color-coded chips at the top of the
  * generate review showing per-muscle weekly set count vs the phase
  * target band. Lets the user spot deficits / excesses before scrolling

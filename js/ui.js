@@ -1771,26 +1771,40 @@ function renderStartPathDayList() {
 }
 
 // ---- Per-exercise recent history modal ----
+// Per-exercise modal with two tabs: Recent (prior sessions) and Form
+// (AI coach notes + user's own notes, persisted in exercise_form_notes).
+// State is module-scoped so tab switches don't trigger re-fetches.
+var exModalState = { tab: 'recent', exerciseRow: null, exerciseName: null, sessionsHtml: '', formNotes: null, formGenerating: false };
+
 async function openExerciseHistory(exerciseName) {
   var title = exerciseName || 'Recent';
   document.getElementById('exHistoryTitle').textContent = title;
   var body = document.getElementById('exHistoryBody');
   body.innerHTML = '<div class="history-empty">Loading…</div>';
   document.getElementById('exHistoryOverlay').classList.add('show');
+  exModalState = { tab: 'recent', exerciseRow: null, exerciseName: exerciseName, sessionsHtml: '', formNotes: null, formGenerating: false };
 
   var row = resolveLibraryRow(exerciseName);
   if (!row) {
-    body.innerHTML = '<div class="history-empty">No history for this exercise yet.</div>';
+    body.innerHTML = '<div class="history-empty">No library entry for this exercise — form notes and history unavailable.</div>';
     return;
   }
+  exModalState.exerciseRow = row;
 
   try {
-    var res = await sb.from('sets')
-      .select('id, weight, reps, rpe, set_order, done, note, duration_seconds, distance, workout_id, workouts(performed_at, plan_id, day_index, title, location_id)')
-      .eq('user_id', userId)
-      .eq('exercise_id', row.id)
-      .eq('done', true)
-      .limit(200);
+    // Parallel: prior sessions (the existing query) + form notes for this
+    // exercise. Form notes are usually a single row or null.
+    var parallelRes = await Promise.all([
+      sb.from('sets')
+        .select('id, weight, reps, rpe, set_order, done, note, duration_seconds, distance, workout_id, workouts(performed_at, plan_id, day_index, title, location_id)')
+        .eq('user_id', userId)
+        .eq('exercise_id', row.id)
+        .eq('done', true)
+        .limit(200),
+      loadFormNotes(row.id),
+    ]);
+    var res = parallelRes[0];
+    exModalState.formNotes = parallelRes[1];
     if (res.error) throw res.error;
     var sets = (res.data || []).filter(function(s) { return s.workouts; });
 
@@ -1825,7 +1839,8 @@ async function openExerciseHistory(exerciseName) {
     var sessions = order.slice(0, 5).map(function(id) { return byWorkout[id]; });
 
     if (!sessions.length) {
-      body.innerHTML = '<div class="history-empty">No prior sessions logged for this exercise.</div>';
+      exModalState.sessionsHtml = '<div class="history-empty">No prior sessions logged for this exercise.</div>';
+      renderExerciseModal();
       return;
     }
 
@@ -1898,10 +1913,122 @@ async function openExerciseHistory(exerciseName) {
       if (noteText) h += '<div class="ex-history-note">' + escapeHtml(noteText) + '</div>';
       h += '</div>';
     }
-    body.innerHTML = h;
+    exModalState.sessionsHtml = h;
+    renderExerciseModal();
   } catch(err) {
     console.error('openExerciseHistory error:', err);
-    body.innerHTML = '<div class="history-empty">Couldn\'t load history for this exercise.</div>';
+    exModalState.sessionsHtml = '<div class="history-empty">Couldn\'t load history for this exercise.</div>';
+    renderExerciseModal();
+  }
+}
+
+// Tab-aware render: tab strip + active section. Recent uses the
+// pre-rendered sessions HTML built in openExerciseHistory; Form
+// renders the AI Coach Notes + My Notes sections from
+// exModalState.formNotes (loaded in parallel on open).
+function renderExerciseModal() {
+  var body = document.getElementById('exHistoryBody');
+  if (!body) return;
+  var tab = exModalState.tab || 'recent';
+  var h = '<div class="ex-modal-tabs">';
+  h += '<button type="button" class="ex-modal-tab' + (tab === 'recent' ? ' active' : '') + '" data-ex-tab="recent">Recent</button>';
+  h += '<button type="button" class="ex-modal-tab' + (tab === 'form' ? ' active' : '') + '" data-ex-tab="form">Form</button>';
+  h += '</div>';
+  if (tab === 'recent') {
+    h += '<div class="ex-modal-pane">' + (exModalState.sessionsHtml || '<div class="history-empty">No prior sessions logged for this exercise.</div>') + '</div>';
+  } else {
+    h += '<div class="ex-modal-pane">' + renderFormNotesPane() + '</div>';
+  }
+  body.innerHTML = h;
+}
+
+function renderFormNotesPane() {
+  var fn = exModalState.formNotes || {};
+  var aiNote = fn.ai_note || '';
+  var aiAt = fn.ai_generated_at || '';
+  var userNote = fn.user_note || '';
+  var generating = !!exModalState.formGenerating;
+
+  var aiTimestamp = '';
+  if (aiAt) {
+    try {
+      var d = new Date(aiAt);
+      aiTimestamp = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    } catch(_) { aiTimestamp = ''; }
+  }
+
+  var h = '';
+  // AI Coach Notes section
+  h += '<div class="form-notes-section">';
+  h += '<div class="form-notes-section-header">';
+  h += '<span class="form-notes-section-label">AI Coach Notes</span>';
+  h += '<button type="button" class="form-notes-regen-btn" id="btnFormNotesRegen"' + (generating ? ' disabled' : '') + '>' +
+       (generating ? 'Generating…' : (aiNote ? 'Regenerate' : 'Ask the coach')) + '</button>';
+  h += '</div>';
+  if (aiNote) {
+    h += '<div class="form-notes-text">' + escapeHtml(aiNote) + '</div>';
+    if (aiTimestamp) {
+      h += '<div class="form-notes-meta">Last generated: ' + escapeHtml(aiTimestamp) + '</div>';
+    }
+  } else if (generating) {
+    h += '<div class="form-notes-text" style="opacity:0.6">…</div>';
+  } else {
+    h += '<div class="form-notes-empty">No AI notes yet — tap "Ask the coach" for 3-4 sentences of form cues. Saved per exercise so you can come back to them anytime.</div>';
+  }
+  h += '</div>';
+  // User notes section
+  h += '<div class="form-notes-section">';
+  h += '<div class="form-notes-section-header">';
+  h += '<span class="form-notes-section-label">My Notes</span>';
+  h += '</div>';
+  h += '<textarea class="form-notes-input" id="formNotesUserInput" rows="4" placeholder="Cues that work for you, weight progression notes, equipment quirks at this gym, anything you want to remember next time">' + escapeHtml(userNote) + '</textarea>';
+  h += '<div class="form-notes-meta" id="formNotesUserSaveStatus" style="visibility:hidden;">Saved</div>';
+  h += '</div>';
+  return h;
+}
+
+async function onFormNotesRegen() {
+  if (exModalState.formGenerating || !exModalState.exerciseRow) return;
+  exModalState.formGenerating = true;
+  renderExerciseModal();
+  try {
+    var reply = await generateAiFormNote(exModalState.exerciseRow);
+    await saveAiFormNote(exModalState.exerciseRow.id, reply);
+    exModalState.formNotes = exModalState.formNotes || {};
+    exModalState.formNotes.ai_note = reply;
+    exModalState.formNotes.ai_generated_at = new Date().toISOString();
+  } catch (err) {
+    console.error('onFormNotesRegen error:', err);
+    showToast('Couldn\'t generate notes: ' + (err.message || 'unknown'), null);
+  } finally {
+    exModalState.formGenerating = false;
+    renderExerciseModal();
+  }
+}
+
+async function onFormNotesUserBlur(textarea) {
+  if (!exModalState.exerciseRow || !textarea) return;
+  var text = String(textarea.value || '').trim();
+  // No-op if value unchanged from what's already in state.
+  var currentValue = (exModalState.formNotes && exModalState.formNotes.user_note) || '';
+  if (text === currentValue) return;
+  var status = document.getElementById('formNotesUserSaveStatus');
+  if (status) { status.style.visibility = 'visible'; status.textContent = 'Saving…'; }
+  try {
+    await saveUserFormNote(exModalState.exerciseRow.id, text);
+    exModalState.formNotes = exModalState.formNotes || {};
+    exModalState.formNotes.user_note = text;
+    if (status) {
+      status.textContent = 'Saved';
+      setTimeout(function() {
+        var s2 = document.getElementById('formNotesUserSaveStatus');
+        if (s2) s2.style.visibility = 'hidden';
+      }, 1500);
+    }
+  } catch (err) {
+    console.error('onFormNotesUserBlur error:', err);
+    if (status) status.textContent = 'Save failed';
+    showToast('Couldn\'t save note: ' + (err.message || 'unknown'), null);
   }
 }
 
@@ -7339,6 +7466,30 @@ document.getElementById('btnExHistoryClose').addEventListener('click', closeExer
 document.getElementById('exHistoryOverlay').addEventListener('click', function(e) {
   if (e.target === this) closeExerciseHistory();
 });
+// Tab + form-notes interactions inside the exercise modal. Single
+// delegator on the body since the contents re-render frequently.
+document.getElementById('exHistoryBody').addEventListener('click', function(e) {
+  var tabBtn = e.target.closest && e.target.closest('[data-ex-tab]');
+  if (tabBtn) {
+    var t = tabBtn.getAttribute('data-ex-tab');
+    if (t && t !== exModalState.tab) {
+      exModalState.tab = t;
+      renderExerciseModal();
+    }
+    return;
+  }
+  if (e.target.closest && e.target.closest('#btnFormNotesRegen')) {
+    onFormNotesRegen();
+    return;
+  }
+});
+// Autosave user notes on blur (textarea is re-mounted on each render so
+// listeners attach via delegation, not directly).
+document.getElementById('exHistoryBody').addEventListener('blur', function(e) {
+  if (e.target && e.target.id === 'formNotesUserInput') {
+    onFormNotesUserBlur(e.target);
+  }
+}, true);  // useCapture: blur doesn't bubble in older specs
 document.getElementById('btnHistoryBack').addEventListener('click', backToHistoryWeek);
 document.getElementById('historyOverlay').addEventListener('click', function(e) {
   if (e.target === this) closeHistory();

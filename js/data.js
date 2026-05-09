@@ -4477,6 +4477,98 @@ function getLiveContext() {
   return lines.join('\n');
 }
 
+// ---- Exercise form notes (v3.5.8) ----
+// One row per (user_id, exercise_id) in exercise_form_notes. Stores BOTH
+// the user's own free-text notes (user_note) and an AI-generated form-
+// coaching summary (ai_note + ai_generated_at). Modal renders whichever
+// of the two is present; either or both can be empty.
+
+async function loadFormNotes(exerciseId) {
+  if (!userId || !exerciseId) return null;
+  try {
+    var res = await sb.from('exercise_form_notes')
+      .select('user_note, ai_note, ai_generated_at')
+      .eq('user_id', userId)
+      .eq('exercise_id', exerciseId)
+      .maybeSingle();
+    if (res.error) {
+      console.warn('loadFormNotes error:', res.error.message);
+      return null;
+    }
+    return res.data || null;
+  } catch (err) {
+    console.warn('loadFormNotes exception:', err);
+    return null;
+  }
+}
+
+// Upsert path: insert if (user_id, exercise_id) row doesn't exist, else
+// update the user_note column only. Touches updated_at on either path.
+// Empty string is preserved (user explicitly cleared their note);
+// callers pass null only when they want to keep the existing value.
+async function saveUserFormNote(exerciseId, text) {
+  if (!userId || !exerciseId) throw new Error('Not signed in');
+  var payload = {
+    user_id: userId,
+    exercise_id: exerciseId,
+    user_note: (text == null) ? null : String(text),
+    updated_at: new Date().toISOString(),
+  };
+  var res = await sb.from('exercise_form_notes')
+    .upsert(payload, { onConflict: 'user_id,exercise_id' });
+  if (res.error) throw new Error(res.error.message);
+}
+
+async function saveAiFormNote(exerciseId, text) {
+  if (!userId || !exerciseId) throw new Error('Not signed in');
+  var payload = {
+    user_id: userId,
+    exercise_id: exerciseId,
+    ai_note: (text == null) ? null : String(text),
+    ai_generated_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  var res = await sb.from('exercise_form_notes')
+    .upsert(payload, { onConflict: 'user_id,exercise_id' });
+  if (res.error) throw new Error(res.error.message);
+}
+
+// Fire a focused coach-chat call asking for 3-4 sentences of form cues
+// on this specific exercise. Reuses the existing /api/coach-chat endpoint
+// (Haiku, ~1-2s warm) so no new API surface; the coach already has form
+// cues as part of its remit per COACH_SYSTEM_PROMPT. The exercise's
+// library row provides equipment / muscle_group / weight_mode for the
+// prompt — concrete signals about how to think about loading + ROM.
+async function generateAiFormNote(exerciseRow) {
+  if (!userId) throw new Error('Not signed in');
+  if (!exerciseRow || !exerciseRow.name) throw new Error('Exercise not found');
+  var sessionRes = await sb.auth.getSession();
+  var token = sessionRes.data && sessionRes.data.session && sessionRes.data.session.access_token;
+  if (!token) throw new Error('Not signed in');
+  var prompt = 'Form notes for "' + exerciseRow.name + '"' +
+    ' (equipment: ' + (exerciseRow.equipment || 'unknown') +
+    ', primary muscle: ' + (exerciseRow.muscle_group || '?') +
+    ', weight mode: ' + (exerciseRow.weight_mode || 'total') +
+    '). Give 3-4 sentences of the most important form cues — setup / bracing,' +
+    ' joint angles, ROM, common errors. Direct and actionable. Plain text,' +
+    ' no markdown headers or bullet points.';
+  var res = await fetch('/api/coach-chat', {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: modelForCoach(),
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  });
+  if (!res.ok) {
+    var errBody = await res.json().catch(function() { return null; });
+    throw new Error((errBody && errBody.error) || ('HTTP ' + res.status));
+  }
+  var body = await res.json();
+  if (!body || !body.reply) throw new Error('Empty reply');
+  return String(body.reply).trim();
+}
+
 function handleImport(event) {
   var file = event.target.files[0]; if (!file) return;
   var reader = new FileReader();
