@@ -436,6 +436,61 @@ function formatCoachingProfile(profile) {
   return out;
 }
 
+// Saved templates (v3.5.6). Compact summary keyed by name + day list with
+// exercise names only — no per-exercise sets/reps detail (the user can
+// share specifics in chat if needed). Soft-cap at 10 most-recent shown;
+// older ones surface as "(N more — ask to see them)" so the prompt stays
+// bounded regardless of how many templates the user has saved. Mirrors
+// the helpers in api/coach-chat.js.
+async function fetchUserTemplates(userId) {
+  try {
+    const res = await sbFetch(
+      `/plans?user_id=eq.${userId}&is_template=eq.true&select=id,template_name,data,created_at&order=created_at.desc&limit=20`
+    );
+    if (!res.ok) return [];
+    return await res.json();
+  } catch (err) {
+    console.warn('[user_templates] fetch failed:', err && err.message);
+    return [];
+  }
+}
+
+function formatUserTemplates(templates) {
+  if (!Array.isArray(templates) || !templates.length) return '';
+  const cap = 10;
+  const shown = templates.slice(0, cap);
+  const overflow = templates.length - shown.length;
+
+  let out = `SAVED TEMPLATES (${templates.length} total — exercise names only; ask the client for sets/reps if you need them)\n\n`;
+  for (const t of shown) {
+    const name = (t.template_name || (t.data && t.data.title) || '(untitled)').toString().slice(0, 80);
+    const data = t.data || {};
+    const days = Array.isArray(data.days) ? data.days : [];
+    out += `[Template] "${name}" — ${days.length} day${days.length === 1 ? '' : 's'}\n`;
+    for (let di = 0; di < days.length; di++) {
+      const day = days[di] || {};
+      const dayName = (day.name || `Day ${di + 1}`).toString().slice(0, 60);
+      const exNames = [];
+      const entries = Array.isArray(day.exercises) ? day.exercises : [];
+      for (const e of entries) {
+        if (e && e.superset === true && Array.isArray(e.exercises)) {
+          for (const m of e.exercises) {
+            if (m && m.name) exNames.push(m.name);
+          }
+        } else if (e && e.name) {
+          exNames.push(e.name);
+        }
+      }
+      out += `  Day ${di + 1} - ${dayName}: ${exNames.length ? exNames.join(', ') : '(no exercises)'}\n`;
+    }
+    out += '\n';
+  }
+  if (overflow > 0) {
+    out += `(${overflow} more template${overflow === 1 ? '' : 's'} not shown — ask the client to share specific ones if relevant.)\n\n`;
+  }
+  return out;
+}
+
 // Coach history window: last `weeksBack` complete prior weeks (Sun-anchored)
 // + current week to date. Same shape as fetchRecentWorkouts so the prompt
 // blocks line up temporally. Failure is NON-fatal — return [] so the plan
@@ -886,7 +941,7 @@ async function handleAnalyze(res, userId, rawInputs) {
   const includePhotos = rawInputs.include_photos === false ? false : true;
 
   const t0 = Date.now();
-  const [activePlan, history, exercises, photos, coachHistory, coachingProfile] = await Promise.all([
+  const [activePlan, history, exercises, photos, coachHistory, coachingProfile, userTemplates] = await Promise.all([
     fetchActivePlan(userId),
     fetchRecentWorkouts(userId, historyWeeks),
     fetchExerciseLibrary(userId),
@@ -895,15 +950,16 @@ async function handleAnalyze(res, userId, rawInputs) {
       : Promise.resolve({ goal: null, progress: [] }),
     fetchRecentCoachHistory(userId, 2),
     fetchCoachingProfile(userId),
+    fetchUserTemplates(userId),
   ]);
-  console.log('[generate-plan:analyze] data fetch:', Date.now() - t0, 'ms', '· history_weeks:', historyWeeks, '· include_photos:', includePhotos, '· progress_photos:', (photos.progress || []).length, '· coach_msgs:', coachHistory.length, '· profile:', coachingProfile ? 'yes' : 'no');
+  console.log('[generate-plan:analyze] data fetch:', Date.now() - t0, 'ms', '· history_weeks:', historyWeeks, '· include_photos:', includePhotos, '· progress_photos:', (photos.progress || []).length, '· coach_msgs:', coachHistory.length, '· profile:', coachingProfile ? 'yes' : 'no', '· templates:', userTemplates.length);
 
   if (!history.length) {
     return jsonError(res, 400, `No workouts in the last ${historyWeeks} weeks. Try a wider history window or generate a fresh plan first.`);
   }
 
   const t1 = Date.now();
-  const userMessage = await buildAnalyzeUserMessage({ activePlan, history, exercises, photos, historyWeeks, verbatimWeeks, notes, coachHistory, coachingProfile });
+  const userMessage = await buildAnalyzeUserMessage({ activePlan, history, exercises, photos, historyWeeks, verbatimWeeks, notes, coachHistory, coachingProfile, userTemplates });
   console.log('[generate-plan:analyze] prompt build:', Date.now() - t1, 'ms');
 
   const t2 = Date.now();
@@ -1014,18 +1070,19 @@ async function handleAnalyzeChat(res, userId, rawInputs) {
   const historyWeeks = clampInt(rawInputs.history_weeks, MIN_HISTORY_WEEKS, MAX_HISTORY_WEEKS, DEFAULT_HISTORY_WEEKS);
 
   const t0 = Date.now();
-  const [activePlan, history, exercises, coachHistory, coachingProfile] = await Promise.all([
+  const [activePlan, history, exercises, coachHistory, coachingProfile, userTemplates] = await Promise.all([
     fetchActivePlan(userId),
     fetchRecentWorkouts(userId, historyWeeks),
     fetchExerciseLibrary(userId),
     fetchRecentCoachHistory(userId, 2),
     fetchCoachingProfile(userId),
+    fetchUserTemplates(userId),
   ]);
-  console.log('[generate-plan:analyze_chat] data fetch:', Date.now() - t0, 'ms', '· history_weeks:', historyWeeks, '· qa_turns:', qaHistory.length, '· coach_msgs:', coachHistory.length);
+  console.log('[generate-plan:analyze_chat] data fetch:', Date.now() - t0, 'ms', '· history_weeks:', historyWeeks, '· qa_turns:', qaHistory.length, '· coach_msgs:', coachHistory.length, '· templates:', userTemplates.length);
 
   const t1 = Date.now();
   const userMessage = buildAnalyzeChatUserMessage({
-    activePlan, history, exercises, coachHistory, coachingProfile,
+    activePlan, history, exercises, coachHistory, coachingProfile, userTemplates,
     historyWeeks, original, qaHistory, question,
   });
   console.log('[generate-plan:analyze_chat] prompt build:', Date.now() - t1, 'ms');
@@ -1085,7 +1142,7 @@ async function handleAnalyzeChat(res, userId, rawInputs) {
   });
 }
 
-function buildAnalyzeChatUserMessage({ activePlan, history, exercises, coachHistory, coachingProfile, historyWeeks, original, qaHistory, question }) {
+function buildAnalyzeChatUserMessage({ activePlan, history, exercises, coachHistory, coachingProfile, userTemplates, historyWeeks, original, qaHistory, question }) {
   const content = [];
 
   // Same cache breakpoint as analyze: library block first, identical
@@ -1105,6 +1162,7 @@ function buildAnalyzeChatUserMessage({ activePlan, history, exercises, coachHist
   // ORIGINAL ANALYSIS below already synthesized those.
   dynText += formatVolumeByMuscleGroup(history, historyWeeks);
   dynText += formatCoachHistory(coachHistory);
+  dynText += formatUserTemplates(userTemplates);
 
   // The four-section analysis the client just received. Sonnet can cite
   // its own prior phrasing back to the user without the user having to
@@ -1130,7 +1188,7 @@ function buildAnalyzeChatUserMessage({ activePlan, history, exercises, coachHist
   return content;
 }
 
-async function buildAnalyzeUserMessage({ activePlan, history, exercises, photos, historyWeeks, verbatimWeeks, notes, coachHistory, coachingProfile }) {
+async function buildAnalyzeUserMessage({ activePlan, history, exercises, photos, historyWeeks, verbatimWeeks, notes, coachHistory, coachingProfile, userTemplates }) {
   const content = [];
   const { verbatim, summarized } = splitHistoryByRecency(history, verbatimWeeks);
 
@@ -1151,6 +1209,7 @@ async function buildAnalyzeUserMessage({ activePlan, history, exercises, photos,
   dynText += formatSummarizedHistory(summarized);
   dynText += formatVolumeByMuscleGroup(history, historyWeeks);
   dynText += formatCoachHistory(coachHistory);
+  dynText += formatUserTemplates(userTemplates);
   dynText += formatAnalyzeInputs({ historyWeeks, notes });
   dynText += '\nProduce the analysis per your instructions. Return ONLY the JSON object. No preamble, no markdown fences.\n';
   content.push({ type: 'text', text: dynText });

@@ -65,7 +65,10 @@ PROGRESSION RULES (from the client's coaching agreement):
 - The client tends to drop end-of-session accessories. If they ask about skipping, acknowledge the pattern but make a clear recommendation.
 
 COACHING CONTINUITY:
-The first user message of each conversation may include a RECENT COACHING CONVERSATIONS section — the last two weeks plus current week of prior coaching interactions (chat, exercise swaps, plan generation). Reference past conversations naturally when relevant: "As we discussed Tuesday..." or "You mentioned knee pain last week — how is that feeling now?" If the client asks something you've already answered recently, acknowledge your prior advice rather than restarting from scratch. This continuity is what makes you a coach instead of a stateless chatbot. Don't fabricate references to conversations that aren't in the history.`;
+The first user message of each conversation may include a RECENT COACHING CONVERSATIONS section — the last two weeks plus current week of prior coaching interactions (chat, exercise swaps, plan generation). Reference past conversations naturally when relevant: "As we discussed Tuesday..." or "You mentioned knee pain last week — how is that feeling now?" If the client asks something you've already answered recently, acknowledge your prior advice rather than restarting from scratch. This continuity is what makes you a coach instead of a stateless chatbot. Don't fabricate references to conversations that aren't in the history.
+
+SAVED TEMPLATES:
+The first user message may also include a SAVED TEMPLATES section — compact summaries of reusable plan structures the client has saved (template name + per-day exercise names; no sets/reps detail). Reference templates by name when relevant: "Your 'Push Pull Legs' template fits — it covers chest twice a week", or "Your 'Upper Lower' template has thin calf work; bump it." If the client asks for sets/reps detail on a specific template, tell them you only have exercise names and ask them to paste specifics or check the Templates modal. Don't fabricate exercises that aren't listed. When the section is absent, skip template references entirely.`;
 
 export default async function handler(req, res) {
   // Warmup branch — keep a Fluid Compute instance hot without touching Anthropic.
@@ -121,11 +124,12 @@ export default async function handler(req, res) {
     // "who is this client" first, history before the "Please acknowledge"
     // trailer so the order is profile → context → history → ack.
     const t_side = Date.now();
-    const [coachHistory, coachingProfile] = await Promise.all([
+    const [coachHistory, coachingProfile, userTemplates] = await Promise.all([
       fetchRecentCoachHistory(userId, 2),
       fetchCoachingProfile(userId),
+      fetchUserTemplates(userId),
     ]);
-    console.log('[coach-chat] side fetches:', Date.now() - t_side, 'ms · msgs:', coachHistory.length, '· profile:', coachingProfile ? 'yes' : 'no');
+    console.log('[coach-chat] side fetches:', Date.now() - t_side, 'ms · msgs:', coachHistory.length, '· profile:', coachingProfile ? 'yes' : 'no', '· templates:', userTemplates.length);
 
     // Prepend CLIENT PROFILE to messages[0].content. formatCoachingProfile
     // always returns a non-empty string (either the profile block or a
@@ -135,20 +139,23 @@ export default async function handler(req, res) {
       messages[0].content = profileBlock + '\n' + messages[0].content;
     }
 
-    // Append coach history before the trailer. Failure of the
-    // side-channel fetch is non-fatal (formatCoachHistory returns ''
-    // on empty input), and we never block the chat call on it.
+    // Append coach history + templates before the trailer. Both side-channel
+    // fetches are non-fatal (formatters return '' on empty input). Order:
+    // history first (most relevant for continuity), templates after (more
+    // reference-y).
     const historyBlock = formatCoachHistory(coachHistory);
-    if (historyBlock) {
+    const templatesBlock = formatUserTemplates(userTemplates);
+    const append = [historyBlock, templatesBlock].filter(Boolean).join('\n\n');
+    if (append) {
       const trailer = '\n\nPlease acknowledge you have this context.';
       const idx = messages[0].content.lastIndexOf(trailer);
       if (idx > -1) {
         messages[0].content = messages[0].content.slice(0, idx)
-          + '\n\n' + historyBlock + trailer;
+          + '\n\n' + append + trailer;
       } else {
         // Frontend may have changed the trailer; append at end so the
-        // history is still in the prompt.
-        messages[0].content += '\n\n' + historyBlock;
+        // context is still in the prompt.
+        messages[0].content += '\n\n' + append;
       }
     }
 
@@ -305,6 +312,70 @@ function formatCoachingProfile(profile) {
     out += `SPECIAL INSTRUCTIONS: ${profile.special_instructions}\n\n`;
   }
 
+  return out;
+}
+
+// ---- Saved templates (v3.5.6) ----
+// Templates are plans rows with is_template=true, owned by the user. Coach
+// reads compact summaries (name + day list with exercise names, no sets/
+// reps detail) so it can answer "which template should I run?", "should
+// I retire X?", "blend these two." If the user wants per-exercise detail
+// (sets/reps), they paste it into chat — keeps the per-call token cost
+// bounded regardless of how many templates the user has saved. Soft-cap
+// at 10 most recent; older ones surface as "(N more — ask to see them)".
+
+async function fetchUserTemplates(userId) {
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/plans?user_id=eq.${userId}&is_template=eq.true&select=id,template_name,data,created_at&order=created_at.desc&limit=20`,
+      {
+        headers: {
+          apikey: SUPABASE_SERVICE_ROLE_KEY,
+          Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        },
+      }
+    );
+    if (!res.ok) return [];
+    return await res.json();
+  } catch (err) {
+    console.warn('[user_templates] fetch failed:', err && err.message);
+    return [];
+  }
+}
+
+function formatUserTemplates(templates) {
+  if (!Array.isArray(templates) || !templates.length) return '';
+  const cap = 10;
+  const shown = templates.slice(0, cap);
+  const overflow = templates.length - shown.length;
+
+  let out = `SAVED TEMPLATES (${templates.length} total — exercise names only; ask the client for sets/reps if you need them)\n\n`;
+  for (const t of shown) {
+    const name = (t.template_name || (t.data && t.data.title) || '(untitled)').toString().slice(0, 80);
+    const data = t.data || {};
+    const days = Array.isArray(data.days) ? data.days : [];
+    out += `[Template] "${name}" — ${days.length} day${days.length === 1 ? '' : 's'}\n`;
+    for (let di = 0; di < days.length; di++) {
+      const day = days[di] || {};
+      const dayName = (day.name || `Day ${di + 1}`).toString().slice(0, 60);
+      const exNames = [];
+      const entries = Array.isArray(day.exercises) ? day.exercises : [];
+      for (const e of entries) {
+        if (e && e.superset === true && Array.isArray(e.exercises)) {
+          for (const m of e.exercises) {
+            if (m && m.name) exNames.push(m.name);
+          }
+        } else if (e && e.name) {
+          exNames.push(e.name);
+        }
+      }
+      out += `  Day ${di + 1} - ${dayName}: ${exNames.length ? exNames.join(', ') : '(no exercises)'}\n`;
+    }
+    out += '\n';
+  }
+  if (overflow > 0) {
+    out += `(${overflow} more template${overflow === 1 ? '' : 's'} not shown — ask the client to share specific ones if relevant.)\n\n`;
+  }
   return out;
 }
 
