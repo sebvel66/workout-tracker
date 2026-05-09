@@ -2924,6 +2924,88 @@ function _historyDetailWorkoutId() {
   return t ? t.getAttribute('data-workout-id') : null;
 }
 
+// History edit: + Add Set (v3.6.3). Resolves the exercise_id from the
+// most recent populated set in the exercise (handles substitution mid-
+// workout — inherits the substitute's id). Carries forward weight/reps
+// (or duration_seconds/distance for cardio) from the same source row.
+// Inserts via historyAddSet, then patches historyDetails state so the
+// re-render shows the new row immediately.
+async function onHistoryAddSet(workoutId, ei) {
+  var detail = historyDetails && historyDetails[workoutId];
+  if (!detail || !detail.state) return;
+  var ek = 'ex_' + ei;
+  var exState = detail.state.exercises[ek];
+  if (!exState || !Array.isArray(exState.sets)) return;
+  var exerciseId = null;
+  var hint = {};
+  for (var i = exState.sets.length - 1; i >= 0; i--) {
+    var prev = exState.sets[i];
+    if (!prev) continue;
+    if (!exerciseId && prev.exerciseId) exerciseId = prev.exerciseId;
+    if (Object.keys(hint).length === 0) {
+      if (prev.duration_seconds != null) {
+        hint.duration_seconds = prev.duration_seconds;
+        if (prev.distance != null) hint.distance = prev.distance;
+      } else if (prev.weight != null || prev.reps != null) {
+        if (prev.weight != null) hint.weight = prev.weight;
+        if (prev.reps != null) hint.reps = prev.reps;
+      }
+    }
+    if (exerciseId && Object.keys(hint).length > 0) break;
+  }
+  if (!exerciseId) {
+    showToast('Cannot add set — no prior set on this exercise to inherit from', null);
+    return;
+  }
+  try {
+    var newRow = await historyAddSet(workoutId, ei, exerciseId, hint);
+    // Patch in-memory: index the new set at its new set_order. Mark
+    // isExtra:true so the × delete affordance renders on this row only
+    // (prescribed rows stay protected).
+    exState.sets[newRow.set_order] = {
+      setId: newRow.id,
+      weight: newRow.weight,
+      reps: newRow.reps,
+      duration_seconds: newRow.duration_seconds != null ? newRow.duration_seconds : null,
+      distance: newRow.distance != null ? newRow.distance : null,
+      done: false,
+      isExtra: true,
+      exerciseId: exerciseId,
+      setType: newRow.set_type || 'standard',
+      parentSetIdx: null,
+    };
+    invalidateHistoryCache();
+    renderHistoryDetail(detail);
+  } catch (err) {
+    console.error('onHistoryAddSet error:', err);
+    showToast("Couldn't add set: " + (err.message || 'unknown'), null);
+  }
+}
+
+// History edit: × delete on user-added sets (v3.6.3). Splices the row
+// from in-memory state and DELETEs the DB row. No confirm dialog —
+// matches the live-session behavior on extras (delete is reversible
+// only by re-adding; the historical context already implies caution).
+async function onHistoryDeleteSet(workoutId, ei, si) {
+  var detail = historyDetails && historyDetails[workoutId];
+  if (!detail || !detail.state) return;
+  var ek = 'ex_' + ei;
+  var exState = detail.state.exercises[ek];
+  if (!exState || !Array.isArray(exState.sets)) return;
+  var sl = exState.sets[si];
+  if (!sl || !sl.setId) return;
+  if (!sl.isExtra) return;  // safety: prescribed rows are not deletable
+  try {
+    await historyDeleteSet(sl.setId);
+    exState.sets.splice(si, 1);
+    invalidateHistoryCache();
+    renderHistoryDetail(detail);
+  } catch (err) {
+    console.error('onHistoryDeleteSet error:', err);
+    showToast("Couldn't delete set: " + (err.message || 'unknown'), null);
+  }
+}
+
 function onHistorySetCheckClick(btnEl) {
   var widCheck = _historyDetailWorkoutId();
   var ei = parseInt(btnEl.getAttribute('data-ei'), 10);
@@ -3089,7 +3171,18 @@ function renderHistoryExerciseCard(ei, exState, name, weightMode, prescribedSets
       histStdSetNum++;
       histLabelNum = histStdSetNum;
     }
-    h += renderSetRow('history', ei, si, sl, prescribed, (sl.weight_mode || weightMode), disabledAttr, prText, false, isCardioRow, histLabelNum);
+    // History-edit (v3.6.3): user-added isExtra rows get the × delete
+    // affordance so accidentally-added missing sets can be removed.
+    // Prescribed (non-extra) rows stay non-deletable — protects the
+    // historical record from accidental clicks.
+    var histDeletable = historyEditMode && !!sl.isExtra;
+    h += renderSetRow('history', ei, si, sl, prescribed, (sl.weight_mode || weightMode), disabledAttr, prText, histDeletable, isCardioRow, histLabelNum);
+  }
+  // History-edit "+ Add Set" affordance (v3.6.3). Inserts a new set at
+  // the next set_order for this exercise. Skipped on cardio to avoid
+  // confusion — cardio rows have a different shape; can be revisited.
+  if (historyEditMode && !isCardioRow) {
+    h += '<button class="add-set-btn" type="button" data-history-add-set-ei="' + ei + '">+ Add Set</button>';
   }
   h += '</div>';
   // RPE row — in edit mode, render even when null so the user can pick
@@ -7776,6 +7869,32 @@ document.getElementById('historyBody').addEventListener('click', function(e) {
     if (setCheck && !setCheck.disabled) {
       onHistorySetCheckClick(setCheck);
       return;
+    }
+    // History edit: + Add Set (v3.6.3). INSERT a new sets row at the
+    // next set_order for this exercise; patch in-memory state.
+    var addSetHist = e.target.closest ? e.target.closest('[data-history-add-set-ei]') : null;
+    if (addSetHist) {
+      var widASH = _historyDetailWorkoutId();
+      var eiASH = parseInt(addSetHist.getAttribute('data-history-add-set-ei'), 10);
+      if (widASH && Number.isFinite(eiASH)) onHistoryAddSet(widASH, eiASH);
+      return;
+    }
+    // History edit: × delete on user-added sets (v3.6.3). Renders only on
+    // sl.isExtra rows so prescribed sets stay protected.
+    var delSetHist = e.target.closest ? e.target.closest('.set-delete') : null;
+    if (delSetHist && !delSetHist.disabled) {
+      var diDSH = delSetHist.getAttribute('data-di');
+      // History rows render with data-di='history' — gate so the live-
+      // session deleteSet doesn't fire on the same click.
+      if (diDSH === 'history') {
+        var widDSH = _historyDetailWorkoutId();
+        var eiDSH = parseInt(delSetHist.getAttribute('data-ei'), 10);
+        var siDSH = parseInt(delSetHist.getAttribute('data-si'), 10);
+        if (widDSH && Number.isFinite(eiDSH) && Number.isFinite(siDSH)) {
+          onHistoryDeleteSet(widDSH, eiDSH, siDSH);
+        }
+        return;
+      }
     }
     // History edit: RPE button. The data-history-rpe + data-history-ex-order
     // attrs are added at render time only when in edit mode.

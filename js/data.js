@@ -2672,6 +2672,57 @@ async function discardWorkout(workoutId) {
   invalidateHistoryCache();
 }
 
+// ---- History edit: add / delete sets retroactively (v3.6.3) ----
+// Add a missing set to a historical workout's exercise. Used by the
+// history-edit "+ Add Set" affordance. Inserts at the next set_order
+// for (workout_id, exercise_id, exercise_order); carries forward
+// weight/reps (or duration_seconds/distance for cardio) from the
+// most recently populated set in the same exercise so the user
+// doesn't have to retype values that match prior rows. Returns the
+// inserted row (caller patches in-memory historyDetails state).
+async function historyAddSet(workoutId, exerciseOrder, exerciseId, hint) {
+  if (!userId || !workoutId || !exerciseId) throw new Error('Missing context');
+  if (typeof exerciseOrder !== 'number') throw new Error('Invalid exercise_order');
+  // Find the next set_order.
+  var sr = await sb.from('sets')
+    .select('set_order')
+    .eq('workout_id', workoutId)
+    .eq('exercise_id', exerciseId)
+    .eq('exercise_order', exerciseOrder)
+    .order('set_order', { ascending: false })
+    .limit(1);
+  if (sr.error) throw new Error(sr.error.message);
+  var nextSo = (sr.data && sr.data[0]) ? (sr.data[0].set_order + 1) : 0;
+  hint = hint || {};
+  var payload = {
+    user_id: userId,
+    workout_id: workoutId,
+    exercise_id: exerciseId,
+    exercise_order: exerciseOrder,
+    set_order: nextSo,
+    done: false,
+    set_type: hint.set_type || 'standard',
+    weight: hint.weight != null ? hint.weight : null,
+    reps: hint.reps != null ? hint.reps : null,
+    duration_seconds: hint.duration_seconds != null ? hint.duration_seconds : null,
+    distance: hint.distance != null ? hint.distance : null,
+  };
+  var ir = await sb.from('sets').insert(payload).select().single();
+  if (ir.error) throw new Error(ir.error.message);
+  return ir.data;
+}
+
+// Delete a single sets row by id. Used by the history-edit × affordance
+// on user-added (isExtra) rows. Caller is responsible for splicing the
+// in-memory historyDetails entry. Prescribed-set rows are not deletable
+// from the UI — gating happens at the render layer (deletable flag) so
+// this helper is a thin DELETE without a class check.
+async function historyDeleteSet(setId) {
+  if (!userId || !setId) throw new Error('Missing context');
+  var r = await sb.from('sets').delete().eq('id', setId).eq('user_id', userId);
+  if (r.error) throw new Error(r.error.message);
+}
+
 // ---- Drag-to-reorder: compute map + persist -----------------------------
 // Computes the exercise_order permutation for a single move. Keys are the
 // old positions that need updating; values are the new positions. Positions
