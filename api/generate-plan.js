@@ -1141,15 +1141,26 @@ async function handleSwap(res, userId, rawInputs) {
   const reason = typeof rawInputs.reason === 'string' ? rawInputs.reason.trim().slice(0, 200) : '';
   const dayName = typeof rawInputs.day_name === 'string' ? rawInputs.day_name.slice(0, 120) : '';
 
+  // Swap workout-history window: client-controlled via coaching_profile
+  // (v3.5.2). Frontend sends `coach_context_weeks` in the payload when the
+  // user has set it; server clamps 1-12 defensively and falls back to
+  // SWAP_HISTORY_WEEKS when absent. Same value is also surfaced in
+  // buildCoachContext on the frontend so coach chat sees the matching
+  // window — one knob in the Coaching Profile screen, two consumers.
+  let swapHistoryWeeks = SWAP_HISTORY_WEEKS;
+  if (Number.isFinite(rawInputs && rawInputs.coach_context_weeks)) {
+    swapHistoryWeeks = Math.max(1, Math.min(12, rawInputs.coach_context_weeks));
+  }
+
   const t0 = Date.now();
   const [activePlan, history, exercises, coachHistory, coachingProfile] = await Promise.all([
     fetchActivePlan(userId),
-    fetchRecentWorkouts(userId, SWAP_HISTORY_WEEKS),
+    fetchRecentWorkouts(userId, swapHistoryWeeks),
     fetchExerciseLibrary(userId),
     fetchRecentCoachHistory(userId, 2),
     fetchCoachingProfile(userId),
   ]);
-  console.log('[generate-plan:swap] data fetch:', Date.now() - t0, 'ms', '· coach_msgs:', coachHistory.length, '· profile:', coachingProfile ? 'yes' : 'no');
+  console.log('[generate-plan:swap] data fetch:', Date.now() - t0, 'ms', '· history_weeks:', swapHistoryWeeks, '· coach_msgs:', coachHistory.length, '· profile:', coachingProfile ? 'yes' : 'no');
 
   const libraryNames = new Set(exercises.map(e => e.name));
 

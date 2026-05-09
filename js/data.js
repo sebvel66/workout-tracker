@@ -3927,7 +3927,14 @@ async function buildCoachContext() {
   // Sunday-anchored: cutoff is N complete weeks before the current week's
   // Sunday. Current week's workouts still flow in via fetchWeekSummary +
   // getLiveContext, so effective window = N full prior weeks + current partial.
-  var recentCutoff = addDaysToDateString(weekStart, -COACH_CONTEXT_RECENT_WEEKS * 7);
+  // N is the user-configurable coaching_profile.coach_context_weeks (1-12,
+  // v3.5.2) when present, falling back to the COACH_CONTEXT_RECENT_WEEKS
+  // default. Same value is sent through to swap on the server side.
+  var weeksBack = COACH_CONTEXT_RECENT_WEEKS;
+  if (coachingProfile && Number.isFinite(coachingProfile.coach_context_weeks)) {
+    weeksBack = Math.max(1, Math.min(12, coachingProfile.coach_context_weeks));
+  }
+  var recentCutoff = addDaysToDateString(weekStart, -weeksBack * 7);
 
   try {
     // Three parallel fetches. Plan comes from in-memory (hydrate loads it);

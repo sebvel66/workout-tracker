@@ -1239,6 +1239,7 @@ function populateCoachingProfileForm(p) {
   setVal('cpPhaseStartDate', p.phase_start_date);
   setVal('cpPhaseNotes', p.phase_notes);
   setVal('cpSpecialInstructions', p.special_instructions);
+  setVal('cpCoachContextWeeks', p.coach_context_weeks);
   setVal('cpModelCoach',   resolveModel(p.model_coach,   'coach'));
   setVal('cpModelPlan',    resolveModel(p.model_plan,    'plan'));
   setVal('cpModelAnalyze', resolveModel(p.model_analyze, 'analyze'));
@@ -1344,6 +1345,19 @@ async function saveCoachingProfileFromForm() {
     phase_notes: trimOrNull(getVal('cpPhaseNotes')),
     injuries: readInjuryListFromDom(),
     special_instructions: trimOrNull(getVal('cpSpecialInstructions')),
+    // v3.5.2 context-window override. Applies to coach chat + swap;
+    // plan-gen / analyze / refine keep their per-call form input. Null
+    // means "use default" (2 weeks); a number is clamped to 1-12 by both
+    // the consumer (data.js) and the server (api/generate-plan.js swap)
+    // so a manual edit in localStorage / Supabase can't push beyond the
+    // sensible range.
+    coach_context_weeks: (function() {
+      var n = parseIntOrNull(getVal('cpCoachContextWeeks'));
+      if (n == null) return null;
+      if (n < 1) n = 1;
+      if (n > 12) n = 12;
+      return n;
+    })(),
     // v3.2.0 model selections. Stored as plain strings; resolveModel on
     // read time handles invalid / retired IDs by falling back to default.
     model_coach:   trimOrNull(getVal('cpModelCoach'))   || null,
@@ -4899,6 +4913,11 @@ async function fireSwapFetch() {
       reason: swapState.reason || '',
       day_name: swapState.dayName,
     };
+    // Coach-chat-and-swap context window override (v3.5.2). Server
+    // clamps 1-12 and falls back to SWAP_HISTORY_WEEKS when omitted.
+    if (coachingProfile && Number.isFinite(coachingProfile.coach_context_weeks)) {
+      payload.coach_context_weeks = coachingProfile.coach_context_weeks;
+    }
     // Review-context swap: the source plan only exists in the frontend
     // (post-Generate, pre-Accept). The server's DB lookup for "other
     // exercises on this day" would miss or pull from a stale active
