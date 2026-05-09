@@ -1291,6 +1291,137 @@ body.unauthed #emptyState { display: none !important; }
  * Claude's reasoning. Left accent border marks them as actionable (vs. the
  * informational analysis sections above). Accept is opt-in per field; user
  * ticks boxes + clicks "Apply selected" in the footer. */
+/* Bottom tab navigation (v3.6.0). Fixed-positioned tab bar with three
+ * primary destinations: Workout (existing tracker), Body (per-muscle
+ * volume + targets), Log (history + trends launchpad). Hamburger menu
+ * stays for less-frequent items. Coach FAB stays as always-on layer. */
+.bottom-tab-bar {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  height: 60px;
+  padding-bottom: var(--safe-bottom, 0px);
+  background: rgba(20, 20, 22, 0.95);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-top: 1px solid var(--border);
+  display: flex;
+  z-index: 110;
+}
+body.unauthed .bottom-tab-bar { display: none; }
+.bottom-tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  background: transparent;
+  border: none;
+  color: var(--text2);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.bottom-tab.active { color: var(--accent); }
+.bottom-tab-icon { font-size: 20px; line-height: 1; }
+.bottom-tab-label { line-height: 1; }
+
+/* Tab view containers — only the active one renders. Default = workout. */
+#bodyView, #logView { display: none; }
+body[data-view="body"] #workoutView,
+body[data-view="body"] .day-tabs-wrapper,
+body[data-view="body"] .summary-bar { display: none; }
+body[data-view="body"] #bodyView { display: block; }
+body[data-view="log"] #workoutView,
+body[data-view="log"] .day-tabs-wrapper,
+body[data-view="log"] .summary-bar { display: none; }
+body[data-view="log"] #logView { display: block; }
+
+.tab-view-body {
+  padding: 16px;
+  padding-bottom: calc(76px + var(--safe-bottom, 0px));  /* clear bottom tab bar */
+}
+
+/* Shift fixed-positioned floating elements above the bottom tab bar. */
+.summary-bar { bottom: calc(60px + var(--safe-bottom, 0px)) !important; }
+.coach-fab { bottom: calc(140px + var(--safe-bottom, 0px)) !important; }
+.rest-timer { bottom: calc(150px + var(--safe-bottom, 0px)) !important; }
+
+/* Body view: phase header + chip blocks for current week + planned. */
+.body-view-header {
+  padding: 4px 0 14px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 14px;
+}
+.body-view-title {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+.body-view-subtitle {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text2);
+}
+.body-view-band {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text2);
+  margin-top: 4px;
+}
+.body-view-section { margin-bottom: 18px; }
+.body-view-section-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text2);
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.body-view-section-empty {
+  padding: 14px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text2);
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-style: italic;
+}
+
+/* Log view: launchpad cards for History + Volume Trends. */
+.log-card {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 18px 16px;
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  margin-bottom: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.log-card:active { background: var(--surface); }
+.log-card-title {
+  font-size: 16px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+.log-card-desc {
+  font-size: 12px;
+  color: var(--text2);
+  line-height: 1.4;
+}
+
 /* Per-exercise modal tabs + Form Notes section (v3.5.8). Recent tab
  * keeps the existing history rendering; Form tab renders saved AI
  * coach notes (with regenerate) + user's own notes (autosaved). */
@@ -2973,6 +3104,7 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
   </div>
 </div>
 
+<div id="workoutView" class="tab-view">
 <div class="empty-state" id="emptyState"></div>
 <div class="workout-container" id="workoutContainer"></div>
 
@@ -2993,6 +3125,30 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
   </div>
   <button class="finish-btn" id="btnRest">Rest Timer</button>
 </div>
+</div><!-- /#workoutView -->
+
+<div id="bodyView" class="tab-view">
+  <div class="tab-view-body" id="bodyViewBody"></div>
+</div>
+
+<div id="logView" class="tab-view">
+  <div class="tab-view-body" id="logViewBody"></div>
+</div>
+
+<nav class="bottom-tab-bar" id="bottomTabBar" aria-label="Primary navigation">
+  <button class="bottom-tab active" type="button" data-tab="workout">
+    <span class="bottom-tab-icon" aria-hidden="true">🏋️</span>
+    <span class="bottom-tab-label">Workout</span>
+  </button>
+  <button class="bottom-tab" type="button" data-tab="body">
+    <span class="bottom-tab-icon" aria-hidden="true">📊</span>
+    <span class="bottom-tab-label">Body</span>
+  </button>
+  <button class="bottom-tab" type="button" data-tab="log">
+    <span class="bottom-tab-icon" aria-hidden="true">📓</span>
+    <span class="bottom-tab-label">Log</span>
+  </button>
+</nav>
 
 <div class="modal-overlay" id="importModal">
   <div class="modal">

@@ -69,6 +69,11 @@ var generateAttempt = 0;            // 1 on first try, 2 on the silent retry (fo
 var analyzeChatHistory = [];
 var analyzeChatPending = false;     // disables Ask button while a follow-up is in flight
 
+// Bottom tab navigation (v3.6.0). Three primary destinations: workout,
+// body (per-muscle volume + targets), log (history + trends launchpad).
+// Switching tabs sets body[data-view] which CSS rules hide/show via.
+var activeView = 'workout';
+
 // Refine-mode state (v2.5.3): when the user iterates on a freshly-generated
 // plan via the "What would you change?" input on the review screen.
 //   iterationHistory: [{ plan, feedback }] — prior plans with the feedback
@@ -2185,6 +2190,134 @@ function _vtSparklineSvg(values) {
   return '<svg class="vt-spark" viewBox="0 0 ' + w + ' ' + h + '">' +
     '<polyline points="' + pts.join(' ') + '" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>' +
     dots + '</svg>';
+}
+
+// ---- Bottom tab navigation (v3.6.0) ----
+// Three primary destinations: Workout (existing tracker), Body (per-muscle
+// weekly volume + targets), Log (launchpad to History + Volume Trends).
+// Hamburger menu stays for less-frequent items; Coach FAB stays as the
+// always-on layer (not a tab — it's a companion, not a destination).
+async function setActiveView(name) {
+  if (name !== 'workout' && name !== 'body' && name !== 'log') name = 'workout';
+  activeView = name;
+  document.body.setAttribute('data-view', name);
+  // Update active class on tab buttons.
+  var tabs = document.querySelectorAll('.bottom-tab');
+  for (var i = 0; i < tabs.length; i++) {
+    var t = tabs[i];
+    t.classList.toggle('active', t.getAttribute('data-tab') === name);
+  }
+  if (name === 'body') {
+    await renderBodyView();
+  } else if (name === 'log') {
+    renderLogView();
+  }
+}
+
+// Body view: phase header + two chip blocks (this week's actual sets per
+// muscle, projected weekly sets per muscle from the active plan). Color-
+// coded against the phase target band — same chip rendering + thresholds
+// as the v3.5.5 plan-volume-summary.
+async function renderBodyView() {
+  var body = document.getElementById('bodyViewBody');
+  if (!body) return;
+
+  var phase = (coachingProfile && coachingProfile.phase) || null;
+  var goal = (coachingProfile && coachingProfile.goal_type) || null;
+  var band = phaseTargetBand(phase);
+
+  var phaseLabel = phase ? (phase + ' phase') : 'phase not set in Coaching Profile';
+  var goalLabel = goal ? (' · goal: ' + goal) : '';
+
+  var h = '';
+  h += '<div class="body-view-header">';
+  h += '<div class="body-view-title">Sets per muscle this week</div>';
+  h += '<div class="body-view-subtitle">' + escapeHtml(phaseLabel) + escapeHtml(goalLabel) + '</div>';
+  h += '<div class="body-view-band">Target ' + band.low + '-' + band.high + ' sets/week (' + escapeHtml(band.label) + '). Counts use Schoenfeld fractional weighting (primary 1.0 + each secondary 0.5).</div>';
+  h += '</div>';
+
+  // Section 1: this week's actuals (live count from completed sets).
+  h += '<div class="body-view-section">';
+  h += '<div class="body-view-section-label">This week so far</div>';
+  h += '<div id="bodyViewActualsSlot"><div class="body-view-section-empty">Loading…</div></div>';
+  h += '</div>';
+
+  // Section 2: projected from the active plan, if any.
+  h += '<div class="body-view-section">';
+  h += '<div class="body-view-section-label">Planned (active plan, full week)</div>';
+  if (plan && Array.isArray(plan.days) && plan.days.length) {
+    var projected = computePlanVolumeByMuscle(plan);
+    h += _bodyViewChipsHtml(projected, band);
+  } else {
+    h += '<div class="body-view-section-empty">No active plan — generate or activate a template to see projected volume.</div>';
+  }
+  h += '</div>';
+
+  body.innerHTML = h;
+
+  // Async-load the actuals so the projected section paints immediately.
+  if (!userId) {
+    var slot = document.getElementById('bodyViewActualsSlot');
+    if (slot) slot.innerHTML = '<div class="body-view-section-empty">Sign in to see this week\'s volume.</div>';
+    return;
+  }
+  try {
+    var todayStr = sessionTodayDateString();
+    var weekStart = weekStartForLocalDate(new Date(todayStr + 'T00:00:00'));
+    var weekEnd = addDaysToDateString(weekStart, 6);
+    var summary = await fetchWeekSummary(userId, weekStart, weekEnd);
+    var slot2 = document.getElementById('bodyViewActualsSlot');
+    if (!slot2) return;
+    var actuals = (summary && summary.volumeByMuscleGroup) || {};
+    if (!Object.keys(actuals).length) {
+      slot2.innerHTML = '<div class="body-view-section-empty">No completed sets this week yet.</div>';
+      return;
+    }
+    slot2.innerHTML = _bodyViewChipsHtml(actuals, band);
+  } catch (err) {
+    console.error('renderBodyView actuals error:', err);
+    var slotE = document.getElementById('bodyViewActualsSlot');
+    if (slotE) slotE.innerHTML = '<div class="body-view-section-empty">Couldn\'t load this week\'s data.</div>';
+  }
+}
+
+// Render a row of color-coded volume chips for a muscle->count map.
+// Reuses the v3.5.5 chip status thresholds (in / low / deficit / high /
+// excess) anchored on the phase target band.
+function _bodyViewChipsHtml(counts, band) {
+  var muscles = Object.keys(counts);
+  if (!muscles.length) return '<div class="body-view-section-empty">No data.</div>';
+  muscles.sort(function(a, b) { return counts[b] - counts[a]; });
+  var chips = muscles.map(function(m) {
+    var v = counts[m];
+    var status;
+    if (v >= band.low && v <= band.high) status = 'in';
+    else if (v < band.low && v >= band.low / 2) status = 'low';
+    else if (v < band.low / 2) status = 'deficit';
+    else if (v > band.high && v <= band.high * 1.25) status = 'high';
+    else status = 'excess';
+    var label = (v === Math.floor(v)) ? String(v) : v.toFixed(1);
+    return '<span class="pv-chip pv-' + status + '">' + escapeHtml(m) + ' ' + label + '</span>';
+  }).join('');
+  return '<div class="plan-volume-chips">' + chips + '</div>';
+}
+
+// Log view: launchpad to existing History modal + Volume Trends modal.
+// Two big cards. Lighter v1 — inlining the full History/Trends content
+// would mean refactoring those modals' click handlers, deferred for v2.
+function renderLogView() {
+  var body = document.getElementById('logViewBody');
+  if (!body) return;
+  var h = '';
+  h += '<button class="log-card" type="button" data-log-card="history">';
+  h += '<div class="log-card-title">History</div>';
+  h += '<div class="log-card-desc">Week-by-week sessions. Tap a workout to see set-level detail or edit retroactively.</div>';
+  h += '</button>';
+  h += '<button class="log-card" type="button" data-log-card="trends">';
+  h += '<div class="log-card-title">Volume trends</div>';
+  h += '<div class="log-card-desc">Sets per muscle group over the last 4-12 weeks with sparklines, against Schoenfeld bands.</div>';
+  h += '</button>';
+  body.innerHTML = h;
 }
 
 function backToHistoryWeek() {
@@ -7497,6 +7630,22 @@ document.getElementById('btnExportCancel').addEventListener('click', closeExport
 document.getElementById('btnExportRun').addEventListener('click', runExport);
 document.getElementById('exportOverlay').addEventListener('click', function(e) {
   if (e.target === this) closeExportModal();
+});
+// Bottom tab nav (v3.6.0). Single delegator across the tab bar; no
+// per-tab listeners needed.
+document.getElementById('bottomTabBar').addEventListener('click', function(e) {
+  var btn = e.target.closest && e.target.closest('.bottom-tab[data-tab]');
+  if (!btn) return;
+  var name = btn.getAttribute('data-tab');
+  setActiveView(name);
+});
+// Log view launchpad cards open the existing modals.
+document.getElementById('logViewBody').addEventListener('click', function(e) {
+  var card = e.target.closest && e.target.closest('[data-log-card]');
+  if (!card) return;
+  var which = card.getAttribute('data-log-card');
+  if (which === 'history') openHistory();
+  else if (which === 'trends') openVolumeTrends();
 });
 document.getElementById('btnHistoryClose').addEventListener('click', closeHistory);
 document.getElementById('btnVolumeTrendsClose').addEventListener('click', closeVolumeTrends);
