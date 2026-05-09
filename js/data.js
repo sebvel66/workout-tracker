@@ -713,13 +713,18 @@ async function fetchWeekSummary(userId, weekStartDate, weekEndDate) {
 
   var workouts = rows.map(_summarizeWorkoutRow);
 
-  // Week-level rollup.
-  var trainedPlanDays = {};
+  // Week-level rollup. Plans are grouped by plan_id so a week with two
+  // distinct plans (e.g., user ended Plan A mid-week and started Plan B)
+  // produces a correct per-plan completion breakdown — the prior
+  // single-plan model deduped trainedPlanDays by day_index alone, which
+  // collapsed Plan A Day 0 and Plan B Day 0 into one entry and pinned
+  // daysPlanned to whichever plan came first chronologically.
+  var perPlan = {};  // planId -> { planTitle, planLen, dayIndices: {} }
+  var planOrder = [];
   var skippedAcross = {};
   var adHocCount = 0;
   var volSum = 0;
   var rpeSum = 0, rpeSetCount = 0;
-  var planForWeek = null;
 
   for (var j = 0; j < workouts.length; j++) {
     var w = workouts[j];
@@ -731,18 +736,55 @@ async function fetchWeekSummary(userId, weekStartDate, weekEndDate) {
     if (w.isAdHoc) {
       adHocCount++;
     } else {
-      if (w._dayIndex != null && w.completedSets > 0) trainedPlanDays[w._dayIndex] = true;
+      var pid = w._planId;
+      if (pid) {
+        if (!perPlan[pid]) {
+          var planLen = (w._planBlob && w._planBlob.days) ? w._planBlob.days.length : null;
+          perPlan[pid] = {
+            planTitle: w.planTitle || null,
+            planLen: planLen,
+            dayIndices: {},
+          };
+          planOrder.push(pid);
+        }
+        if (w._dayIndex != null && w.completedSets > 0) {
+          perPlan[pid].dayIndices[w._dayIndex] = true;
+        }
+      }
       for (var s = 0; s < w.skippedExercises.length; s++) {
         skippedAcross[w.skippedExercises[s]] = true;
       }
-      if (!planForWeek && w._planBlob) planForWeek = w._planBlob;
     }
     delete w._dayIndex;
     delete w._planBlob;
+    delete w._planId;
   }
 
-  var daysPlanned = planForWeek && planForWeek.days ? planForWeek.days.length : null;
-  var daysTrained = Object.keys(trainedPlanDays).length;
+  var plansBreakdown = [];
+  var totalDaysPlanned = 0;
+  var totalDaysTrained = 0;
+  var anyPlanned = false;
+  for (var po = 0; po < planOrder.length; po++) {
+    var ppid = planOrder[po];
+    var pp = perPlan[ppid];
+    var trained = Object.keys(pp.dayIndices).length;
+    var planned = pp.planLen;
+    plansBreakdown.push({
+      planId: ppid,
+      planTitle: pp.planTitle,
+      daysPlanned: planned,
+      daysTrained: trained,
+      completionRate: planned ? Math.round((trained / planned) * 100) / 100 : null,
+    });
+    totalDaysTrained += trained;
+    if (planned != null) {
+      totalDaysPlanned += planned;
+      anyPlanned = true;
+    }
+  }
+
+  var daysPlanned = anyPlanned ? totalDaysPlanned : null;
+  var daysTrained = totalDaysTrained;
 
   return {
     weekStart: weekStartDate,
@@ -755,12 +797,13 @@ async function fetchWeekSummary(userId, weekStartDate, weekEndDate) {
     weekTotalVolume: Math.round(volSum),
     exercisesSkippedAcrossWeek: Object.keys(skippedAcross).sort(),
     adHocSessions: adHocCount,
+    plansBreakdown: plansBreakdown,
   };
 }
 
 // Map one workouts row (with sets + exercises joined) into the per-workout
-// summary shape. Uses _dayIndex / _planBlob as transient fields the
-// week-level rollup strips before returning.
+// summary shape. Uses _dayIndex / _planBlob / _planId as transient fields
+// the week-level rollup strips before returning.
 function _summarizeWorkoutRow(row) {
   var isAdHoc = row.plan_id === null;
   var planBlob = row.plan_id ? planCache[row.plan_id] : null;
@@ -874,6 +917,7 @@ function _summarizeWorkoutRow(row) {
     notes: row.notes || '',
     _dayIndex: row.day_index,
     _planBlob: planBlob,
+    _planId: row.plan_id || null,
   };
 }
 

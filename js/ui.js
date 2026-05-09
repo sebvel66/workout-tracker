@@ -2035,6 +2035,22 @@ function renderHistoryWeekSummary(summary) {
     h += '</div>';
   }
   h += '</div>';
+  // Per-plan breakdown footer — only when the week spans more than one
+  // plan (e.g., user ended Plan A mid-week and started Plan B). With a
+  // single plan, the headline "Days N / M" + "Plan complete %" stats
+  // already tell the full story.
+  var pb = Array.isArray(summary.plansBreakdown) ? summary.plansBreakdown : [];
+  if (pb.length > 1) {
+    var parts = pb.map(function(p) {
+      var title = p.planTitle || 'Plan';
+      var line = title + ': ' + p.daysTrained + '/' + (p.daysPlanned != null ? p.daysPlanned : '?');
+      if (p.completionRate != null) {
+        line += ' (' + Math.round(p.completionRate * 100) + '%)';
+      }
+      return line;
+    });
+    h += '<div class="history-week-plans">' + escapeHtml(parts.join(' · ')) + '</div>';
+  }
   return h;
 }
 
