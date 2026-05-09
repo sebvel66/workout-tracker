@@ -4167,6 +4167,17 @@ var COACH_CONTEXT_MAX_EXERCISES_RECENT = 18;
 // COACH_CONTEXT_RECENT_WEEKS full prior weeks + current partial week.
 var COACH_CONTEXT_RECENT_WEEKS = 2;
 var COACH_CONTEXT_MAX_NOTES = 6;
+// Multi-week per-muscle volume trend window (v3.6.7). Independent from the
+// recent-performance window — that one wants per-exercise depth (2 weeks
+// is enough to see "last time you did X"); this one wants enough weeks to
+// expose a trend (4 = one month — drift, ramp, deload all show up).
+// Reuses the same Schoenfeld counting the History dashboard shows so the
+// numbers in the prompt match what the user sees in Body / Volume Trends.
+var COACH_CONTEXT_VOLUME_WEEKS = 4;
+// Cap muscles to the top-N by total volume across the window so the block
+// stays bounded for high-variety lifters. fetchVolumeTrends already sorts
+// muscles by total desc, so taking the head is the right pick.
+var COACH_CONTEXT_VOLUME_MUSCLES_MAX = 12;
 
 async function buildCoachContext() {
   if (!userId) { coachContext = ''; return; }
@@ -4187,8 +4198,11 @@ async function buildCoachContext() {
   var recentCutoff = addDaysToDateString(weekStart, -weeksBack * 7);
 
   try {
-    // Three parallel fetches. Plan comes from in-memory (hydrate loads it);
+    // Four parallel fetches. Plan comes from in-memory (hydrate loads it);
     // no DB round-trip needed for Layer 1 of semi-static context.
+    // Volume trend uses COACH_CONTEXT_VOLUME_WEEKS (which already includes
+    // the current partial week as its latest entry) — independent from the
+    // recent-perf window which wants per-exercise depth not trend shape.
     var results = await Promise.all([
       fetchWeekSummary(userId, weekStart, weekEnd).catch(function(e) {
         console.warn('buildCoachContext week summary failed:', e); return null;
@@ -4199,16 +4213,22 @@ async function buildCoachContext() {
       _fetchRecentSessionNotes(userId, recentCutoff).catch(function(e) {
         console.warn('buildCoachContext notes failed:', e); return [];
       }),
+      fetchVolumeTrends(userId, COACH_CONTEXT_VOLUME_WEEKS).catch(function(e) {
+        console.warn('buildCoachContext volume trend failed:', e); return null;
+      }),
     ]);
     var weekSummary = results[0];
     var recentPerf = results[1];
     var recentNotes = results[2];
+    var volumeTrend = results[3];
 
     var parts = [];
     var planBlock = _formatPlanForCoach(plan);
     if (planBlock) parts.push(planBlock);
     var weekBlock = _formatWeekStatusForCoach(weekSummary);
     if (weekBlock) parts.push(weekBlock);
+    var volumeBlock = _formatVolumeTrendForCoach(volumeTrend);
+    if (volumeBlock) parts.push(volumeBlock);
     var perfBlock = _formatRecentPerfForCoach(recentPerf);
     if (perfBlock) parts.push(perfBlock);
     var notesBlock = _formatRecentNotesForCoach(recentNotes);
@@ -4381,6 +4401,34 @@ function _formatRecentNotesForCoach(notes) {
     var dateShort = n.performed_on ? n.performed_on.slice(5) : '';
     var body = String(n.notes || '').trim().replace(/\s+/g, ' ').slice(0, 140);
     out += '\n  "' + body + '" (' + dateShort + ')';
+  }
+  return out;
+}
+
+// Multi-week per-muscle set volume — gives the coach a trend read that
+// matches the Body / Volume Trends dashboard (same Schoenfeld counting:
+// primary 1.0 + each secondary 0.5; cardio + mobility excluded).
+// Layout: header row of week labels (M/D), then one line per muscle
+// with a comma-separated count series and the window average. Capped
+// at COACH_CONTEXT_VOLUME_MUSCLES_MAX top muscles by total volume so
+// high-variety lifters don't blow the token budget.
+function _formatVolumeTrendForCoach(trend) {
+  if (!trend || !Array.isArray(trend.muscles) || !trend.muscles.length) return '';
+  var weekLabels = (trend.weeks || []).map(function(w) { return w.label; });
+  if (!weekLabels.length) return '';
+  var muscles = trend.muscles.slice(0, COACH_CONTEXT_VOLUME_MUSCLES_MAX);
+  var fmt = function(v) {
+    var r = Math.round(v * 10) / 10;
+    return r === Math.floor(r) ? String(r) : r.toFixed(1);
+  };
+  var out = 'WEEKLY VOLUME TREND (sets/wk per muscle, Schoenfeld primary 1.0 + secondary 0.5; oldest → newest)';
+  out += '\n  weeks: ' + weekLabels.join(', ');
+  for (var i = 0; i < muscles.length; i++) {
+    var m = muscles[i];
+    var arr = trend.byMuscle[m] || [];
+    var series = arr.map(fmt).join(', ');
+    var avg = trend.averages && trend.averages[m] != null ? trend.averages[m] : 0;
+    out += '\n  ' + m + ': ' + series + ' (avg ' + fmt(avg) + ')';
   }
   return out;
 }
