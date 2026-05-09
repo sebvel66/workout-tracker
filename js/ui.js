@@ -2974,7 +2974,7 @@ async function onHistoryAddSet(workoutId, ei) {
       setType: newRow.set_type || 'standard',
       parentSetIdx: null,
     };
-    invalidateHistoryCache();
+    invalidateHistoryWeekCache();
     renderHistoryDetail(detail);
   } catch (err) {
     console.error('onHistoryAddSet error:', err);
@@ -2998,7 +2998,7 @@ async function onHistoryDeleteSet(workoutId, ei, si) {
   try {
     await historyDeleteSet(sl.setId);
     exState.sets.splice(si, 1);
-    invalidateHistoryCache();
+    invalidateHistoryWeekCache();
     renderHistoryDetail(detail);
   } catch (err) {
     console.error('onHistoryDeleteSet error:', err);
@@ -3029,7 +3029,7 @@ function onHistorySetCheckClick(btnEl) {
     } else {
       sl.completedAt = null;
     }
-    invalidateHistoryCache();
+    invalidateHistoryWeekCache();
     renderHistoryDetail(detail);
   }).catch(function(err) {
     console.error('history set toggle failed:', err);
@@ -3061,7 +3061,7 @@ function onHistorySetInputChange(input) {
   }
   historyUpdateSetField(sl.setId, field, parsed).then(function() {
     sl[field] = parsed;
-    invalidateHistoryCache();
+    invalidateHistoryWeekCache();
     // Don't re-render -- the user is mid-edit and we don't want to
     // steal focus. The exercise-card status badge is now slightly
     // stale until the next interaction triggers a re-render, which
@@ -3084,7 +3084,7 @@ function onHistoryRpeClick(btnEl) {
   var newRpe = exState.rpe === rpe ? null : rpe;
   historyUpdateExerciseRpe(widR, ei, newRpe).then(function() {
     exState.rpe = newRpe;
-    invalidateHistoryCache();
+    invalidateHistoryWeekCache();
     renderHistoryDetail(detail);  // re-render so the .selected class flips
   }).catch(function(err) {
     console.error('history rpe update failed:', err);
@@ -3102,7 +3102,7 @@ function onHistoryExerciseNoteChange(input) {
   var newNote = (input.value || '').trim() || null;
   historyUpdateExerciseNote(widN, ei, newNote).then(function() {
     exState.note = newNote || '';
-    invalidateHistoryCache();
+    invalidateHistoryWeekCache();
     // No re-render — keep focus.
   }).catch(function(err) {
     console.error('history exercise note update failed:', err);
@@ -3118,7 +3118,7 @@ function onHistoryWorkoutNotesChange(input) {
   historyUpdateWorkoutNotes(widW, newNotes).then(function() {
     detail.workout.notes = newNotes;
     detail.state.notes = newNotes || '';
-    invalidateHistoryCache();
+    invalidateHistoryWeekCache();
     // No re-render — keep focus.
   }).catch(function(err) {
     console.error('history workout notes update failed:', err);
@@ -6943,6 +6943,19 @@ function stopTimerTick() {
 function invalidateHistoryCache() {
   historyWeekCache = {};
   historyDetails = {};
+  earliestWorkoutDate = null;
+}
+
+// Narrower variant for in-modal history-edit handlers (v3.6.6). The full
+// invalidateHistoryCache wipes historyDetails too, which silently breaks
+// the open detail modal: subsequent click handlers all bail on
+// `if (!detail) return` because historyDetails[wid] is now undefined,
+// and from the user's POV clicks "do nothing" / "hang up". For in-place
+// edits the cached detail is in-sync with DB (we mutated it before
+// calling the helper), so we only need to invalidate the week summary
+// so the History list view reflects fresh totals on next open.
+function invalidateHistoryWeekCache() {
+  historyWeekCache = {};
   earliestWorkoutDate = null;
 }
 
