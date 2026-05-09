@@ -1291,6 +1291,81 @@ body.unauthed #emptyState { display: none !important; }
  * Claude's reasoning. Left accent border marks them as actionable (vs. the
  * informational analysis sections above). Accept is opt-in per field; user
  * ticks boxes + clicks "Apply selected" in the footer. */
+/* Plan-volume summary (v3.5.5). Color-coded chips at the top of the
+ * generate review showing per-muscle weekly set count vs the phase
+ * target band. Lets the user spot deficits / excesses before scrolling
+ * through day cards so refinement feedback can be specific. */
+.plan-volume-summary {
+  margin: 12px 0 16px;
+  padding: 10px 12px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.plan-volume-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.plan-volume-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text2);
+  font-weight: 600;
+}
+.plan-volume-band {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--text2);
+}
+.plan-volume-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.pv-chip {
+  display: inline-block;
+  padding: 4px 9px;
+  border-radius: 12px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  border: 1px solid transparent;
+}
+/* In-band: clearly satisfying the target — neutral green. */
+.pv-in {
+  background: rgba(76, 175, 80, 0.15);
+  color: #5fc66a;
+  border-color: rgba(76, 175, 80, 0.35);
+}
+/* Below band but >=50% of low — maintenance dose, not optimal. */
+.pv-low {
+  background: rgba(255, 193, 7, 0.12);
+  color: #e8b34a;
+  border-color: rgba(255, 193, 7, 0.3);
+}
+/* Way under (<50% of low) — programming gap. */
+.pv-deficit {
+  background: rgba(244, 67, 54, 0.13);
+  color: #ee6e62;
+  border-color: rgba(244, 67, 54, 0.35);
+}
+/* Slightly above band (≤125% of high) — high but tolerable. */
+.pv-high {
+  background: rgba(255, 152, 0, 0.13);
+  color: #f0a64a;
+  border-color: rgba(255, 152, 0, 0.3);
+}
+/* Way over (>125% of high) — likely junk volume / fatigue risk. */
+.pv-excess {
+  background: rgba(244, 67, 54, 0.13);
+  color: #ee6e62;
+  border-color: rgba(244, 67, 54, 0.35);
+}
+
 /* Volume trends dashboard (v3.5.4). Hamburger entry → modal table with
  * muscle groups as rows, last N weeks as columns, inline-SVG sparklines
  * per muscle. Reuses the same primary 1.0 + secondary 0.5 counting as

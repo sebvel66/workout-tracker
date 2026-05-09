@@ -678,6 +678,80 @@ async function fetchRecentWorkouts(userId, limit) {
 // Extras (exercise_order past plan length, or set_order past prescribed
 // count) count toward volume but NOT toward completion ratios, so
 // completionRate measures plan adherence rather than effort.
+// Per-muscle prescribed-set count for a generated plan, summed across all
+// days of the training week. Same Schoenfeld-style fractional counting as
+// the History summary + analyze prompt: each prescribed set = 1.0 to the
+// exercise's primary muscle_group + 0.5 to each entry in secondary_muscles.
+// Walks superset block containers transparently (members count separately).
+// Cardio + mobility filtered out. Returns { muscle: count, ... }.
+//
+// Drop sets are present in plan.sets[] as flat entries with set_type: 'drop'
+// and contribute 1 set just like standards — slightly overstates true
+// hypertrophy stimulus on drop chains, but the result is still in the
+// right ballpark for sanity-checking against weekly target bands. Refining
+// to "drop = 0.5 set" would track sport-science conventions more closely
+// but isn't worth the complexity for plan review.
+function computePlanVolumeByMuscle(plan) {
+  var out = {};
+  if (!plan || !Array.isArray(plan.days)) return out;
+  for (var di = 0; di < plan.days.length; di++) {
+    var day = plan.days[di];
+    var entries = Array.isArray(day && day.exercises) ? day.exercises : [];
+    for (var ei = 0; ei < entries.length; ei++) {
+      var e = entries[ei];
+      if (e && e.superset === true && Array.isArray(e.exercises)) {
+        for (var mi = 0; mi < e.exercises.length; mi++) {
+          _accumulatePlanExercise(e.exercises[mi], out);
+        }
+      } else {
+        _accumulatePlanExercise(e, out);
+      }
+    }
+  }
+  // Round to one decimal so floating-point accumulation doesn't surface
+  // 14.499999...; the consumer treats halves as exact.
+  var keys = Object.keys(out);
+  for (var k = 0; k < keys.length; k++) {
+    out[keys[k]] = Math.round(out[keys[k]] * 10) / 10;
+  }
+  return out;
+}
+
+function _accumulatePlanExercise(ex, out) {
+  if (!ex || !ex.name) return;
+  var sets = Array.isArray(ex.sets) ? ex.sets : [];
+  if (!sets.length) return;
+  var meta = (typeof resolveLibraryRow === 'function')
+    ? resolveLibraryRow(ex.name)
+    : (exerciseLibraryByName ? exerciseLibraryByName[normName(ex.name)] : null);
+  if (!meta) return;  // unresolved exercise — silently skip; refining the plan to use canonical names will surface it
+  var primary = meta.muscle_group;
+  if (!primary || primary === 'cardio' || primary === 'mobility') return;
+  var n = sets.length;
+  out[primary] = (out[primary] || 0) + n;
+  var sec = Array.isArray(meta.secondary_muscles) ? meta.secondary_muscles : [];
+  for (var si = 0; si < sec.length; si++) {
+    var mg = sec[si];
+    if (!mg || mg === primary || mg === 'cardio' || mg === 'mobility') continue;
+    out[mg] = (out[mg] || 0) + n * 0.5;
+  }
+}
+
+// Phase-aware weekly target band (sets/wk) for the plan-volume summary.
+// Bands track standard hypertrophy literature ranges and the system-prompt-
+// analyze.md guidance the AI also sees. Defaults to accumulation when phase
+// is unset so brand-new users still see a sensible band.
+function phaseTargetBand(phase) {
+  switch (phase) {
+    case 'cut':            return { low: 5, high: 8,  label: 'cut maintenance' };
+    case 'pre-cut':        return { low: 8, high: 12, label: 'pre-cut' };
+    case 'maintain':       return { low: 8, high: 12, label: 'maintain' };
+    case 'reverse':        return { low: 8, high: 12, label: 'reverse' };
+    case 'accumulation':
+    default:               return { low: 10, high: 20, label: 'accumulation' };
+  }
+}
+
 // Multi-week per-muscle volume trends. Single query across the full window
 // (workouts + sets + exercises) bucketed by Sun-anchored week client-side.
 // Same Schoenfeld-style fractional counting as the History week summary

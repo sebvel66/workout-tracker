@@ -3457,6 +3457,15 @@ function renderGenerateReview(body) {
     h += '</div>';
   }
 
+  // Per-muscle weekly volume summary, color-coded against the phase
+  // target band (Schoenfeld). Surfaces deficits / excesses BEFORE the
+  // user reads through day cards so refine feedback can be specific
+  // (e.g., "chest is at 6, bump to ~12-14"). Uses the same Schoenfeld
+  // fractional counting (primary 1.0 + each secondary 0.5) as the
+  // History summary, analyze prompt, and Volume Trends dashboard so
+  // numbers match across surfaces.
+  h += renderPlanVolumeSummary(p);
+
   var days = Array.isArray(p.days) ? p.days : [];
   for (var di = 0; di < days.length; di++) {
     var day = days[di];
@@ -3618,6 +3627,48 @@ async function submitRefinePlan() {
   } finally {
     refineInFlight = false;
   }
+}
+
+// Per-muscle weekly volume chips for the plan review (v3.5.5). Each chip
+// shows muscle name + count + a status icon, color-coded against the phase
+// target band: green if in band, yellow if a maintenance dose (below band
+// but >=50% of low), red if way under or way over. Sorted high-to-low so
+// the deficit pattern reads at a glance. Hidden gracefully when the plan
+// has no exercises that resolve against the library.
+function renderPlanVolumeSummary(plan) {
+  var counts = computePlanVolumeByMuscle(plan);
+  var muscles = Object.keys(counts);
+  if (!muscles.length) return '';
+  muscles.sort(function(a, b) { return counts[b] - counts[a]; });
+
+  var phase = (coachingProfile && coachingProfile.phase) || null;
+  var band = phaseTargetBand(phase);
+
+  var chips = muscles.map(function(m) {
+    var v = counts[m];
+    var status;
+    if (v >= band.low && v <= band.high) status = 'in';
+    else if (v < band.low && v >= band.low / 2) status = 'low';
+    else if (v < band.low / 2) status = 'deficit';
+    else if (v > band.high && v <= band.high * 1.25) status = 'high';
+    else status = 'excess';
+    var label = (v === Math.floor(v)) ? String(v) : v.toFixed(1);
+    return '<span class="pv-chip pv-' + status + '">' +
+      escapeHtml(m) + ' ' + label + '</span>';
+  }).join('');
+
+  var phaseLabel = phase
+    ? (band.label + ' phase')
+    : (band.label + ' band — set phase in Coaching Profile to tune');
+
+  var h = '<div class="plan-volume-summary">';
+  h += '<div class="plan-volume-header">';
+  h += '<span class="plan-volume-label">Sets/week per muscle</span>';
+  h += '<span class="plan-volume-band">target ' + band.low + '-' + band.high + ' · ' + escapeHtml(phaseLabel) + '</span>';
+  h += '</div>';
+  h += '<div class="plan-volume-chips">' + chips + '</div>';
+  h += '</div>';
+  return h;
 }
 
 // Format the four-section analysis as plain-text labeled blocks for the
