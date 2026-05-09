@@ -1291,6 +1291,97 @@ body.unauthed #emptyState { display: none !important; }
  * Claude's reasoning. Left accent border marks them as actionable (vs. the
  * informational analysis sections above). Accept is opt-in per field; user
  * ticks boxes + clicks "Apply selected" in the footer. */
+/* Volume trends dashboard (v3.5.4). Hamburger entry → modal table with
+ * muscle groups as rows, last N weeks as columns, inline-SVG sparklines
+ * per muscle. Reuses the same primary 1.0 + secondary 0.5 counting as
+ * the History summary + analyze prompt so numbers match across surfaces. */
+.vt-controls {
+  display: flex;
+  gap: 8px;
+  padding: 12px 14px 6px;
+  border-bottom: 1px solid var(--border);
+}
+.vt-controls button {
+  padding: 6px 12px;
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  cursor: pointer;
+}
+.vt-controls button.active {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+}
+.vt-banner {
+  padding: 10px 14px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text2);
+  background: var(--surface2);
+  border-bottom: 1px solid var(--border);
+}
+.vt-table-wrap {
+  overflow-x: auto;
+  padding: 8px 0;
+}
+.vt-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+}
+.vt-table th, .vt-table td {
+  padding: 8px 10px;
+  text-align: right;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.vt-table th {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text2);
+  font-weight: 500;
+}
+.vt-table td.vt-muscle {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text);
+}
+.vt-table td.vt-week {
+  color: var(--text);
+}
+.vt-table td.vt-week.vt-zero {
+  color: var(--text2);
+  opacity: 0.45;
+}
+.vt-table td.vt-avg {
+  color: var(--text);
+  font-weight: 600;
+  border-left: 1px solid var(--border);
+}
+.vt-spark {
+  display: block;
+  height: 24px;
+  width: 80px;
+}
+.vt-empty {
+  padding: 30px 14px;
+  text-align: center;
+  color: var(--text2);
+  font-size: 13px;
+}
+.vt-loading {
+  padding: 30px 14px;
+  text-align: center;
+  color: var(--text2);
+  font-size: 13px;
+}
+
 /* Analyze-chat: in-modal Q&A on the analyze review (v3.5.3). Rides the
  * analyze prompt cache via /api/generate-plan mode=analyze_chat. Each
  * Q/A pair renders as right-aligned (you) / left-aligned (coach) bubbles
@@ -2877,6 +2968,17 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
   </div>
 </div>
 
+<div class="modal-overlay" id="volumeTrendsOverlay">
+  <div class="history-modal">
+    <div class="history-header">
+      <div style="width:32px"></div>
+      <div class="history-title">Volume trends</div>
+      <button class="history-close" id="btnVolumeTrendsClose" type="button">×</button>
+    </div>
+    <div class="history-body" id="volumeTrendsBody"></div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="plansOverlay">
   <div class="history-modal">
     <div class="history-header">
@@ -3010,6 +3112,7 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
       <button class="menu-row" id="menuExport" type="button">Export Data</button>
       <button class="menu-row" id="menuExportProfile" type="button">Export Coaching Profile</button>
       <button class="menu-row" id="menuHistory" type="button">History</button>
+      <button class="menu-row" id="menuVolumeTrends" type="button">Volume trends</button>
       <button class="menu-row" id="menuCoachingProfile" type="button">Coaching Profile</button>
       <button class="menu-row" id="menuGymProfiles" type="button">Gym Profiles</button>
       <button class="menu-row" id="menuPhotos" type="button">Photos</button>

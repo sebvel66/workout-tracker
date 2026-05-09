@@ -678,6 +678,104 @@ async function fetchRecentWorkouts(userId, limit) {
 // Extras (exercise_order past plan length, or set_order past prescribed
 // count) count toward volume but NOT toward completion ratios, so
 // completionRate measures plan adherence rather than effort.
+// Multi-week per-muscle volume trends. Single query across the full window
+// (workouts + sets + exercises) bucketed by Sun-anchored week client-side.
+// Same Schoenfeld-style fractional counting as the History week summary
+// and analyze prompt: each completed set = 1.0 to primary muscle_group +
+// 0.5 to each entry in secondary_muscles. Cardio + mobility filtered out.
+//
+// Returns:
+//   {
+//     weeks:    [{ weekStart, label }, ...] // chronological, length = weeksBack
+//     muscles:  [muscle_group, ...]         // sorted by total across window, descending
+//     byMuscle: { muscle_group: [n, n, n, ...] }  // one entry per week, aligned to `weeks`
+//     totals:   { muscle_group: n }         // sum across the window
+//     averages: { muscle_group: n }         // total / weeksBack (rounded to 1 decimal)
+//   }
+async function fetchVolumeTrends(userId, weeksBack) {
+  if (!Number.isFinite(weeksBack) || weeksBack < 1) weeksBack = 8;
+  if (weeksBack > 52) weeksBack = 52;
+  var todayStr = sessionTodayDateString();
+  var thisWeekStart = weekStartForLocalDate(new Date(todayStr + 'T00:00:00'));
+  var earliestWeekStart = addDaysToDateString(thisWeekStart, -(weeksBack - 1) * 7);
+  var endDate = addDaysToDateString(thisWeekStart, 6);
+
+  // Build the chronological week index up front so the result has stable
+  // shape even when a week has zero workouts (just contributes 0s).
+  var weeks = [];
+  var weekIdxByStart = {};
+  for (var w = 0; w < weeksBack; w++) {
+    var ws = addDaysToDateString(earliestWeekStart, w * 7);
+    weeks.push({ weekStart: ws, label: _vtWeekLabel(ws) });
+    weekIdxByStart[ws] = w;
+  }
+
+  // One query for the full range. Same embed shape as fetchWeekSummary
+  // so pull through secondary_muscles.
+  var res = await sb.from('workouts')
+    .select('plan_id, performed_on, sets(done, exercise_order, exercises!exercise_id(muscle_group, secondary_muscles))')
+    .eq('user_id', userId)
+    .gte('performed_on', earliestWeekStart)
+    .lte('performed_on', endDate);
+  if (res.error) throw res.error;
+
+  // byMuscle starts empty; populate lazily as muscles surface in the data.
+  var byMuscle = {};
+  var rows = res.data || [];
+  for (var ri = 0; ri < rows.length; ri++) {
+    var row = rows[ri];
+    var ws2 = weekStartForLocalDate(new Date(row.performed_on + 'T00:00:00'));
+    var widx = weekIdxByStart[ws2];
+    if (widx == null) continue;
+    var sets = row.sets || [];
+    for (var si = 0; si < sets.length; si++) {
+      var s = sets[si];
+      if (!s || !s.done) continue;
+      var ex = s.exercises;
+      if (!ex) continue;
+      var primary = ex.muscle_group;
+      if (!primary || primary === 'cardio' || primary === 'mobility') continue;
+      _vtAdd(byMuscle, primary, widx, weeksBack, 1);
+      var sec = Array.isArray(ex.secondary_muscles) ? ex.secondary_muscles : [];
+      for (var k = 0; k < sec.length; k++) {
+        var mg = sec[k];
+        if (!mg || mg === primary || mg === 'cardio' || mg === 'mobility') continue;
+        _vtAdd(byMuscle, mg, widx, weeksBack, 0.5);
+      }
+    }
+  }
+
+  // Totals + averages per muscle, then sort muscles by total descending.
+  var totals = {};
+  var averages = {};
+  var muscles = Object.keys(byMuscle);
+  for (var mi = 0; mi < muscles.length; mi++) {
+    var mname = muscles[mi];
+    var arr = byMuscle[mname];
+    var sum = 0;
+    for (var aj = 0; aj < arr.length; aj++) sum += arr[aj] || 0;
+    totals[mname] = Math.round(sum * 10) / 10;
+    averages[mname] = Math.round((sum / weeksBack) * 10) / 10;
+  }
+  muscles.sort(function(a, b) { return totals[b] - totals[a]; });
+
+  return { weeks: weeks, muscles: muscles, byMuscle: byMuscle, totals: totals, averages: averages };
+}
+
+function _vtAdd(byMuscle, mg, widx, weeksBack, factor) {
+  if (!byMuscle[mg]) {
+    byMuscle[mg] = [];
+    for (var i = 0; i < weeksBack; i++) byMuscle[mg].push(0);
+  }
+  byMuscle[mg][widx] = Math.round((byMuscle[mg][widx] + factor) * 10) / 10;
+}
+
+function _vtWeekLabel(weekStart) {
+  // Compact "M/D" label — keeps headers tight in the table even at 12 weeks.
+  var d = new Date(weekStart + 'T00:00:00');
+  return (d.getMonth() + 1) + '/' + d.getDate();
+}
+
 async function fetchWeekSummary(userId, weekStartDate, weekEndDate) {
   // PostgREST FK disambiguation: sets now has TWO FKs to exercises
   // (exercise_id = actual, prescribed_exercise_id = plan's ask, added in
