@@ -725,6 +725,7 @@ async function fetchWeekSummary(userId, weekStartDate, weekEndDate) {
   var adHocCount = 0;
   var volSum = 0;
   var rpeSum = 0, rpeSetCount = 0;
+  var volByMuscle = {};  // muscle_group -> total completed sets across the week
 
   for (var j = 0; j < workouts.length; j++) {
     var w = workouts[j];
@@ -732,6 +733,15 @@ async function fetchWeekSummary(userId, weekStartDate, weekEndDate) {
     if (w.avgRpe != null && w.completedSets > 0) {
       rpeSum += w.avgRpe * w.completedSets;
       rpeSetCount += w.completedSets;
+    }
+    // Per-muscle weekly volume rolls up across plan-day AND ad-hoc workouts —
+    // every completed set contributes regardless of session type.
+    if (w.setsByMuscleGroup) {
+      var mgKeys = Object.keys(w.setsByMuscleGroup);
+      for (var mki = 0; mki < mgKeys.length; mki++) {
+        var mgk = mgKeys[mki];
+        volByMuscle[mgk] = (volByMuscle[mgk] || 0) + w.setsByMuscleGroup[mgk];
+      }
     }
     if (w.isAdHoc) {
       adHocCount++;
@@ -798,6 +808,7 @@ async function fetchWeekSummary(userId, weekStartDate, weekEndDate) {
     exercisesSkippedAcrossWeek: Object.keys(skippedAcross).sort(),
     adHocSessions: adHocCount,
     plansBreakdown: plansBreakdown,
+    volumeByMuscleGroup: volByMuscle,
   };
 }
 
@@ -915,10 +926,36 @@ function _summarizeWorkoutRow(row) {
     avgRpe: rpeCount ? Math.round((rpeSum / rpeCount) * 10) / 10 : null,
     totalVolume: Math.round(totalVolume),
     notes: row.notes || '',
+    setsByMuscleGroup: _setsByMuscleGroup(byOrder),
     _dayIndex: row.day_index,
     _planBlob: planBlob,
     _planId: row.plan_id || null,
   };
+}
+
+// Per-workout completed-set count grouped by primary muscle_group.
+// Counts only sets with done=true, including ad-hoc and extras-on-plan
+// — every completed set contributes 1.0 to its exercise's primary muscle.
+// Secondary-muscle fractional counting is deferred (Phase 1b in ROADMAP);
+// Schoenfeld-style 0.5 weighting for secondary movers needs an
+// `exercises.secondary_muscles` column we don't have yet.
+function _setsByMuscleGroup(byOrder) {
+  var out = {};
+  if (!byOrder) return out;
+  var keys = Object.keys(byOrder);
+  for (var i = 0; i < keys.length; i++) {
+    var ex = byOrder[keys[i]];
+    if (!ex || !ex.muscleGroup) continue;
+    var mg = ex.muscleGroup;
+    if (mg === 'cardio' || mg === 'mobility') continue;
+    var done = 0;
+    var sets = ex.sets || [];
+    for (var s = 0; s < sets.length; s++) {
+      if (sets[s] && sets[s].done) done++;
+    }
+    if (done) out[mg] = (out[mg] || 0) + done;
+  }
+  return out;
 }
 
 function _volumeForSet(weight, reps, mode) {

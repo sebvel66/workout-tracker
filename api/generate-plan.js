@@ -777,6 +777,39 @@ function volumeForSet(weight, reps, mode) {
   return weight * reps;
 }
 
+// Per-muscle completed-set count grouped by Sun-anchored week. Distinct
+// from formatWeekSummary's "Volume by muscle" which is lbs of work — this
+// is the hypertrophy literature's preferred metric (10-20 sets/wk per
+// major muscle group). Spans the full historyWeeks window so the coach
+// can flag week-over-week deficits / excesses. Cardio + mobility groups
+// are skipped (not relevant to hypertrophy volume tracking). Counts only
+// the primary muscle_group per exercise; secondary-muscle 0.5 weighting
+// is deferred until exercises.secondary_muscles ships.
+function formatVolumeByMuscleGroup(workouts, historyWeeks) {
+  if (!workouts || !workouts.length) return '';
+  const byWeek = {};  // weekStart -> muscle -> count
+  for (const w of workouts) {
+    const weekStart = weekStartForDateString(w.performed_on);
+    if (!byWeek[weekStart]) byWeek[weekStart] = {};
+    for (const s of (w.sets || [])) {
+      if (!s.done) continue;
+      const mg = s.exercises ? s.exercises.muscle_group : null;
+      if (!mg || mg === 'cardio' || mg === 'mobility') continue;
+      byWeek[weekStart][mg] = (byWeek[weekStart][mg] || 0) + 1;
+    }
+  }
+  const weekKeys = Object.keys(byWeek).sort();
+  if (!weekKeys.length) return '';
+  let out = `WEEKLY SETS BY MUSCLE GROUP (completed sets only, last ${historyWeeks} week${historyWeeks === 1 ? '' : 's'})\n`;
+  for (const wk of weekKeys) {
+    const muscles = byWeek[wk];
+    const ordered = Object.keys(muscles).sort((a, b) => muscles[b] - muscles[a]);
+    const parts = ordered.map(m => `${m} ${muscles[m]}`);
+    out += `  ${wk}: ${parts.join(', ')}\n`;
+  }
+  return out + '\n';
+}
+
 function weekStartForDateString(ymd) {
   const d = new Date(ymd + 'T00:00:00Z');
   const dow = d.getUTCDay();
@@ -951,6 +984,7 @@ async function buildAnalyzeUserMessage({ activePlan, history, exercises, photos,
   if (activePlan) dynText += formatCurrentPlan(activePlan);
   dynText += formatVerbatimHistory(verbatim, activePlan, verbatimWeeks);
   dynText += formatSummarizedHistory(summarized);
+  dynText += formatVolumeByMuscleGroup(history, historyWeeks);
   dynText += formatCoachHistory(coachHistory);
   dynText += formatAnalyzeInputs({ historyWeeks, notes });
   dynText += '\nProduce the analysis per your instructions. Return ONLY the JSON object. No preamble, no markdown fences.\n';
