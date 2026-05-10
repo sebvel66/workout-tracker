@@ -3266,6 +3266,14 @@ function logCoachMessage(role, content, contextType, exerciseName, createdAt) {
 // AI planner can ground phase-awareness reasoning in actual calendar
 // dates. Preserves an explicit start_date if one was set upstream.
 async function savePlanAsActive(newPlan) {
+  // Canonicalize compact-set notation BEFORE persistence (v3.6.9). The
+  // AI-gen path expands server-side; hand-pasted imports + "use template
+  // as plan" did not — so a blob with {"repeat": 3} stored one set and
+  // rendered as one. Doing it here makes the DB row the canonical
+  // (expanded) shape regardless of source. Idempotent: blobs that have
+  // already been expanded contain no `repeat` field and pass through
+  // untouched.
+  expandSetRepeatsInPlan(newPlan);
   if (!newPlan.start_date) {
     newPlan.start_date = sessionTodayDateString();
   }
@@ -3960,6 +3968,10 @@ async function saveAsTemplate(templateName, sourcePlanBlob) {
   if (!userId) throw new Error('Not signed in');
   if (!templateName || !templateName.trim()) throw new Error('Template name required');
   var blob = JSON.parse(JSON.stringify(sourcePlanBlob || {}));
+  // Canonicalize compact-set notation before persistence (v3.6.9).
+  // Same reasoning as savePlanAsActive — make the DB row the expanded
+  // shape so render-time code never sees {"repeat": N}.
+  expandSetRepeatsInPlan(blob);
   delete blob.start_date;
   delete blob.week;
   var r = await sb.from('plans').insert({
@@ -4693,6 +4705,42 @@ async function generateAiFormNote(exerciseRow) {
   var body = await res.json();
   if (!body || !body.reply) throw new Error('Empty reply');
   return String(body.reply).trim();
+}
+
+// Expand `"repeat": N` shorthand into N identical set objects, in place.
+// Mirrors api/generate-plan.js's expandSetRepeats so JSON pasted by a
+// Claude project (or hand-authored) renders the right set count instead
+// of collapsing to one. Recurses into superset blocks. Clamps N to
+// [1, 10] as a defense against bogus values. Called from both import
+// paths before save so the stored plan blob is already canonical.
+function expandSetRepeatsInPlan(planBlob) {
+  if (!planBlob || !Array.isArray(planBlob.days)) return planBlob;
+  function expandOne(ex) {
+    if (!ex || !Array.isArray(ex.sets)) return;
+    var out = [];
+    for (var i = 0; i < ex.sets.length; i++) {
+      var s = ex.sets[i] || {};
+      var raw = typeof s.repeat === 'number' ? s.repeat : parseInt(s.repeat, 10);
+      var n = Math.min(10, Math.max(1, Number.isFinite(raw) ? raw : 1));
+      var clean = Object.assign({}, s);
+      delete clean.repeat;
+      for (var k = 0; k < n; k++) out.push(Object.assign({}, clean));
+    }
+    ex.sets = out;
+  }
+  for (var di = 0; di < planBlob.days.length; di++) {
+    var day = planBlob.days[di];
+    if (!day || !Array.isArray(day.exercises)) continue;
+    for (var ei = 0; ei < day.exercises.length; ei++) {
+      var entry = day.exercises[ei];
+      if (entry && entry.superset === true && Array.isArray(entry.exercises)) {
+        for (var mi = 0; mi < entry.exercises.length; mi++) expandOne(entry.exercises[mi]);
+      } else {
+        expandOne(entry);
+      }
+    }
+  }
+  return planBlob;
 }
 
 function handleImport(event) {
