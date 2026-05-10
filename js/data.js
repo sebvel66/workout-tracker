@@ -4716,7 +4716,14 @@ async function saveAiFormNote(exerciseId, text) {
 // pure mechanics independent of the client's current plan. Output is
 // saved per-(user, exercise) in exercise_form_notes.ai_note and re-
 // read across many future sessions, so it has to be plan-independent.
-async function generateAiFormNote(exerciseRow) {
+//
+// userNote (v3.6.12, optional): the client's own free-text notes for
+// this exercise (exercise_form_notes.user_note). When present, the
+// system prompt instructs Claude to weave form-relevant content from
+// the notes into the description — cues, equipment quirks, mobility
+// limitations. Non-form content (weight numbers, set/rep goals) is
+// explicitly ignored per the system prompt's CLIENT NOTES rule.
+async function generateAiFormNote(exerciseRow, userNote) {
   if (!userId) throw new Error('Not signed in');
   if (!exerciseRow || !exerciseRow.name) throw new Error('Exercise not found');
   var sessionRes = await sb.auth.getSession();
@@ -4728,8 +4735,12 @@ async function generateAiFormNote(exerciseRow) {
   var prompt = 'Exercise: ' + exerciseRow.name +
     '\nEquipment: ' + (exerciseRow.equipment || 'unknown') +
     '\nPrimary muscle: ' + (exerciseRow.muscle_group || 'unspecified') +
-    '\nWeight mode: ' + (exerciseRow.weight_mode || 'total') +
-    '\n\nDescribe the form for this exercise per your rules.';
+    '\nWeight mode: ' + (exerciseRow.weight_mode || 'total');
+  var trimmedNote = userNote ? String(userNote).trim() : '';
+  if (trimmedNote) {
+    prompt += '\n\nCLIENT NOTES:\n' + trimmedNote;
+  }
+  prompt += '\n\nDescribe the form for this exercise per your rules.';
   var res = await fetch('/api/coach-chat', {
     method: 'POST',
     headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },

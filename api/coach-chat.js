@@ -90,13 +90,16 @@ OUTPUT RULES:
 - Reference the equipment, primary muscle, and weight mode you are given. If weight mode is "per_side," call out that the listed weight is per hand.
 - Direct, declarative voice. Imperative when giving cues ("Set feet hip-width, brace, hinge at the hips until the bar reaches mid-shin"). No hedging.
 
+CLIENT NOTES:
+The user message may include a CLIENT NOTES section — the user's own free-text notes on this exercise (cues that work for them, equipment quirks at their gym, ROM limitations they've discovered). Treat these as ground truth and weave the FORM-RELEVANT parts into your description: setup quirks, cues that fix their common error, equipment-specific positioning, mobility limitations that change the optimal joint angles. Ignore non-form content in the notes (weight progression goals, weight numbers, set/rep targets, scheduling) — that's not your job to repeat. When the section is absent or empty, write the description as if no prior notes exist.
+
 DO NOT INCLUDE:
 - Sets, reps, weights, percentages, RPE targets, tempo prescriptions, or any programming guidance.
 - References to the client's plan, history, phase, goals, injuries, or current session.
 - Substitution suggestions, exercise swaps, or progression advice.
 - General fitness commentary, motivational language, or coaching encouragement.
 
-You are NOT coaching this client today. You are documenting how this exercise is performed, period. The output will be saved and re-read across many future sessions.`;
+You are NOT coaching this client today. You are documenting how this exercise is performed for THIS client given their notes, period. The output will be saved and re-read across many future sessions.`;
 
 export default async function handler(req, res) {
   // Warmup branch — keep a Fluid Compute instance hot without touching Anthropic.

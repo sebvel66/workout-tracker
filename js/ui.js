@@ -2033,7 +2033,14 @@ async function onFormNotesRegen() {
   exModalState.formGenerating = true;
   renderExerciseModal();
   try {
-    var reply = await generateAiFormNote(exModalState.exerciseRow);
+    // Pass the current user note as additional context so the AI weaves
+    // form-relevant cues from it into the description. Falls back to
+    // the inline cache when the modal state was opened without a saved
+    // row yet.
+    var userNoteForModal = (exModalState.formNotes && exModalState.formNotes.user_note)
+      || (formNotesCache[exModalState.exerciseRow.id] && formNotesCache[exModalState.exerciseRow.id].user_note)
+      || '';
+    var reply = await generateAiFormNote(exModalState.exerciseRow, userNoteForModal);
     await saveAiFormNote(exModalState.exerciseRow.id, reply);
     exModalState.formNotes = exModalState.formNotes || {};
     exModalState.formNotes.ai_note = reply;
@@ -2071,7 +2078,11 @@ async function onInlineFormNotesRegen(ei, exerciseId) {
   formNotesExpanded[key] = true;
   buildDay(currentDay);
   try {
-    var reply = await generateAiFormNote(row);
+    // Inline cache holds the current user_note (kept in sync by the
+    // textarea blur handler + the modal save). Pass it through so the
+    // AI factors any form-relevant cues into the regen.
+    var userNoteForInline = (formNotesCache[exerciseId] && formNotesCache[exerciseId].user_note) || '';
+    var reply = await generateAiFormNote(row, userNoteForInline);
     await saveAiFormNote(exerciseId, reply);
     formNotesCache[exerciseId] = Object.assign({}, formNotesCache[exerciseId] || {}, {
       ai_note: reply,
