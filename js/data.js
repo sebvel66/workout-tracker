@@ -4640,6 +4640,44 @@ async function loadFormNotes(exerciseId) {
   }
 }
 
+// Batch loader — one query for many exercise_ids (v3.6.10). Powers the
+// inline form-notes pills on every live exercise card without N round-
+// trips. Returns a map { exercise_id: { user_note, ai_note,
+// ai_generated_at } } — missing ids simply don't appear in the map.
+async function loadFormNotesBatch(exerciseIds) {
+  if (!userId || !Array.isArray(exerciseIds) || !exerciseIds.length) return {};
+  var seen = {};
+  var unique = [];
+  for (var i = 0; i < exerciseIds.length; i++) {
+    var id = exerciseIds[i];
+    if (id && !seen[id]) { seen[id] = true; unique.push(id); }
+  }
+  if (!unique.length) return {};
+  try {
+    var res = await sb.from('exercise_form_notes')
+      .select('exercise_id, user_note, ai_note, ai_generated_at')
+      .eq('user_id', userId)
+      .in('exercise_id', unique);
+    if (res.error) {
+      console.warn('loadFormNotesBatch error:', res.error.message);
+      return {};
+    }
+    var map = {};
+    var rows = res.data || [];
+    for (var ri = 0; ri < rows.length; ri++) {
+      map[rows[ri].exercise_id] = {
+        user_note: rows[ri].user_note,
+        ai_note: rows[ri].ai_note,
+        ai_generated_at: rows[ri].ai_generated_at,
+      };
+    }
+    return map;
+  } catch (err) {
+    console.warn('loadFormNotesBatch exception:', err);
+    return {};
+  }
+}
+
 // Upsert path: insert if (user_id, exercise_id) row doesn't exist, else
 // update the user_note column only. Touches updated_at on either path.
 // Empty string is preserved (user explicitly cleared their note);

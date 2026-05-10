@@ -700,6 +700,7 @@ function renderPlanDayExerciseCard(di, ei, planEx, exState, mode, readOnly, badg
   var badgeHtml = badgeLabel ? '<span class="superset-badge">' + escapeHtml(badgeLabel) + '</span>' : '';
   h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + badgeHtml + escapeHtml(displayName) + prescribedBadge + '</div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(displayName) + '">view recent</button>' + chipHtml + '</div><div class="exercise-status ' + sc + '">' + stat + '</div>' + swapBtn + supersetBtn + '</div>';
   if (ex.note) h += '<div class="exercise-note">' + escapeHtml(ex.note) + '</div>';
+  h += renderInlineFormNotes(resolveCardExerciseId(ex, exState), ei, readOnly);
   h += '<div class="sets-container">';
 
   // Running count of standard (non-drop) sets so the S# label stays
@@ -843,6 +844,7 @@ function renderPlanDayExtraCard(di, xei, xState, mode, readOnly, badgeLabel) {
     '" aria-label="' + (xInBlock ? 'Remove from superset' : 'Pair as superset') +
     '" title="' + (xInBlock ? 'Remove from superset' : 'Pair as superset') + '">⟷</button>';
   h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + xBadgeHtml + escapeHtml(xMeta.name) + '<span class="extras-badge">added</span></div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(xMeta.name) + '">view recent</button>' + xChipHtml + '</div><div class="exercise-status ' + xsc + '">' + xstat + '</div>' + (readOnly ? '' : xSupersetBtn + '<button class="card-delete" data-di="' + di + '" data-ei="' + xei + '" aria-label="Delete exercise" type="button">×</button>') + '</div>';
+  h += renderInlineFormNotes(resolveCardExerciseId(null, xState), xei, readOnly);
   h += '<div class="sets-container">';
   var xStdSetNum = 0;
   for (var xsi2 = 0; xsi2 < xSetCount; xsi2++) {
@@ -903,6 +905,7 @@ function renderAdHocExerciseCard(di, ei, exState, badgeLabel) {
     '" aria-label="' + (inBlockAd ? 'Remove from superset' : 'Pair as superset') +
     '" title="' + (inBlockAd ? 'Remove from superset' : 'Pair as superset') + '">⟷</button>';
   h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + badgeHtml + escapeHtml(meta.name) + '</div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(meta.name) + '">view recent</button>' + adChipHtml + '</div><div class="exercise-status ' + sc + '">' + stat + '</div>' + supersetBtnAd + '<button class="card-delete" data-di="' + di + '" data-ei="' + ei + '" aria-label="Delete exercise" type="button">×</button></div>';
+  h += renderInlineFormNotes(resolveCardExerciseId(null, exState), ei, false);
   h += '<div class="sets-container">';
   var adStdSetNum = 0;
   for (var si = 0; si < setCount; si++) {
@@ -1073,6 +1076,16 @@ function buildDay(di) {
   } else {
     stopTimerTick();
   }
+
+  // Form notes (v3.6.10): clear per-card expansion state when switching
+  // days so a new day always opens collapsed. Then kick off the batch
+  // hydrate in the background — it'll re-paint this day once data lands
+  // if anything actually changed.
+  if (_formNotesExpandedDay !== di) {
+    formNotesExpanded = {};
+    _formNotesExpandedDay = di;
+  }
+  hydrateFormNotesForDay(di);
 }
 
 function buildAdHocDay(di) {
@@ -1167,6 +1180,13 @@ function buildAdHocDay(di) {
   } else {
     stopTimerTick();
   }
+
+  // Form notes: same day-switch + hydrate pattern as buildDay.
+  if (_formNotesExpandedDay !== di) {
+    formNotesExpanded = {};
+    _formNotesExpandedDay = di;
+  }
+  hydrateFormNotesForDay(di);
 }
 
 // ---- Hamburger menu ----
@@ -1780,6 +1800,23 @@ function renderStartPathDayList() {
 // State is module-scoped so tab switches don't trigger re-fetches.
 var exModalState = { tab: 'recent', exerciseRow: null, exerciseName: null, sessionsHtml: '', formNotes: null, formGenerating: false };
 
+// ---- Inline form notes on live cards (v3.6.10) ----
+// formNotesCache mirrors the exercise_form_notes table for ids the user
+// has touched recently. Hydrated batch-style by hydrateFormNotesForDay
+// on every buildDay; mutated in place by the inline regen + blur paths
+// AND by the modal save paths so all three surfaces share one source
+// of truth. Never cleared between days — same exercise across days
+// reuses its entry.
+var formNotesCache = {};
+// Per-card expansion state (collapsed by default). Keyed by ex_<ei> so
+// re-rendering the same card (e.g. after a set toggle) keeps the panel
+// open. Reset whenever buildDay paints a different day (currentDay flip).
+var formNotesExpanded = {};
+var _formNotesExpandedDay = null;
+// Per-card AI generation in-flight flag. Disables the regen button +
+// flips its label to "Generating…" until the API call resolves.
+var formNotesGenerating = {};
+
 async function openExerciseHistory(exerciseName) {
   var title = exerciseName || 'Recent';
   document.getElementById('exHistoryTitle').textContent = title;
@@ -2001,12 +2038,71 @@ async function onFormNotesRegen() {
     exModalState.formNotes = exModalState.formNotes || {};
     exModalState.formNotes.ai_note = reply;
     exModalState.formNotes.ai_generated_at = new Date().toISOString();
+    // Mirror into the inline cache so the live card reflects the new
+    // note without a roundtrip (the modal + card share one cache).
+    formNotesCache[exModalState.exerciseRow.id] = Object.assign(
+      {}, formNotesCache[exModalState.exerciseRow.id] || {}, {
+        ai_note: reply,
+        ai_generated_at: exModalState.formNotes.ai_generated_at,
+      }
+    );
   } catch (err) {
     console.error('onFormNotesRegen error:', err);
     showToast('Couldn\'t generate notes: ' + (err.message || 'unknown'), null);
   } finally {
     exModalState.formGenerating = false;
     renderExerciseModal();
+  }
+}
+
+// Inline form-notes regen (v3.6.10). Same Claude flow as the modal,
+// triggered from the inline pill's "Get form cue" / "Refresh" button.
+// Resolves the exercise library row by id so the AI prompt has
+// equipment + muscle_group + weight_mode (mirrors the modal path).
+async function onInlineFormNotesRegen(ei, exerciseId) {
+  var key = 'ex_' + ei;
+  if (formNotesGenerating[key]) return;
+  var row = exerciseLibraryById && exerciseLibraryById[exerciseId];
+  if (!row) {
+    showToast('Exercise not found in library — cannot generate.', null);
+    return;
+  }
+  formNotesGenerating[key] = true;
+  formNotesExpanded[key] = true;
+  buildDay(currentDay);
+  try {
+    var reply = await generateAiFormNote(row);
+    await saveAiFormNote(exerciseId, reply);
+    formNotesCache[exerciseId] = Object.assign({}, formNotesCache[exerciseId] || {}, {
+      ai_note: reply,
+      ai_generated_at: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('onInlineFormNotesRegen error:', err);
+    showToast("Couldn't generate notes: " + (err.message || 'unknown'), null);
+  } finally {
+    formNotesGenerating[key] = false;
+    buildDay(currentDay);
+  }
+}
+
+// Inline form-notes user-note save (v3.6.10). Fires on blur via the
+// workoutContainer 'change' handler. Same upsert path as the modal;
+// mirrors into formNotesCache so a re-render shows the saved text
+// without re-fetching. Trims; empty string IS saved (user clearing).
+async function onInlineFormNotesUserBlur(exerciseId, value) {
+  if (!exerciseId) return;
+  var text = String(value || '').trim();
+  var prev = (formNotesCache[exerciseId] && formNotesCache[exerciseId].user_note) || '';
+  if (text === prev) return;
+  try {
+    await saveUserFormNote(exerciseId, text);
+    formNotesCache[exerciseId] = Object.assign({}, formNotesCache[exerciseId] || {}, {
+      user_note: text,
+    });
+  } catch (err) {
+    console.error('onInlineFormNotesUserBlur error:', err);
+    showToast("Couldn't save note: " + (err.message || 'unknown'), null);
   }
 }
 
@@ -2022,6 +2118,11 @@ async function onFormNotesUserBlur(textarea) {
     await saveUserFormNote(exModalState.exerciseRow.id, text);
     exModalState.formNotes = exModalState.formNotes || {};
     exModalState.formNotes.user_note = text;
+    // Mirror into the inline cache so the next live-card render
+    // reflects the modal-side edit.
+    formNotesCache[exModalState.exerciseRow.id] = Object.assign(
+      {}, formNotesCache[exModalState.exerciseRow.id] || {}, { user_note: text }
+    );
     if (status) {
       status.textContent = 'Saved';
       setTimeout(function() {
@@ -2038,6 +2139,134 @@ async function onFormNotesUserBlur(textarea) {
 
 function closeExerciseHistory() {
   document.getElementById('exHistoryOverlay').classList.remove('show');
+}
+
+// Resolve the exercise_id for a live card. Substitution wins over the
+// prescribed name so form notes track the actually-performed move
+// (mirrors how persistSet picks exercise_id). Extras + ad-hoc carry
+// exerciseId on exState directly. For prescribed plan exercises that
+// haven't been logged yet, exerciseIdCache may not be seeded — fall
+// back to the library by name so the inline pill renders pre-session
+// too. Returns null only when nothing resolves.
+function resolveCardExerciseId(planEx, exState) {
+  if (exState && exState.subExercise && exState.subExercise.id) return exState.subExercise.id;
+  if (exState && exState.exerciseId) return exState.exerciseId;
+  if (planEx && planEx.name) {
+    var normed = normName(planEx.name);
+    var cached = exerciseIdCache[normed];
+    if (cached) return cached;
+    var lib = exerciseLibraryByName && exerciseLibraryByName[normed];
+    if (lib && lib.id) return lib.id;
+  }
+  return null;
+}
+
+// Inline form-notes pill renderer (v3.6.10). Collapsed by default;
+// expands inline to show the AI Coach Notes + My Notes content the
+// modal exposes. Same data, no modal-open required. The "Get form
+// cue" / "Refresh" button fires the existing generateAiFormNote flow
+// so this surface stays a thin client of the modal's logic.
+function renderInlineFormNotes(exerciseId, ei, readOnly) {
+  if (!exerciseId) return '';
+  var fn = formNotesCache[exerciseId] || {};
+  var aiNote = fn.ai_note || '';
+  var userNote = fn.user_note || '';
+  var expanded = !!formNotesExpanded['ex_' + ei];
+  var generating = !!formNotesGenerating['ex_' + ei];
+  var label;
+  if (aiNote && userNote) label = 'Form notes — AI + yours';
+  else if (aiNote) label = 'Form notes — AI';
+  else if (userNote) label = 'Form notes — yours';
+  else label = 'Form notes';
+  var caret = expanded ? '▾' : '▸';
+  var exidAttr = escapeAttr(exerciseId);
+  var h = '<div class="form-notes-inline' + (expanded ? ' expanded' : '') + '">';
+  h += '<button type="button" class="form-notes-toggle" data-toggle-form-notes="1" data-ei="' + ei + '">' +
+       '<span class="form-notes-caret">' + caret + '</span><span class="form-notes-toggle-label">' + escapeHtml(label) + '</span></button>';
+  if (expanded) {
+    h += '<div class="form-notes-body">';
+    h += '<div class="form-notes-row">';
+    h += '<div class="form-notes-row-header"><span class="form-notes-row-label">AI Coach Notes</span>';
+    h += '<button type="button" class="form-notes-row-btn" data-regen-form-notes="1" data-ei="' + ei + '" data-exid="' + exidAttr + '"' +
+         (generating ? ' disabled' : '') + '>' +
+         (generating ? 'Generating…' : (aiNote ? 'Refresh' : 'Get form cue')) + '</button>';
+    h += '</div>';
+    if (aiNote) {
+      h += '<div class="form-notes-text">' + escapeHtml(aiNote) + '</div>';
+    } else if (generating) {
+      h += '<div class="form-notes-text" style="opacity:.55">…</div>';
+    } else {
+      h += '<div class="form-notes-empty">Tap "Get form cue" for 3-4 sentences of cues you can come back to.</div>';
+    }
+    h += '</div>';
+    h += '<div class="form-notes-row">';
+    h += '<div class="form-notes-row-header"><span class="form-notes-row-label">My Notes</span></div>';
+    h += '<textarea class="form-notes-inline-input" data-user-form-notes="1" data-exid="' + exidAttr + '" data-ei="' + ei + '" rows="2" placeholder="Cues, equipment quirks, anything to remember"' +
+         (readOnly ? ' disabled' : '') + '>' + escapeHtml(userNote) + '</textarea>';
+    h += '</div>';
+    h += '</div>';
+  }
+  h += '</div>';
+  return h;
+}
+
+// Batch-hydrate formNotesCache for every exercise_id on `di`. Fires
+// async after buildDay paints; re-renders the day only if the fresh
+// load mutated any cached entry (so subsequent day switches with no
+// new data don't double-paint). Pulls ids from todayState first
+// (covers substitutions + extras + ad-hoc), falls back to the plan-
+// day's prescribed names via exerciseIdCache for cards that aren't
+// in state yet (pre-session view).
+async function hydrateFormNotesForDay(di) {
+  if (!userId) return;
+  var ids = [];
+  if (todayState && todayState.exercises) {
+    for (var k in todayState.exercises) {
+      var ex = todayState.exercises[k];
+      if (!ex) continue;
+      if (ex.subExercise && ex.subExercise.id) ids.push(ex.subExercise.id);
+      else if (ex.exerciseId) ids.push(ex.exerciseId);
+    }
+  }
+  function _hfnResolve(name) {
+    if (!name) return null;
+    var normed = normName(name);
+    var cached = exerciseIdCache[normed];
+    if (cached) return cached;
+    var lib = exerciseLibraryByName && exerciseLibraryByName[normed];
+    return (lib && lib.id) || null;
+  }
+  if (plan && plan.days && plan.days[di] && Array.isArray(plan.days[di].exercises)) {
+    var dayPlan = plan.days[di];
+    for (var ei = 0; ei < dayPlan.exercises.length; ei++) {
+      var entry = dayPlan.exercises[ei];
+      if (entry && entry.superset === true && Array.isArray(entry.exercises)) {
+        for (var mi = 0; mi < entry.exercises.length; mi++) {
+          var m = entry.exercises[mi];
+          var mid = _hfnResolve(m && m.name);
+          if (mid) ids.push(mid);
+        }
+      } else if (entry) {
+        var pid = _hfnResolve(entry.name);
+        if (pid) ids.push(pid);
+      }
+    }
+  }
+  if (!ids.length) return;
+  var fresh = await loadFormNotesBatch(ids);
+  var changed = false;
+  for (var fid in fresh) {
+    var prev = formNotesCache[fid];
+    var nxt = fresh[fid];
+    if (!prev
+        || prev.user_note !== nxt.user_note
+        || prev.ai_note !== nxt.ai_note
+        || prev.ai_generated_at !== nxt.ai_generated_at) {
+      changed = true;
+    }
+    formNotesCache[fid] = nxt;
+  }
+  if (changed && currentDay === di) buildDay(di);
 }
 
 // ---- History browser (weekly summary + detail) ----
@@ -8193,6 +8422,26 @@ document.getElementById('workoutContainer').addEventListener('click', function(e
     );
     return;
   }
+  // Inline form notes (v3.6.10): expand/collapse pill.
+  var fnToggle = target.closest ? target.closest('[data-toggle-form-notes]') : null;
+  if (fnToggle) {
+    var fnEi = fnToggle.getAttribute('data-ei');
+    if (fnEi != null) {
+      var fnKey = 'ex_' + fnEi;
+      formNotesExpanded[fnKey] = !formNotesExpanded[fnKey];
+      buildDay(currentDay);
+    }
+    return;
+  }
+  // Inline form notes: regen / "Get form cue" button.
+  var fnRegen = target.closest ? target.closest('[data-regen-form-notes]') : null;
+  if (fnRegen) {
+    if (fnRegen.disabled) return;
+    var rEi = fnRegen.getAttribute('data-ei');
+    var rExid = fnRegen.getAttribute('data-exid');
+    if (rEi != null && rExid) onInlineFormNotesRegen(parseInt(rEi, 10), rExid);
+    return;
+  }
   // Superset pair / unpair (v3.4.0). On standalone cards opens the merge
   // picker. On cards inside a block, removes from the superset (Task 10
   // wires the unpair branch; here a no-op stub).
@@ -8444,5 +8693,13 @@ document.getElementById('workoutContainer').addEventListener('change', function(
       var ldiVal = ldi.indexOf('ah_') === 0 ? ldi : parseInt(ldi, 10);
       persistWorkoutLocation(ldiVal, t.value || null);
     }
+  }
+  // Inline form notes (v3.6.10) — user note saves on blur via the
+  // `change` event (fires when the textarea loses focus). Same upsert
+  // path the modal uses (saveUserFormNote); also patches the in-memory
+  // formNotesCache so the next render reflects it.
+  if (t.hasAttribute && t.hasAttribute('data-user-form-notes')) {
+    var ufnExid = t.getAttribute('data-exid');
+    if (ufnExid) onInlineFormNotesUserBlur(ufnExid, t.value);
   }
 });
