@@ -6979,8 +6979,12 @@ function startRestTimer(sec) {
   // Drag (v3.6.2): clear any inline transform so the new rest spawns at
   // the default position, even if the previous rest was dragged. Also
   // strips dragging class in case stopRestTimer didn't run cleanly.
+  // v3.6.8: also reset the persisted drag offset so the next drag in
+  // this fresh rest starts composing from (0, 0), not from the prior
+  // rest's last landing spot.
   pill.style.transform = '';
   pill.classList.remove('dragging');
+  resetRestTimerDragOffset();
   updateRestDisplay();
   // 250ms tick so catch-up after backgrounding feels snappy; the callback
   // itself is cheap (one DOM read, one Date.now(), one DOM write).
@@ -8011,16 +8015,28 @@ document.getElementById('btnRest').addEventListener('click', function() { startR
 document.getElementById('btnStopRest').addEventListener('click', stopRestTimer);
 document.getElementById('restOverlay').addEventListener('click', stopRestTimer);
 
-// Rest timer drag-to-move (v3.6.2). Pointer-events for unified mobile +
-// desktop. Drag only initiates on pointerdown to non-button regions of
-// the pill so the buttons (-15s / +15s / Skip) stay clickable. 5px
-// threshold before entering drag mode means short taps near the time
-// display don't shift the pill. Position resets to default on every
-// new rest period (startRestTimer clears inline transform).
+// Rest timer drag-to-move (v3.6.2; v3.6.8 fix: drags compose). Pointer-
+// events for unified mobile + desktop. Drag only initiates on pointerdown
+// to non-button regions of the pill so the buttons (-15s / +15s / Skip)
+// stay clickable. 5px threshold before entering drag mode means short
+// taps near the time display don't shift the pill. Position resets to
+// default on every new rest period (startRestTimer clears inline
+// transform AND resets the persisted offset via resetRestTimerDragOffset).
+//
+// v3.6.8: each pointerdown now captures the pill's CURRENT offset as the
+// drag base. Without this, the second drag would teleport the pill back
+// toward the default centered position — the bug described as "moves
+// another direction or overshoots."
+var _restPillOffsetX = 0;
+var _restPillOffsetY = 0;
+function resetRestTimerDragOffset() {
+  _restPillOffsetX = 0;
+  _restPillOffsetY = 0;
+}
 (function wireRestTimerDrag() {
   var pill = document.getElementById('restTimer');
   if (!pill) return;
-  var dragState = null;  // { startX, startY, dragging } | null
+  var dragState = null;  // { startX, startY, baseX, baseY, dragging } | null
   var DRAG_THRESHOLD = 5;
 
   pill.addEventListener('pointerdown', function(e) {
@@ -8028,8 +8044,8 @@ document.getElementById('restOverlay').addEventListener('click', stopRestTimer);
     dragState = {
       startX: e.clientX,
       startY: e.clientY,
-      dx: 0,
-      dy: 0,
+      baseX: _restPillOffsetX,
+      baseY: _restPillOffsetY,
       pointerId: e.pointerId,
       dragging: false,
     };
@@ -8037,25 +8053,32 @@ document.getElementById('restOverlay').addEventListener('click', stopRestTimer);
 
   pill.addEventListener('pointermove', function(e) {
     if (!dragState || e.pointerId !== dragState.pointerId) return;
-    dragState.dx = e.clientX - dragState.startX;
-    dragState.dy = e.clientY - dragState.startY;
+    var dx = e.clientX - dragState.startX;
+    var dy = e.clientY - dragState.startY;
     if (!dragState.dragging) {
-      var moved = Math.abs(dragState.dx) + Math.abs(dragState.dy);
+      var moved = Math.abs(dx) + Math.abs(dy);
       if (moved < DRAG_THRESHOLD) return;
       dragState.dragging = true;
       pill.classList.add('dragging');
       try { pill.setPointerCapture(e.pointerId); } catch (_) {}
     }
     e.preventDefault();
-    // Compose with the centering offset (-50%) so the pill moves
-    // relative to its default centered position.
-    pill.style.transform = 'translate(calc(-50% + ' + dragState.dx + 'px), ' + dragState.dy + 'px)';
+    dragState.lastX = dragState.baseX + dx;
+    dragState.lastY = dragState.baseY + dy;
+    // Compose with the centering offset (-50%) so X moves relative to
+    // the pill's default-centered baseline, while Y is a plain offset.
+    pill.style.transform = 'translate(calc(-50% + ' + dragState.lastX + 'px), ' + dragState.lastY + 'px)';
   });
 
   function endDrag(e) {
     if (!dragState) return;
     if (e && dragState.pointerId !== e.pointerId) return;
     if (dragState.dragging) {
+      // Persist the last applied offset so the next drag composes on top
+      // of it. Read from dragState (set on pointermove) rather than re-
+      // deriving from e — pointercancel may fire with stale coords.
+      _restPillOffsetX = dragState.lastX;
+      _restPillOffsetY = dragState.lastY;
       try { pill.releasePointerCapture(dragState.pointerId); } catch (_) {}
       pill.classList.remove('dragging');
     }
