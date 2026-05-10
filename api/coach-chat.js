@@ -73,6 +73,31 @@ The first user message may also include a SAVED TEMPLATES section — compact su
 WEEKLY VOLUME TREND:
 The first user message may include a WEEKLY VOLUME TREND section — one line per muscle group with a chronological series of weekly set counts (oldest → newest) plus a window average. Counts use Schoenfeld fractional counting (primary muscle = 1.0, each secondary = 0.5) — the same numbers the client sees in the Body / Volume Trends dashboard. Use it to spot drift, ramps, or deficits at a glance: "Your back volume dropped from 18 → 12 over the last two weeks — let's bring it back up." Compare against the client's phase target band (accumulation 10-20 / maintain 8-12 / cut 5-8) when discussing volume changes. Don't restate every muscle's numbers — pick the 1-2 that matter for the question.`;
 
+// Narrow biomechanics-only system prompt for the form-cue surface
+// (v3.6.11). Used when the request carries mode: 'form_only' — bypasses
+// the full coach system prompt + the profile/history/templates context
+// splice. The output is meant to be SAVED PER EXERCISE and re-read on
+// later sessions, so it has to be timeless and independent of the
+// client's current plan/phase/volume. The coach system prompt was
+// pulling the response toward "what should you do TODAY" instead of
+// "how do you execute this movement"; this fixes that by giving the
+// model a different role entirely.
+const FORM_ONLY_SYSTEM_PROMPT = `You are a strength-training biomechanics reference. Given ONE exercise — its name, equipment, primary muscle, and weight mode — you describe how to perform it with correct form.
+
+OUTPUT RULES:
+- 3-4 sentences of plain text. No headers, no bullet points, no markdown.
+- Cover, in order: (1) setup / stance / grip / hand or foot position, (2) bracing + breathing pattern, (3) the key joint angles + ROM that define the movement, (4) the 1-2 most common form errors and how to avoid them.
+- Reference the equipment, primary muscle, and weight mode you are given. If weight mode is "per_side," call out that the listed weight is per hand.
+- Direct, declarative voice. Imperative when giving cues ("Set feet hip-width, brace, hinge at the hips until the bar reaches mid-shin"). No hedging.
+
+DO NOT INCLUDE:
+- Sets, reps, weights, percentages, RPE targets, tempo prescriptions, or any programming guidance.
+- References to the client's plan, history, phase, goals, injuries, or current session.
+- Substitution suggestions, exercise swaps, or progression advice.
+- General fitness commentary, motivational language, or coaching encouragement.
+
+You are NOT coaching this client today. You are documenting how this exercise is performed, period. The output will be saved and re-read across many future sessions.`;
+
 export default async function handler(req, res) {
   // Warmup branch — keep a Fluid Compute instance hot without touching Anthropic.
   // Accept GET or POST for convenience; cron hits via GET.
@@ -120,47 +145,64 @@ export default async function handler(req, res) {
       console.warn('coach-chat: model fallback', { requested: requestedModel, resolved: model });
     }
 
-    // Side-channel fetches for profile + coach history. Run in parallel;
-    // both are non-fatal (formatters return '' on empty input). The
-    // results get spliced into messages[0] (the COACHING CONTEXT block
-    // the frontend pre-assembles): profile at the top so Claude reads
-    // "who is this client" first, history before the "Please acknowledge"
-    // trailer so the order is profile → context → history → ack.
-    const t_side = Date.now();
-    const [coachHistory, coachingProfile, userTemplates] = await Promise.all([
-      fetchRecentCoachHistory(userId, 2),
-      fetchCoachingProfile(userId),
-      fetchUserTemplates(userId),
-    ]);
-    console.log('[coach-chat] side fetches:', Date.now() - t_side, 'ms · msgs:', coachHistory.length, '· profile:', coachingProfile ? 'yes' : 'no', '· templates:', userTemplates.length);
+    // form_only mode (v3.6.11): pure-biomechanics call from the inline
+    // form-notes pill. Bypasses the broad coach system prompt + the
+    // profile/history/templates splicing — neither helps and both pull
+    // the response toward "coach this client today" instead of "explain
+    // how to execute this movement." Output is saved per exercise and
+    // re-read across sessions, so it must be plan-independent.
+    const formOnlyMode = body && body.mode === 'form_only';
 
-    // Prepend CLIENT PROFILE to messages[0].content. formatCoachingProfile
-    // always returns a non-empty string (either the profile block or a
-    // "not set" fallback), so Claude always sees a profile section.
-    const profileBlock = formatCoachingProfile(coachingProfile);
-    if (profileBlock) {
-      messages[0].content = profileBlock + '\n' + messages[0].content;
-    }
+    if (!formOnlyMode) {
+      // Side-channel fetches for profile + coach history. Run in parallel;
+      // both are non-fatal (formatters return '' on empty input). The
+      // results get spliced into messages[0] (the COACHING CONTEXT block
+      // the frontend pre-assembles): profile at the top so Claude reads
+      // "who is this client" first, history before the "Please acknowledge"
+      // trailer so the order is profile → context → history → ack.
+      const t_side = Date.now();
+      const [coachHistory, coachingProfile, userTemplates] = await Promise.all([
+        fetchRecentCoachHistory(userId, 2),
+        fetchCoachingProfile(userId),
+        fetchUserTemplates(userId),
+      ]);
+      console.log('[coach-chat] side fetches:', Date.now() - t_side, 'ms · msgs:', coachHistory.length, '· profile:', coachingProfile ? 'yes' : 'no', '· templates:', userTemplates.length);
 
-    // Append coach history + templates before the trailer. Both side-channel
-    // fetches are non-fatal (formatters return '' on empty input). Order:
-    // history first (most relevant for continuity), templates after (more
-    // reference-y).
-    const historyBlock = formatCoachHistory(coachHistory);
-    const templatesBlock = formatUserTemplates(userTemplates);
-    const append = [historyBlock, templatesBlock].filter(Boolean).join('\n\n');
-    if (append) {
-      const trailer = '\n\nPlease acknowledge you have this context.';
-      const idx = messages[0].content.lastIndexOf(trailer);
-      if (idx > -1) {
-        messages[0].content = messages[0].content.slice(0, idx)
-          + '\n\n' + append + trailer;
-      } else {
-        // Frontend may have changed the trailer; append at end so the
-        // context is still in the prompt.
-        messages[0].content += '\n\n' + append;
+      // Prepend CLIENT PROFILE to messages[0].content. formatCoachingProfile
+      // always returns a non-empty string (either the profile block or a
+      // "not set" fallback), so Claude always sees a profile section.
+      const profileBlock = formatCoachingProfile(coachingProfile);
+      if (profileBlock) {
+        messages[0].content = profileBlock + '\n' + messages[0].content;
       }
+
+      // Append coach history + templates before the trailer. Both side-channel
+      // fetches are non-fatal (formatters return '' on empty input). Order:
+      // history first (most relevant for continuity), templates after (more
+      // reference-y).
+      const historyBlock = formatCoachHistory(coachHistory);
+      const templatesBlock = formatUserTemplates(userTemplates);
+      const append = [historyBlock, templatesBlock].filter(Boolean).join('\n\n');
+      if (append) {
+        const trailer = '\n\nPlease acknowledge you have this context.';
+        const idx = messages[0].content.lastIndexOf(trailer);
+        if (idx > -1) {
+          messages[0].content = messages[0].content.slice(0, idx)
+            + '\n\n' + append + trailer;
+        } else {
+          // Frontend may have changed the trailer; append at end so the
+          // context is still in the prompt.
+          messages[0].content += '\n\n' + append;
+        }
+      }
+    } else {
+      console.log('[coach-chat] form_only mode — skipping side-channel fetches + context splice');
     }
+
+    // Pick the system prompt based on mode. Each gets its own 1h cache
+    // window in the Anthropic prompt cache; both stay warm under regular
+    // use without contaminating each other.
+    const systemPromptText = formOnlyMode ? FORM_ONLY_SYSTEM_PROMPT : COACH_SYSTEM_PROMPT;
 
     const t0 = Date.now();
     // Client-initiated timeout. Coach chat should never take more than ~8s
@@ -183,9 +225,10 @@ export default async function handler(req, res) {
           ...(modelSupportsTemperature(model) ? { temperature: TEMPERATURE } : {}),
           system: [{
             type: 'text',
-            text: COACH_SYSTEM_PROMPT,
+            text: systemPromptText,
             // Cache the system prompt for an hour. System prompt rarely
             // changes; repeated chat messages hit cache and cut input cost.
+            // form_only and the default coach prompt cache independently.
             cache_control: { type: 'ephemeral', ttl: '1h' },
           }],
           messages: messages,

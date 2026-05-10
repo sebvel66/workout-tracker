@@ -4709,30 +4709,33 @@ async function saveAiFormNote(exerciseId, text) {
   if (res.error) throw new Error(res.error.message);
 }
 
-// Fire a focused coach-chat call asking for 3-4 sentences of form cues
-// on this specific exercise. Reuses the existing /api/coach-chat endpoint
-// (Haiku, ~1-2s warm) so no new API surface; the coach already has form
-// cues as part of its remit per COACH_SYSTEM_PROMPT. The exercise's
-// library row provides equipment / muscle_group / weight_mode for the
-// prompt — concrete signals about how to think about loading + ROM.
+// Fire a focused biomechanics-only call asking for 3-4 sentences of
+// form cues on this specific exercise. Uses /api/coach-chat with
+// mode: 'form_only' (v3.6.11) — that swaps in FORM_ONLY_SYSTEM_PROMPT
+// and skips the profile/history/templates splicing, so the response is
+// pure mechanics independent of the client's current plan. Output is
+// saved per-(user, exercise) in exercise_form_notes.ai_note and re-
+// read across many future sessions, so it has to be plan-independent.
 async function generateAiFormNote(exerciseRow) {
   if (!userId) throw new Error('Not signed in');
   if (!exerciseRow || !exerciseRow.name) throw new Error('Exercise not found');
   var sessionRes = await sb.auth.getSession();
   var token = sessionRes.data && sessionRes.data.session && sessionRes.data.session.access_token;
   if (!token) throw new Error('Not signed in');
-  var prompt = 'Form notes for "' + exerciseRow.name + '"' +
-    ' (equipment: ' + (exerciseRow.equipment || 'unknown') +
-    ', primary muscle: ' + (exerciseRow.muscle_group || '?') +
-    ', weight mode: ' + (exerciseRow.weight_mode || 'total') +
-    '). Give 3-4 sentences of the most important form cues — setup / bracing,' +
-    ' joint angles, ROM, common errors. Direct and actionable. Plain text,' +
-    ' no markdown headers or bullet points.';
+  // Compact data-only prompt — the system prompt does the heavy lifting.
+  // Avoids re-stating output rules in every user message (which would
+  // miss the prompt cache and add tokens with no benefit).
+  var prompt = 'Exercise: ' + exerciseRow.name +
+    '\nEquipment: ' + (exerciseRow.equipment || 'unknown') +
+    '\nPrimary muscle: ' + (exerciseRow.muscle_group || 'unspecified') +
+    '\nWeight mode: ' + (exerciseRow.weight_mode || 'total') +
+    '\n\nDescribe the form for this exercise per your rules.';
   var res = await fetch('/api/coach-chat', {
     method: 'POST',
     headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: modelForCoach(),
+      mode: 'form_only',
       messages: [{ role: 'user', content: prompt }],
     }),
   });
