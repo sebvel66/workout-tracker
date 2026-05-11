@@ -1724,6 +1724,15 @@ body[data-view="log"] #logView { display: block; }
   color: #ee6e62;
   border-color: rgba(244, 67, 54, 0.35);
 }
+/* No data in this mode (v3.6.16) — value is 0 OR band is missing.
+ * Grey so the dual-row layout stays parallel without falsely lighting
+ * up red for a muscle that's getting indirect work via the other mode. */
+.pv-empty {
+  background: rgba(180, 180, 180, 0.08);
+  color: var(--text2);
+  border-color: rgba(180, 180, 180, 0.2);
+  opacity: 0.75;
+}
 
 /* Dual-row chip layout (v3.6.14). Renders primary + fractional counts
  * for the same muscles as parallel rows so the user can see at a

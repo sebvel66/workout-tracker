@@ -2670,16 +2670,24 @@ function _dualChipRowsHtml(primaryCounts, fractionalCounts) {
     return fb - fa;
   });
   function chipFor(m, mode, counts) {
-    var v = counts[m];
+    var raw = counts[m];
+    var v = (raw == null) ? 0 : raw;
     var band = muscleVolumeBand(m, mode);
-    var label;
-    if (v == null) {
-      label = '—';
+    var label = (v === Math.floor(v)) ? String(v) : v.toFixed(1);
+    // No-data chip (v3.6.16): zero in this mode → neutral grey, not the
+    // band-driven color. Avoids the misleading "your primary count is
+    // below MEV, so red" for a muscle that's getting plenty of work
+    // indirectly (e.g., triceps with no direct sets but +6 from presses).
+    // Same treatment when the (muscle, mode) has no band configured.
+    var status;
+    if (v === 0) {
+      status = 'empty';
+    } else if (!band) {
+      status = 'empty';
     } else {
-      label = (v === Math.floor(v)) ? String(v) : v.toFixed(1);
+      status = muscleBandStatus(v, band);
     }
-    var status = (v != null) ? muscleBandStatus(v, band) : null;
-    var cls = muscleBandStatusCssClass(status);
+    var cls = (status === 'empty') ? 'pv-empty' : muscleBandStatusCssClass(status);
     var title = band
       ? 'MEV ' + band.mev + ' · MAV ' + band.mavLow + '-' + band.mavHigh + ' · MRV ' + band.mrv
       : (mode === 'fractional' ? 'No fractional band set' : 'No band set');
