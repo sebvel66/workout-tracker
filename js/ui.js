@@ -669,7 +669,13 @@ function renderPlanDayExerciseCard(di, ei, planEx, exState, mode, readOnly, badg
   var libDefault = (exState.subExercise && exState.subExercise.weight_mode)
     ? exState.subExercise.weight_mode
     : weightModeForName(ex.name);
-  var weightMode = (exState.sets[0] && exState.sets[0].weight_mode) || libDefault;
+  // v3.6.15: prefer exState.weight_mode_override (pre-session chip toggle)
+  // before falling back to the first persisted set's stamp, then library
+  // default. Lets the chip reflect a pre-session toggle without needing
+  // any sets to exist yet.
+  var weightMode = (exState && exState.weight_mode_override)
+    || (exState.sets[0] && exState.sets[0].weight_mode)
+    || libDefault;
   // Cardio detection follows the displayed exercise name — substitutes
   // can flip a resistance prescription into a cardio one (e.g., user
   // subs incline treadmill walk for a stalled accessory).
@@ -818,8 +824,11 @@ function renderPlanDayExtraCard(di, xei, xState, mode, readOnly, badgeLabel) {
   var xMeta = xState.exerciseMeta || { name: 'Exercise', weight_mode: 'total' };
   // Card-level effective mode (v3.1.0): per-set override on sets[0] wins
   // over the library default. Every set in a placement carries the same
-  // value (the toggle fan-out keeps them in sync).
-  var xWeightMode = effectiveWeightMode(xState.sets[0], xMeta);
+  // value (the toggle fan-out keeps them in sync). v3.6.15 adds the
+  // exState.weight_mode_override path so pre-session chip toggles render
+  // before any sets exist.
+  var xWeightMode = (xState && xState.weight_mode_override)
+    || effectiveWeightMode(xState.sets[0], xMeta);
   var xIsCardio = xMeta.muscle_group === 'cardio';
   var xSetCount = xState.sets.length || 1;
   var totalSets = xSetCount;
@@ -881,7 +890,10 @@ function renderPlanDayExtraCard(di, xei, xState, mode, readOnly, badgeLabel) {
 function renderAdHocExerciseCard(di, ei, exState, badgeLabel) {
   var h = '';
   var meta = exState.exerciseMeta || { name: 'Exercise', weight_mode: 'total' };
-  var weightMode = effectiveWeightMode(exState.sets[0], meta);
+  // v3.6.15: exState.weight_mode_override takes precedence so pre-set-creation
+  // chip toggles render correctly.
+  var weightMode = (exState && exState.weight_mode_override)
+    || effectiveWeightMode(exState.sets[0], meta);
   var isCardioRow = meta.muscle_group === 'cardio';
   var setCount = exState.sets.length || 1;
   var totalSets = setCount;
@@ -8650,22 +8662,27 @@ document.getElementById('workoutContainer').addEventListener('click', function(e
     var wmEi = parseInt(wmChip.getAttribute('data-toggle-weight-mode-ei'), 10);
     if (isNaN(wmEi)) return;
     var wmDi = currentDay;
-    var wmSt = isAdHocKey(wmDi) ? findAdHoc(wmDi) : todayState;
+    // v3.6.15: lazy-init state so the chip works pre-session (was bailing
+    // when todayState was null on plan-day cards before Start Session).
+    // getOrInitToday creates the in-memory shell without inserting a DB
+    // row; setExerciseWeightMode does the same lazy-init internally.
+    var wmSt = isAdHocKey(wmDi) ? findAdHoc(wmDi) : getOrInitToday(wmDi);
     if (!wmSt) return;
-    var wmExState = wmSt.exercises['ex_' + wmEi];
-    if (!wmExState) return;
+    var wmExState = getOrInitExercise(wmSt, wmEi);
     // Resolve meta the same way the chip render does. exerciseMeta is
     // only attached in stateFromWorkout for ad-hoc / extras-on-plan rows;
     // for plan-day prescribed exercises we fall back to the library row
-    // by name (matches the chip render at js/ui.js render site for
-    // plan-day prescribed cards). Without this fallback, the first tap
-    // on a per_side-default plan-day exercise computes current='total'
-    // and silently stamps the same value the chip already displays.
+    // by name. Without this fallback, the first tap on a per_side-default
+    // plan-day exercise computes current='total' and silently stamps the
+    // same value the chip already displays.
     var wmCurMeta = wmExState.subExercise || wmExState.exerciseMeta;
     if (!wmCurMeta && !wmSt.isAdHoc && plan && plan.days && plan.days[wmDi] && plan.days[wmDi].exercises && plan.days[wmDi].exercises[wmEi]) {
       wmCurMeta = exerciseLibraryByName[normName(plan.days[wmDi].exercises[wmEi].name)] || null;
     }
-    var wmCurMode = effectiveWeightMode(wmExState.sets[0], wmCurMeta);
+    // Override field is the most-recent source of truth (pre-session chip
+    // toggle landed there); fall through to set stamp then library default.
+    var wmCurMode = wmExState.weight_mode_override
+      || effectiveWeightMode(wmExState.sets[0], wmCurMeta);
     var wmNext = wmCurMode === 'per_side' ? 'total' : 'per_side';
     setExerciseWeightMode(wmDi, wmEi, wmNext).then(function() {
       buildDay(wmDi);

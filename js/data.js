@@ -1918,8 +1918,11 @@ function buildSetPayload(di, ei, si) {
     // Per-set weight_mode override (v3.1.0). Null = inherit library default.
     // Stamped by setExerciseWeightMode (today/ad-hoc) or
     // historyUpdateExerciseWeightMode; new sets inherit from existing
-    // placement sets via the add-set helpers.
-    weight_mode: sl.weight_mode || null,
+    // placement sets via the add-set helpers. v3.6.15 adds the
+    // exState.weight_mode_override fallback so pre-session chip toggles
+    // (which create the override before any sets exist) flow through
+    // to the first persisted set.
+    weight_mode: sl.weight_mode || (exState && exState.weight_mode_override) || null,
     // Legacy free-text column — we no longer populate it on new writes;
     // substitution is now carried structurally via exercise_id mismatch.
     substitution: null,
@@ -2043,31 +2046,35 @@ async function updateExerciseFanOut(di, ei) {
 // would make the chip's behavior depend on whether the library default
 // has changed since the toggle. See spec for the reasoning.
 async function setExerciseWeightMode(di, ei, mode) {
-  if (!todayState || !todayState.workoutId) {
-    // Not yet persisted — update memory only. The first persistSet write
-    // will pick up sl.weight_mode via buildSetPayload.
-    var exMem = todayState && todayState.exercises['ex_' + ei];
-    if (exMem) {
-      for (var i = 0; i < exMem.sets.length; i++) {
-        if (exMem.sets[i]) exMem.sets[i].weight_mode = mode;
-      }
-    }
+  // Lazy-init the in-memory state shell so the chip works pre-session
+  // (v3.6.15). Pre-v3.6.15 this function bailed early when todayState
+  // was null — chip on a plan day before Start Session silently no-op'd.
+  // getOrInitToday creates the shell with workoutId=null; getOrInitExercise
+  // creates the exState if absent. No DB row is inserted by this path —
+  // ensureWorkout is still gated to first persistSet.
+  var state = getOrInitToday(di);
+  if (!state) return;
+  var exState = getOrInitExercise(state, ei);
+  // Override field is the source of truth pre-session and for any set
+  // that hasn't been persisted yet. Live sets also get stamped (below)
+  // so renders + buildSetPayload stay consistent. Cleared on hydration
+  // because state is rebuilt from DB rows that carry weight_mode each.
+  exState.weight_mode_override = mode;
+  for (var k = 0; k < exState.sets.length; k++) {
+    if (exState.sets[k]) exState.sets[k].weight_mode = mode;
+  }
+  if (!state.workoutId) {
+    // Pre-session: in-memory only. First persistSet picks up the override
+    // via buildSetPayload's exState.weight_mode_override fallback.
     return;
   }
-  var exState = todayState.exercises['ex_' + ei];
-  if (!exState) return;
   try {
     var r = await sb.from('sets')
       .update({ weight_mode: mode })
       .eq('user_id', userId)
-      .eq('workout_id', todayState.workoutId)
+      .eq('workout_id', state.workoutId)
       .eq('exercise_order', ei);
     if (r.error) throw r.error;
-    // Mirror to in-memory sets so renders + buildSetPayload (for any
-    // subsequent UPDATE) see the new value without a re-fetch.
-    for (var j = 0; j < exState.sets.length; j++) {
-      if (exState.sets[j]) exState.sets[j].weight_mode = mode;
-    }
   } catch(err) {
     console.error('setExerciseWeightMode error:', err);
     showToast("Weight mode didn't save", function() { setExerciseWeightMode(di, ei, mode); });
