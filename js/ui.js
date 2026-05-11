@@ -4964,6 +4964,11 @@ async function onDeletePlan(planId) {
   }
   if (!p || p.workout_count > 0) return;
   if (!confirm('Delete "' + (p.title || 'Untitled') + '"? This cannot be undone.')) return;
+  // Capture the active-plan status BEFORE the DB delete so the post-
+  // delete branch can decide whether to hard-reload. Compare both
+  // is_active and id against activePlanId — the row's is_active flag
+  // is the source of truth, the activePlanId check is defense in depth.
+  var wasActive = !!(p.is_active || (activePlanId && p.id === activePlanId));
   try {
     // Defensive: scope delete to non-template rows. Pre-v2.4.11 the
     // Plans list could include template rows; if a stale client still
@@ -4973,6 +4978,18 @@ async function onDeletePlan(planId) {
       .eq('id', planId)
       .eq('is_template', false);
     if (dr.error) throw dr.error;
+    // Active-plan delete (v3.6.13): the user just removed the plan
+    // they were tracking. In-memory `plan`, `activePlanId`,
+    // `todayPlanStates`, the tracker view, coachContext, AND the
+    // hydration snapshot all still reference the deleted plan — a
+    // partial in-place reset would risk a stale state somewhere. Drop
+    // the hydration snapshot so the reload paints from a clean no-plan
+    // state instead of replaying the cached pre-delete view.
+    if (wasActive) {
+      if (typeof clearHydrationSnapshot === 'function') clearHydrationSnapshot();
+      window.location.reload();
+      return;
+    }
     await loadPlans();
     renderPlans();
     showToast('Plan deleted', null);
