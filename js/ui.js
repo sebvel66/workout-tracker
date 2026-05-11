@@ -1274,6 +1274,115 @@ function populateCoachingProfileForm(p) {
   setVal('cpModelPlan',    resolveModel(p.model_plan,    'plan'));
   setVal('cpModelAnalyze', resolveModel(p.model_analyze, 'analyze'));
   renderInjuryList(Array.isArray(p.injuries) ? p.injuries : []);
+  renderMuscleBandsEditor(p.muscle_bands || {});
+}
+
+// Volume-targets editor (v3.6.14). One row per muscle from MUSCLE_BAND_ORDER,
+// each row carries two mode-sections (primary, fractional) with 4 number
+// inputs (MEV / MAV low / MAV high / MRV). Prefilled with the override OR
+// the seed default; reading back compares to the seed so we only persist
+// actual overrides (keeps coaching_profile.data lean).
+function renderMuscleBandsEditor(overrides) {
+  var host = document.getElementById('cpMuscleBandsList');
+  if (!host) return;
+  var h = '';
+  for (var i = 0; i < MUSCLE_BAND_ORDER.length; i++) {
+    var m = MUSCLE_BAND_ORDER[i];
+    var seed = DEFAULT_MUSCLE_BANDS[m] || {};
+    var ov = overrides[m] || {};
+    var primary = ov.primary || seed.primary || null;
+    var fractional = ov.fractional || seed.fractional || null;
+    var hasFractionalSeed = !!seed.fractional;
+    h += '<div class="cp-muscle-band-row" data-muscle="' + escapeAttr(m) + '">';
+    h += '<div class="cp-muscle-band-name">' + escapeHtml(m) + '</div>';
+    h += _muscleBandModeBlock(m, 'primary', primary, true);
+    h += _muscleBandModeBlock(m, 'fractional', fractional, hasFractionalSeed);
+    h += '</div>';
+  }
+  host.innerHTML = h;
+}
+
+function _muscleBandModeBlock(muscle, mode, band, hasSeed) {
+  var label = mode === 'primary' ? 'Primary' : 'Fractional';
+  var b = band || {};
+  var hint = hasSeed ? '' : ' <span class="cp-muscle-band-hint">no seed</span>';
+  var disabled = '';
+  function inp(field, val) {
+    var v = (val == null) ? '' : String(val);
+    return '<input type="number" min="0" max="60" step="0.5" ' +
+      'data-muscle="' + escapeAttr(muscle) + '" ' +
+      'data-mode="' + mode + '" ' +
+      'data-field="' + field + '" ' +
+      'value="' + escapeAttr(v) + '" placeholder="—"' + disabled + '>';
+  }
+  var h = '<div class="cp-muscle-band-mode">';
+  h += '<div class="cp-muscle-band-mode-label">' + label + hint + '</div>';
+  h += '<div class="cp-muscle-band-inputs">';
+  h += '<label>MEV' + inp('mev', b.mev) + '</label>';
+  h += '<label>MAV lo' + inp('mavLow', b.mavLow) + '</label>';
+  h += '<label>MAV hi' + inp('mavHigh', b.mavHigh) + '</label>';
+  h += '<label>MRV' + inp('mrv', b.mrv) + '</label>';
+  h += '</div>';
+  h += '</div>';
+  return h;
+}
+
+// Read current overrides off the DOM. For each (muscle, mode), if all
+// four fields match the seed exactly OR are all blank, skip — keeps
+// the persisted overrides map lean. Returns null when no overrides at
+// all so the upsert clears the column rather than writing '{}'.
+function readMuscleBandsFromDom() {
+  var rows = document.querySelectorAll('#cpMuscleBandsList .cp-muscle-band-row');
+  if (!rows.length) return null;
+  var out = {};
+  for (var i = 0; i < rows.length; i++) {
+    var muscle = rows[i].getAttribute('data-muscle');
+    if (!muscle) continue;
+    var seed = DEFAULT_MUSCLE_BANDS[muscle] || {};
+    var modes = ['primary', 'fractional'];
+    var muscleOverrides = {};
+    for (var mi = 0; mi < modes.length; mi++) {
+      var mode = modes[mi];
+      var fields = ['mev', 'mavLow', 'mavHigh', 'mrv'];
+      var values = {};
+      var allBlank = true;
+      var anyInvalid = false;
+      for (var fi = 0; fi < fields.length; fi++) {
+        var field = fields[fi];
+        var el = rows[i].querySelector('input[data-mode="' + mode + '"][data-field="' + field + '"]');
+        var raw = el ? String(el.value).trim() : '';
+        if (raw === '') {
+          values[field] = null;
+        } else {
+          allBlank = false;
+          var n = parseFloat(raw);
+          if (!Number.isFinite(n)) {
+            anyInvalid = true;
+            values[field] = null;
+          } else {
+            values[field] = n;
+          }
+        }
+      }
+      if (allBlank || anyInvalid) continue;
+      // All four present + finite — compare to seed.
+      var seedMode = seed[mode];
+      var sameAsSeed = !!(seedMode
+        && seedMode.mev === values.mev
+        && seedMode.mavLow === values.mavLow
+        && seedMode.mavHigh === values.mavHigh
+        && seedMode.mrv === values.mrv);
+      if (sameAsSeed) continue;
+      muscleOverrides[mode] = values;
+    }
+    if (Object.keys(muscleOverrides).length) out[muscle] = muscleOverrides;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+function resetAllMuscleBands() {
+  if (!confirm('Reset every volume target back to defaults? Your overrides will be cleared on save.')) return;
+  renderMuscleBandsEditor({});
 }
 
 // Render the injury rows. Each row has a name input + notes textarea + ×
@@ -1393,6 +1502,10 @@ async function saveCoachingProfileFromForm() {
     model_coach:   trimOrNull(getVal('cpModelCoach'))   || null,
     model_plan:    trimOrNull(getVal('cpModelPlan'))    || null,
     model_analyze: trimOrNull(getVal('cpModelAnalyze')) || null,
+    // v3.6.14 per-muscle MEV/MAV/MRV overrides. Sparse map keyed by
+    // muscle then mode (primary | fractional); missing entries fall back
+    // to DEFAULT_MUSCLE_BANDS at read time via muscleVolumeBand.
+    muscle_bands: readMuscleBandsFromDom(),
   };
   var btn = document.getElementById('btnCoachingProfileSave');
   if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
@@ -2455,16 +2568,16 @@ async function setActiveView(name) {
 }
 
 // Body view: phase header + two chip blocks (this week's actual sets per
-// muscle, projected weekly sets per muscle from the active plan). Color-
-// coded against the phase target band — same chip rendering + thresholds
-// as the v3.5.5 plan-volume-summary.
+// muscle, projected weekly sets per muscle from the active plan). Each
+// block renders TWO rows — primary-only and Schoenfeld fractional —
+// color-coded against the per-muscle MEV/MAV/MRV bands (v3.6.14, was
+// the single phase band pre-v3.6.14).
 async function renderBodyView() {
   var body = document.getElementById('bodyViewBody');
   if (!body) return;
 
   var phase = (coachingProfile && coachingProfile.phase) || null;
   var goal = (coachingProfile && coachingProfile.goal_type) || null;
-  var band = phaseTargetBand(phase);
 
   var phaseLabel = phase ? (phase + ' phase') : 'phase not set in Coaching Profile';
   var goalLabel = goal ? (' · goal: ' + goal) : '';
@@ -2473,7 +2586,7 @@ async function renderBodyView() {
   h += '<div class="body-view-header">';
   h += '<div class="body-view-title">Sets per muscle this week</div>';
   h += '<div class="body-view-subtitle">' + escapeHtml(phaseLabel) + escapeHtml(goalLabel) + '</div>';
-  h += '<div class="body-view-band">Target ' + band.low + '-' + band.high + ' sets/week (' + escapeHtml(band.label) + '). Counts use Schoenfeld fractional weighting (primary 1.0 + each secondary 0.5).</div>';
+  h += '<div class="body-view-band">Each muscle has its own MEV / MAV / MRV band (edit in Coaching Profile → Volume targets). Primary = exercise\'s primary muscle only. Fractional = Schoenfeld (primary 1.0 + each secondary 0.5). Colors: green in MAV, yellow below MAV, red below MEV / over MRV, orange between MAV and MRV.</div>';
   h += '</div>';
 
   // Section 1: this week's actuals (live count from completed sets).
@@ -2486,8 +2599,9 @@ async function renderBodyView() {
   h += '<div class="body-view-section">';
   h += '<div class="body-view-section-label">Planned (active plan, full week)</div>';
   if (plan && Array.isArray(plan.days) && plan.days.length) {
-    var projected = computePlanVolumeByMuscle(plan);
-    h += _bodyViewChipsHtml(projected, band);
+    var projectedF = computePlanVolumeByMuscle(plan);
+    var projectedP = computePlanVolumeByMusclePrimary(plan);
+    h += _dualChipRowsHtml(projectedP, projectedF);
   } else {
     h += '<div class="body-view-section-empty">No active plan — generate or activate a template to see projected volume.</div>';
   }
@@ -2508,12 +2622,13 @@ async function renderBodyView() {
     var summary = await fetchWeekSummary(userId, weekStart, weekEnd);
     var slot2 = document.getElementById('bodyViewActualsSlot');
     if (!slot2) return;
-    var actuals = (summary && summary.volumeByMuscleGroup) || {};
-    if (!Object.keys(actuals).length) {
+    var actualsF = (summary && summary.volumeByMuscleGroup) || {};
+    var actualsP = (summary && summary.volumeByMuscleGroupPrimary) || {};
+    if (!Object.keys(actualsF).length && !Object.keys(actualsP).length) {
       slot2.innerHTML = '<div class="body-view-section-empty">No completed sets this week yet.</div>';
       return;
     }
-    slot2.innerHTML = _bodyViewChipsHtml(actuals, band);
+    slot2.innerHTML = _dualChipRowsHtml(actualsP, actualsF);
   } catch (err) {
     console.error('renderBodyView actuals error:', err);
     var slotE = document.getElementById('bodyViewActualsSlot');
@@ -2521,25 +2636,54 @@ async function renderBodyView() {
   }
 }
 
-// Render a row of color-coded volume chips for a muscle->count map.
-// Reuses the v3.5.5 chip status thresholds (in / low / deficit / high /
-// excess) anchored on the phase target band.
-function _bodyViewChipsHtml(counts, band) {
-  var muscles = Object.keys(counts);
+// Render two parallel chip rows — Primary and Fractional — over the
+// same muscle ordering. Each chip carries its own status (computed
+// against the per-(muscle, mode) MEV/MAV/MRV band) so the same muscle
+// can light up different colors under the two methods (the whole
+// point: rear delts ~ MEV under primary, in-MAV under fractional).
+// Muscles sorted by fractional count desc so the row order matches at
+// a glance.
+function _dualChipRowsHtml(primaryCounts, fractionalCounts) {
+  var primary = primaryCounts || {};
+  var fractional = fractionalCounts || {};
+  var seen = {};
+  var muscles = [];
+  function add(m) { if (m && !seen[m]) { seen[m] = true; muscles.push(m); } }
+  Object.keys(fractional).forEach(add);
+  Object.keys(primary).forEach(add);
   if (!muscles.length) return '<div class="body-view-section-empty">No data.</div>';
-  muscles.sort(function(a, b) { return counts[b] - counts[a]; });
-  var chips = muscles.map(function(m) {
+  muscles.sort(function(a, b) {
+    var fa = fractional[a] != null ? fractional[a] : (primary[a] || 0);
+    var fb = fractional[b] != null ? fractional[b] : (primary[b] || 0);
+    return fb - fa;
+  });
+  function chipFor(m, mode, counts) {
     var v = counts[m];
-    var status;
-    if (v >= band.low && v <= band.high) status = 'in';
-    else if (v < band.low && v >= band.low / 2) status = 'low';
-    else if (v < band.low / 2) status = 'deficit';
-    else if (v > band.high && v <= band.high * 1.25) status = 'high';
-    else status = 'excess';
-    var label = (v === Math.floor(v)) ? String(v) : v.toFixed(1);
-    return '<span class="pv-chip pv-' + status + '">' + escapeHtml(m) + ' ' + label + '</span>';
-  }).join('');
-  return '<div class="plan-volume-chips">' + chips + '</div>';
+    var band = muscleVolumeBand(m, mode);
+    var label;
+    if (v == null) {
+      label = '—';
+    } else {
+      label = (v === Math.floor(v)) ? String(v) : v.toFixed(1);
+    }
+    var status = (v != null) ? muscleBandStatus(v, band) : null;
+    var cls = muscleBandStatusCssClass(status);
+    var title = band
+      ? 'MEV ' + band.mev + ' · MAV ' + band.mavLow + '-' + band.mavHigh + ' · MRV ' + band.mrv
+      : (mode === 'fractional' ? 'No fractional band set' : 'No band set');
+    return '<span class="pv-chip ' + cls + '" title="' + escapeAttr(title) + '">' +
+      escapeHtml(m) + ' ' + label + '</span>';
+  }
+  function row(label, mode, counts) {
+    var chips = muscles.map(function(m) { return chipFor(m, mode, counts); }).join('');
+    return '<div class="dual-chip-row">' +
+      '<div class="dual-chip-row-label">' + label + '</div>' +
+      '<div class="plan-volume-chips">' + chips + '</div></div>';
+  }
+  return '<div class="dual-chip-rows">' +
+    row('Primary', 'primary', primary) +
+    row('Fractional', 'fractional', fractional) +
+    '</div>';
 }
 
 // Log view: launchpad to existing History modal + Volume Trends modal.
@@ -4222,44 +4366,24 @@ async function submitRefinePlan() {
   }
 }
 
-// Per-muscle weekly volume chips for the plan review (v3.5.5). Each chip
-// shows muscle name + count + a status icon, color-coded against the phase
-// target band: green if in band, yellow if a maintenance dose (below band
-// but >=50% of low), red if way under or way over. Sorted high-to-low so
-// the deficit pattern reads at a glance. Hidden gracefully when the plan
-// has no exercises that resolve against the library.
+// Per-muscle weekly volume chips for the plan review (v3.5.5; dual-row
+// v3.6.14). Two rows: primary-only and Schoenfeld fractional. Each
+// chip is color-coded against the per-(muscle, mode) MEV/MAV/MRV band
+// from DEFAULT_MUSCLE_BANDS + the user's Coaching Profile overrides.
+// Same muscle can carry different status colors under the two methods
+// — the value of seeing both at once. Returns '' when the plan has
+// no exercises that resolve against the library.
 function renderPlanVolumeSummary(plan) {
-  var counts = computePlanVolumeByMuscle(plan);
-  var muscles = Object.keys(counts);
-  if (!muscles.length) return '';
-  muscles.sort(function(a, b) { return counts[b] - counts[a]; });
-
-  var phase = (coachingProfile && coachingProfile.phase) || null;
-  var band = phaseTargetBand(phase);
-
-  var chips = muscles.map(function(m) {
-    var v = counts[m];
-    var status;
-    if (v >= band.low && v <= band.high) status = 'in';
-    else if (v < band.low && v >= band.low / 2) status = 'low';
-    else if (v < band.low / 2) status = 'deficit';
-    else if (v > band.high && v <= band.high * 1.25) status = 'high';
-    else status = 'excess';
-    var label = (v === Math.floor(v)) ? String(v) : v.toFixed(1);
-    return '<span class="pv-chip pv-' + status + '">' +
-      escapeHtml(m) + ' ' + label + '</span>';
-  }).join('');
-
-  var phaseLabel = phase
-    ? (band.label + ' phase')
-    : (band.label + ' band — set phase in Coaching Profile to tune');
+  var fractional = computePlanVolumeByMuscle(plan);
+  var primary = computePlanVolumeByMusclePrimary(plan);
+  if (!Object.keys(fractional).length && !Object.keys(primary).length) return '';
 
   var h = '<div class="plan-volume-summary">';
   h += '<div class="plan-volume-header">';
   h += '<span class="plan-volume-label">Sets/week per muscle</span>';
-  h += '<span class="plan-volume-band">target ' + band.low + '-' + band.high + ' · ' + escapeHtml(phaseLabel) + '</span>';
+  h += '<span class="plan-volume-band">vs per-muscle MEV / MAV / MRV bands (Coaching Profile → Volume targets)</span>';
   h += '</div>';
-  h += '<div class="plan-volume-chips">' + chips + '</div>';
+  h += _dualChipRowsHtml(primary, fractional);
   h += '</div>';
   return h;
 }
@@ -7930,6 +8054,10 @@ document.getElementById('swapExerciseBody').addEventListener('click', function(e
 document.getElementById('btnCoachingProfileClose').addEventListener('click', closeCoachingProfile);
 document.getElementById('btnCoachingProfileCancel').addEventListener('click', closeCoachingProfile);
 document.getElementById('btnCoachingProfileSave').addEventListener('click', saveCoachingProfileFromForm);
+(function wireMuscleBandsReset() {
+  var btn = document.getElementById('btnCpMuscleBandsReset');
+  if (btn) btn.addEventListener('click', resetAllMuscleBands);
+})();
 document.getElementById('coachingProfileOverlay').addEventListener('click', function(e) {
   if (e.target === this) closeCoachingProfile();
 });

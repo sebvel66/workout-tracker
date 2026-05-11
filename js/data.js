@@ -741,6 +741,10 @@ function _accumulatePlanExercise(ex, out) {
 // Bands track standard hypertrophy literature ranges and the system-prompt-
 // analyze.md guidance the AI also sees. Defaults to accumulation when phase
 // is unset so brand-new users still see a sensible band.
+//
+// Kept as the cross-muscle fallback for the Volume Trends modal banner +
+// any callers that don't yet use the per-muscle MEV/MAV/MRV bands. Most
+// chip rendering moved to muscleVolumeBand (v3.6.14).
 function phaseTargetBand(phase) {
   switch (phase) {
     case 'cut':            return { low: 5, high: 8,  label: 'cut maintenance' };
@@ -750,6 +754,138 @@ function phaseTargetBand(phase) {
     case 'accumulation':
     default:               return { low: 10, high: 20, label: 'accumulation' };
   }
+}
+
+// ---- Per-muscle MEV / MAV / MRV bands (v3.6.14) ----
+// Each muscle has bands under TWO counting modes:
+//   primary    — only the exercise's primary muscle counts (1 per set).
+//   fractional — Schoenfeld: primary 1.0 + each secondary 0.5 per set.
+// MAV is the productive range (mavLow..mavHigh inclusive). MEV is the
+// floor below which the dose stops driving adaptation; MRV is the
+// ceiling above which recovery breaks down.
+//
+// Seed values come from the user's reference table — MAV bands are
+// explicit there; MEV ≈ mavLow × 0.6 and MRV ≈ mavHigh × 1.3 are
+// reasonable derived defaults the user can edit per muscle.
+//
+// shoulders is a single bucket in the muscle_group enum — the seed
+// uses side delts (usually the limiter for hypertrophy) as the proxy.
+// User can re-anchor toward rear- or front-delt-heavy programming via
+// the Coaching Profile editor.
+//
+// forearms.fractional is null because the user table flagged it as
+// "not standardized" — the editor still renders the inputs so the user
+// can fill them in if they want.
+var DEFAULT_MUSCLE_BANDS = {
+  chest:        { primary: { mev: 7, mavLow: 12, mavHigh: 20, mrv: 26 }, fractional: { mev: 7,  mavLow: 12, mavHigh: 22, mrv: 28 } },
+  back:         { primary: { mev: 8, mavLow: 14, mavHigh: 22, mrv: 28 }, fractional: { mev: 8,  mavLow: 14, mavHigh: 25, mrv: 32 } },
+  shoulders:    { primary: { mev: 5, mavLow: 8,  mavHigh: 20, mrv: 26 }, fractional: { mev: 8,  mavLow: 14, mavHigh: 24, mrv: 30 } },
+  biceps:       { primary: { mev: 8, mavLow: 14, mavHigh: 20, mrv: 26 }, fractional: { mev: 10, mavLow: 16, mavHigh: 24, mrv: 30 } },
+  triceps:      { primary: { mev: 6, mavLow: 10, mavHigh: 14, mrv: 18 }, fractional: { mev: 7,  mavLow: 12, mavHigh: 20, mrv: 26 } },
+  quads:        { primary: { mev: 7, mavLow: 12, mavHigh: 18, mrv: 23 }, fractional: { mev: 7,  mavLow: 12, mavHigh: 20, mrv: 26 } },
+  hamstrings:   { primary: { mev: 6, mavLow: 10, mavHigh: 16, mrv: 20 }, fractional: { mev: 7,  mavLow: 12, mavHigh: 18, mrv: 23 } },
+  glutes:       { primary: { mev: 4, mavLow: 6,  mavHigh: 12, mrv: 15 }, fractional: { mev: 5,  mavLow: 8,  mavHigh: 16, mrv: 20 } },
+  calves:       { primary: { mev: 7, mavLow: 12, mavHigh: 16, mrv: 20 }, fractional: { mev: 7,  mavLow: 12, mavHigh: 16, mrv: 20 } },
+  core:         { primary: { mev: 5, mavLow: 8,  mavHigh: 16, mrv: 20 }, fractional: { mev: 5,  mavLow: 8,  mavHigh: 16, mrv: 20 } },
+  traps:        { primary: { mev: 4, mavLow: 6,  mavHigh: 12, mrv: 15 }, fractional: { mev: 5,  mavLow: 8,  mavHigh: 16, mrv: 20 } },
+  forearms:     { primary: { mev: 4, mavLow: 6,  mavHigh: 12, mrv: 15 }, fractional: null },
+  'lower back': { primary: { mev: 4, mavLow: 6,  mavHigh: 12, mrv: 15 }, fractional: { mev: 5,  mavLow: 8,  mavHigh: 14, mrv: 18 } },
+};
+
+// Canonical render order — drives the editor row sequence + the chip
+// rendering's stable sort tie-breaker. Matches the muscle_group enum.
+var MUSCLE_BAND_ORDER = [
+  'chest', 'back', 'shoulders', 'biceps', 'triceps',
+  'quads', 'hamstrings', 'glutes', 'calves', 'core',
+  'traps', 'forearms', 'lower back',
+];
+
+function _isValidBand(b) {
+  if (!b) return false;
+  return Number.isFinite(b.mev) && Number.isFinite(b.mavLow)
+      && Number.isFinite(b.mavHigh) && Number.isFinite(b.mrv);
+}
+
+// Resolve the band for (muscle, mode). Priority:
+//   1. coachingProfile.muscle_bands[muscle][mode] override
+//   2. DEFAULT_MUSCLE_BANDS[muscle][mode]
+//   3. null (caller renders the chip with no status / falls back to
+//      phaseTargetBand if appropriate)
+function muscleVolumeBand(muscle, mode) {
+  if (!muscle || (mode !== 'primary' && mode !== 'fractional')) return null;
+  var overrides = coachingProfile && coachingProfile.muscle_bands;
+  var ov = overrides && overrides[muscle] && overrides[muscle][mode];
+  if (_isValidBand(ov)) return ov;
+  var seed = DEFAULT_MUSCLE_BANDS[muscle];
+  if (!seed) return null;
+  var s = seed[mode];
+  return _isValidBand(s) ? s : null;
+}
+
+// 5-bucket status for a count against a band:
+//   below_mev  — undertrained, no adaptation
+//   below_mav  — between MEV and MAV (maintenance dose)
+//   in_mav     — productive range
+//   above_mav  — above MAV but recoverable (approaching MRV)
+//   over_mrv   — exceeds recoverable volume
+// Returns null when the band is missing so callers can render the chip
+// without a status color.
+function muscleBandStatus(value, band) {
+  if (!band || value == null) return null;
+  if (value < band.mev) return 'below_mev';
+  if (value < band.mavLow) return 'below_mav';
+  if (value <= band.mavHigh) return 'in_mav';
+  if (value <= band.mrv) return 'above_mav';
+  return 'over_mrv';
+}
+
+// Map MEV/MAV/MRV status to the existing pv-* CSS classes so we don't
+// have to introduce parallel styles. Same 5 color buckets, new semantics.
+function muscleBandStatusCssClass(status) {
+  switch (status) {
+    case 'below_mev': return 'pv-deficit';   // red
+    case 'below_mav': return 'pv-low';       // yellow
+    case 'in_mav':    return 'pv-in';        // green
+    case 'above_mav': return 'pv-high';      // orange
+    case 'over_mrv':  return 'pv-excess';    // red
+    default:          return 'pv-in';        // no band: render neutral green
+  }
+}
+
+// Primary-only plan volume (no Schoenfeld secondary attribution).
+// Parallel to computePlanVolumeByMuscle (which is fractional). Used by
+// the dual-display chips that show both counts side-by-side.
+function computePlanVolumeByMusclePrimary(plan) {
+  var out = {};
+  if (!plan || !Array.isArray(plan.days)) return out;
+  for (var di = 0; di < plan.days.length; di++) {
+    var day = plan.days[di];
+    var entries = Array.isArray(day && day.exercises) ? day.exercises : [];
+    for (var ei = 0; ei < entries.length; ei++) {
+      var e = entries[ei];
+      if (e && e.superset === true && Array.isArray(e.exercises)) {
+        for (var mi = 0; mi < e.exercises.length; mi++) {
+          _accumulatePlanExercisePrimary(e.exercises[mi], out);
+        }
+      } else {
+        _accumulatePlanExercisePrimary(e, out);
+      }
+    }
+  }
+  return out;
+}
+
+function _accumulatePlanExercisePrimary(ex, out) {
+  if (!ex || !ex.name) return;
+  var sets = Array.isArray(ex.sets) ? ex.sets : [];
+  if (!sets.length) return;
+  var meta = (typeof resolveLibraryRow === 'function')
+    ? resolveLibraryRow(ex.name)
+    : (exerciseLibraryByName ? exerciseLibraryByName[normName(ex.name)] : null);
+  if (!meta) return;
+  var primary = meta.muscle_group;
+  if (!primary || primary === 'cardio' || primary === 'mobility') return;
+  out[primary] = (out[primary] || 0) + sets.length;
 }
 
 // Multi-week per-muscle volume trends. Single query across the full window
@@ -897,7 +1033,8 @@ async function fetchWeekSummary(userId, weekStartDate, weekEndDate) {
   var adHocCount = 0;
   var volSum = 0;
   var rpeSum = 0, rpeSetCount = 0;
-  var volByMuscle = {};  // muscle_group -> total completed sets across the week
+  var volByMuscle = {};         // muscle_group -> fractional (Schoenfeld) sets across the week
+  var volByMusclePrimary = {};  // muscle_group -> primary-only sets across the week (v3.6.14)
 
   for (var j = 0; j < workouts.length; j++) {
     var w = workouts[j];
@@ -907,12 +1044,21 @@ async function fetchWeekSummary(userId, weekStartDate, weekEndDate) {
       rpeSetCount += w.completedSets;
     }
     // Per-muscle weekly volume rolls up across plan-day AND ad-hoc workouts —
-    // every completed set contributes regardless of session type.
+    // every completed set contributes regardless of session type. Both
+    // counting methods aggregated so the Body view + plan-review chips
+    // can render primary AND fractional side by side.
     if (w.setsByMuscleGroup) {
       var mgKeys = Object.keys(w.setsByMuscleGroup);
       for (var mki = 0; mki < mgKeys.length; mki++) {
         var mgk = mgKeys[mki];
         volByMuscle[mgk] = (volByMuscle[mgk] || 0) + w.setsByMuscleGroup[mgk];
+      }
+    }
+    if (w.setsByMuscleGroupPrimary) {
+      var mgKeysP = Object.keys(w.setsByMuscleGroupPrimary);
+      for (var mkj = 0; mkj < mgKeysP.length; mkj++) {
+        var mgkP = mgKeysP[mkj];
+        volByMusclePrimary[mgkP] = (volByMusclePrimary[mgkP] || 0) + w.setsByMuscleGroupPrimary[mgkP];
       }
     }
     if (w.isAdHoc) {
@@ -981,6 +1127,7 @@ async function fetchWeekSummary(userId, weekStartDate, weekEndDate) {
     adHocSessions: adHocCount,
     plansBreakdown: plansBreakdown,
     volumeByMuscleGroup: volByMuscle,
+    volumeByMuscleGroupPrimary: volByMusclePrimary,
   };
 }
 
@@ -1100,6 +1247,7 @@ function _summarizeWorkoutRow(row) {
     totalVolume: Math.round(totalVolume),
     notes: row.notes || '',
     setsByMuscleGroup: _setsByMuscleGroup(byOrder),
+    setsByMuscleGroupPrimary: _setsByMuscleGroupPrimary(byOrder),
     _dayIndex: row.day_index,
     _planBlob: planBlob,
     _planId: row.plan_id || null,
@@ -1138,6 +1286,30 @@ function _setsByMuscleGroup(byOrder) {
       if (!mg2 || mg2 === primary || mg2 === 'cardio' || mg2 === 'mobility') continue;
       out[mg2] = (out[mg2] || 0) + done * 0.5;
     }
+  }
+  return out;
+}
+
+// Primary-only variant — completed sets only credit the exercise's
+// primary muscle_group (no Schoenfeld secondary attribution). Parallel
+// to _setsByMuscleGroup; the dual-display chips show both side by side
+// against the per-muscle MEV/MAV/MRV bands (v3.6.14).
+function _setsByMuscleGroupPrimary(byOrder) {
+  var out = {};
+  if (!byOrder) return out;
+  var keys = Object.keys(byOrder);
+  for (var i = 0; i < keys.length; i++) {
+    var ex = byOrder[keys[i]];
+    if (!ex || !ex.muscleGroup) continue;
+    var primary = ex.muscleGroup;
+    if (primary === 'cardio' || primary === 'mobility') continue;
+    var done = 0;
+    var sets = ex.sets || [];
+    for (var s = 0; s < sets.length; s++) {
+      if (sets[s] && sets[s].done) done++;
+    }
+    if (!done) continue;
+    out[primary] = (out[primary] || 0) + done;
   }
   return out;
 }

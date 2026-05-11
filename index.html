@@ -1725,6 +1725,91 @@ body[data-view="log"] #logView { display: block; }
   border-color: rgba(244, 67, 54, 0.35);
 }
 
+/* Dual-row chip layout (v3.6.14). Renders primary + fractional counts
+ * for the same muscles as parallel rows so the user can see at a
+ * glance where the two methods agree or diverge. */
+.dual-chip-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.dual-chip-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.dual-chip-row-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text2);
+  font-weight: 600;
+}
+
+/* Volume targets editor in the Coaching Profile (v3.6.14). One row per
+ * muscle, each row carries two mode-blocks (primary, fractional) with
+ * four small number inputs. Layout wraps so it stays usable on mobile. */
+.cp-muscle-band-row {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.cp-muscle-band-row:last-child { border-bottom: none; }
+.cp-muscle-band-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  align-self: center;
+}
+.cp-muscle-band-row > .cp-muscle-band-mode + .cp-muscle-band-mode { margin-top: 8px; }
+.cp-muscle-band-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  grid-column: 2;
+}
+.cp-muscle-band-mode-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text2);
+  font-weight: 600;
+}
+.cp-muscle-band-hint {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+  font-style: italic;
+  opacity: 0.7;
+}
+.cp-muscle-band-inputs {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+.cp-muscle-band-inputs label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 10px;
+  color: var(--text2);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.cp-muscle-band-inputs input {
+  width: 100%;
+  padding: 5px 7px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  box-sizing: border-box;
+}
+
 /* Volume trends dashboard (v3.5.4). Hamburger entry → modal table with
  * muscle groups as rows, last N weeks as columns, inline-SVG sparklines
  * per muscle. Reuses the same primary 1.0 + secondary 0.5 counting as
@@ -3740,6 +3825,13 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
           <input type="number" id="cpCoachContextWeeks" class="generate-form-input" min="1" max="12" step="1" placeholder="2">
           <span class="generate-form-hint">How many weeks of workout history to load for coach chat + exercise swap. Default 2 (leave blank). Higher = richer context, modestly bigger prompts. Plan-gen and analyze use the per-call form input instead and aren't affected.</span>
         </label>
+
+        <div class="profile-section-label" style="margin-top:18px;">Volume targets</div>
+        <div class="generate-form-hint" style="margin-bottom:10px;">
+          Per-muscle weekly set ranges. Sets in the productive MAV band render green; yellow below MAV (still effective), red below MEV (under-dosed); orange above MAV but recoverable (approaching MRV); red over MRV. Each muscle carries separate primary-only and Schoenfeld fractional bands — the Body view + plan review show both side by side. Edit any field to override the seeded defaults; clear all four in a row to revert that mode.
+        </div>
+        <div id="cpMuscleBandsList"></div>
+        <button type="button" class="generate-btn-cancel" id="btnCpMuscleBandsReset" style="margin-top:8px;">Reset all volume targets to defaults</button>
 
         <div class="profile-section-label" style="margin-top:18px;">AI models</div>
         <label class="generate-form-row">
