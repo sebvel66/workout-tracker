@@ -2,6 +2,27 @@
 
 Running log of architecture/behavior decisions for the workout tracker. Newest first.
 
+## 2026-05-10 — Mode-based system-prompt swap on `/api/coach-chat` for the inline form-cue surface (v3.6.11)
+
+**Problem.** Inline form-notes pills (v3.6.10) need an AI-generated form description per (user, exercise) — saved in `exercise_form_notes.ai_note` and re-read across many sessions. v3.5.8 already had this generation path: `generateAiFormNote(row)` hit `/api/coach-chat` with a single user message asking for "3-4 sentences of form cues." The response quality was bad: outputs drifted into "what should you do today" / progression advice / phase commentary. Saved across many sessions, those references become stale or misleading. Two factors caused the drift:
+
+1. `COACH_SYSTEM_PROMPT` is broad ("you're this client's session coach — make tactical decisions, reference numbers, end with a recommendation").
+2. The coach-chat endpoint splices CLIENT PROFILE + RECENT COACHING CONVERSATIONS + SAVED TEMPLATES into `messages[0]` on every call — useful context for "should I drop weight?" but pure noise for "describe how this exercise is performed."
+
+**Decision.** Add `mode: 'form_only'` to the coach-chat request shape. When set: swap the system prompt to a new narrow `FORM_ONLY_SYSTEM_PROMPT` (biomechanics reference; explicit DO-NOT list covering sets/reps/RPE/progression/plan refs; output rules: 3-4 sentences, imperative voice, cover setup → bracing → ROM → common errors) AND skip the side-channel fetches + context splice. Default `mode` (absent) keeps the prior behavior unchanged.
+
+**Why not:**
+- *Tighten the user prompt only.* Tried first. Helps but doesn't survive long context windows — the broad `COACH_SYSTEM_PROMPT` still biases the output toward "coach this client today." The CLIENT PROFILE splice also still injects per-call irrelevant context.
+- *New endpoint `/api/form-cue`.* Cleaner separation but duplicates JWT verify, model resolution, Anthropic fetch, error envelope, timing logs, abort handling. Adds a second Vercel function to keep warm. Single endpoint with a mode dispatch lands the same isolation without the duplication.
+- *Generate inline (no AI, just static text per exercise).* Quality ceiling is too low — exercise-specific cues are hard to write generically and miss the user's own setup quirks. The v3.6.12 follow-on (piping `user_note` into the prompt) makes this gap wider.
+- *Reuse `/api/generate-plan` modes pattern.* Considered but the cost models differ: generate-plan is Sonnet with 22-30s warm + 8500 cached tokens; coach-chat is Haiku with 1-2s warm + a much smaller cached system prompt. Different beasts; co-locating would muddy both.
+
+**Cache implications.** Each system prompt caches independently in the Anthropic prompt cache (1h ephemeral). After first use of each mode, both stay warm under regular use. Switching modes does NOT contaminate either cache. The first call after deploy on each mode pays one cache miss; trivial since the system prompts are <1500 tokens each.
+
+**v3.6.12 extension.** Pipes `exercise_form_notes.user_note` into the form-only prompt as a `CLIENT NOTES:` block. `FORM_ONLY_SYSTEM_PROMPT` instructs the model to weave FORM-RELEVANT parts in (setup quirks, equipment positioning, mobility limitations, cues that fix the user's common error) and ignore programming-shaped content (weight goals, set/rep targets, scheduling). Keeps the output plan-independent even when the user has written plan-flavored notes.
+
+**Files:** [api/coach-chat.js](api/coach-chat.js) (constant + dispatch branch + cache-pick), [js/data.js](js/data.js) (`generateAiFormNote(row, userNote)` sends `mode: 'form_only'` and the optional user note), [js/ui.js](js/ui.js) (modal regen + inline pill regen both pass `user_note` from their respective caches).
+
 ## 2026-04-21 — Hydration cache for fast warm boot (v2.4.0)
 
 **Problem.** Warm-boot latency: the empty-state shell ("Import a plan") flashes for 1-3s between page load and `hydrate()` completion. For a daily-opened PWA, the gap is a recurring friction on every open. The six sequential awaits in `hydrate` (auth, plans query, exercise library, recent exercises, locations, suggested day, days-with-history, today's workouts) all run before the first `buildDay()` paint.

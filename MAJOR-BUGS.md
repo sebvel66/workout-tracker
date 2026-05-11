@@ -2,6 +2,83 @@
 
 Record of significant bugs that required non-trivial investigation or data cleanup. Newest first. Small, in-code-fixed-in-one-commit bugs don't belong here — those live in git history. This file is for bugs where the root cause, the fix, or the blast radius is worth knowing later.
 
+## 2026-05-10 — History-edit modal silently freezes after the first edit (v3.6.6)
+
+### Symptoms
+
+After v3.6.3 added `+ Add Set` / × delete to history-edit mode, the user reported: "the edit history modal is having a bit of trouble — it either takes very long to check the new set. Something is getting hung up." Reproducer: open a historical workout, hit **Edit**, tap `+ Add Set`, then tap the check (`·`) on the newly-added set. The first tap appeared to do nothing. Subsequent taps on anything in the modal — toggle done on a different set, edit a weight value, the Edit toggle itself — all silently failed too, until the modal was closed and re-opened (or another path re-populated the detail cache).
+
+### Root cause
+
+`invalidateHistoryCache()` ([js/ui.js:6943](js/ui.js#L6943)) wipes **three** in-memory caches:
+
+```js
+function invalidateHistoryCache() {
+  historyWeekCache = {};
+  historyDetails = {};        // <-- wipes the open modal's cached detail!
+  earliestWorkoutDate = null;
+}
+```
+
+That function was designed for paths that legitimately drop the detail (workout discard, complete/resume, ad-hoc delete, duration-edit which re-fetches). But over time **every** in-modal history-edit handler started calling it for week-summary freshness — 7 sites: toggle done, +Add Set (v3.6.3), × delete (v3.6.3), value edit, RPE, exercise note, workout notes.
+
+Each in-modal handler's pattern:
+
+```js
+historyUpdateSetDone(sl.setId, newDone, ...).then(function() {
+    sl.done = newDone;
+    // ... mutate sl ...
+    invalidateHistoryCache();        // wipes historyDetails entirely
+    renderHistoryDetail(detail);     // still works — uses local `detail` closure
+});
+```
+
+The visible re-render kept working because `detail` was held in the closure. But the **next** click into the modal:
+
+```js
+function onHistorySetCheckClick(btnEl) {
+  var widCheck = _historyDetailWorkoutId();      // reads from DOM toggle button — fine
+  var detail = widCheck && historyDetails[widCheck];   // <-- undefined after wipe
+  if (!detail) return;                                  // <-- bails silently
+  // ... rest of handler never runs
+}
+```
+
+Click → bail at the guard → user sees nothing happen. Hence "hung up."
+
+The bug had been latent across all in-modal value edits since v2.5.13 — users probably never noticed because value-edit handlers don't re-render (focus preservation) and the typed value lives in the DOM. The v3.6.3 +Add Set flow exposed it sharply because the user immediately clicks the new set's check button, which IS a click handler that needs `historyDetails[wid]` to fire.
+
+### What was fixed
+
+Added a narrower `invalidateHistoryWeekCache()` that wipes only the week-summary state, preserving `historyDetails`:
+
+```js
+function invalidateHistoryWeekCache() {
+  historyWeekCache = {};
+  earliestWorkoutDate = null;
+  // NOTE: historyDetails intentionally preserved so the open modal
+  // stays interactive across edits.
+}
+```
+
+All 7 in-modal handlers swapped to this. Paths that legitimately need a full detail-drop (workout discard, complete/resume, ad-hoc delete, duration-edit which re-fetches) keep the original `invalidateHistoryCache`. Idempotent — in-modal handlers had already mutated the in-memory detail before calling the helper, so dropping `historyDetails` was always redundant noise anyway.
+
+### Debugging path
+
+Took ~10 minutes once the symptom was reproduced — clean root-cause investigation:
+1. Read the v3.6.3 `onHistoryAddSet` + `onHistorySetCheckClick` handlers end-to-end.
+2. Traced `_historyDetailWorkoutId()` to confirm `widCheck` resolves from the toggle button's `data-workout-id` attr (still in DOM after a wipe).
+3. Spotted the `var detail = widCheck && historyDetails[widCheck]; if (!detail) return;` pattern in `onHistorySetCheckClick` — would silently bail if the entry was gone.
+4. Grepped `invalidateHistoryCache\b` for all call sites — saw 7 in-modal callers, all in handlers that had already mutated the in-memory detail.
+5. Read `invalidateHistoryCache` itself, confirmed it wiped `historyDetails`.
+
+### Lessons
+
+- **Silent-bail guards turn cache invalidation into UI freeze.** When a click handler reads from a cache that another handler can wipe, the cache wipe propagates as "click did nothing." If you must keep the bail, also re-hydrate the cache entry before bailing.
+- **Co-location of mutation and invalidation hides bugs.** The pattern of "mutate state → invalidate cache → re-render" looked correct in each individual handler. The bug was visible only by looking at what `invalidateHistoryCache` actually did to *unrelated* state.
+- **A monolithic invalidate function gets misused.** `invalidateHistoryCache` was designed for full-detail-drop paths but read like a generic "freshen up after a change" helper. Splitting it into `invalidateHistoryWeekCache()` (narrow) + `invalidateHistoryCache()` (full) makes the right choice at each call site obvious. Lesson generalizes: a helper that does multiple things gets called from contexts that only need one of them.
+- **v3.6.3 didn't introduce the bug; it lit it up.** The latent failure had been there for value edits since v2.5.13. The interactive feedback loop on +Add Set / check-toggle was just the first surface where the silent failure was sharp enough to notice. Always worth checking whether a "new feature broke X" report is actually "new feature exposed a pre-existing X."
+
 ## 2026-04-20 — AI plan generation: intermittent 55s+ timeouts after adding user inputs (v2.0.25)
 
 ### Symptoms
