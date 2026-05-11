@@ -7454,10 +7454,42 @@ function restComplete() {
   stopRestTimer();
 }
 
+// iOS Web Audio unlock (v3.6.20). On iOS Safari + PWAs, the AudioContext
+// starts in 'suspended' state and only becomes playable when audio output
+// is initiated FROM a user-gesture handler. restBeep runs from setInterval
+// (no gesture), so a fresh page-load that never had a gesture-triggered
+// audio event silently dropped the chime — the user reported this as
+// "I had not historically been hearing it." Listens for the first touch /
+// click, creates the AudioContext, resumes it, and plays a 1ms zero-gain
+// tone to flip iOS's unlock state. Listener auto-removes after one fire.
+// Cheap (couple of nodes), idempotent (the `unlocked` guard).
+(function wireAudioUnlock() {
+  var unlocked = false;
+  function unlock() {
+    if (unlocked) return;
+    unlocked = true;
+    try {
+      if (!restAudioCtx) restAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      var ctx = restAudioCtx;
+      if (ctx.state === 'suspended') ctx.resume();
+      var osc = ctx.createOscillator();
+      var gain = ctx.createGain();
+      gain.gain.value = 0;
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.001);
+    } catch(_) {}
+  }
+  document.addEventListener('touchstart', unlock, { once: true, passive: true });
+  document.addEventListener('click', unlock, { once: true });
+})();
+
 // Single 880Hz sine chime, ~¼ second, with a smooth attack/release envelope
 // so there's no click. AudioContext is lazy-created and reused across rest
 // periods (browsers cap pages at ~6 contexts). The starting gesture that
-// opened the timer has already unlocked autoplay on iOS/Chrome.
+// opened the timer has already unlocked autoplay on iOS/Chrome via
+// wireAudioUnlock above.
 // Gated on getRestTimerSound() (v3.6.19) — user can mute via hamburger.
 function restBeep() {
   if (!getRestTimerSound()) return;
