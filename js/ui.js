@@ -2672,25 +2672,39 @@ function _dualChipRowsHtml(primaryCounts, fractionalCounts) {
   function chipFor(m, mode, counts) {
     var raw = counts[m];
     var v = (raw == null) ? 0 : raw;
-    var band = muscleVolumeBand(m, mode);
     var label = (v === Math.floor(v)) ? String(v) : v.toFixed(1);
-    // No-data chip (v3.6.16): zero in this mode → neutral grey, not the
-    // band-driven color. Avoids the misleading "your primary count is
-    // below MEV, so red" for a muscle that's getting plenty of work
-    // indirectly (e.g., triceps with no direct sets but +6 from presses).
-    // Same treatment when the (muscle, mode) has no band configured.
-    var status;
+    // Zero stays grey regardless of band (signal: "no data in this mode").
     if (v === 0) {
-      status = 'empty';
-    } else if (!band) {
-      status = 'empty';
-    } else {
-      status = muscleBandStatus(v, band);
+      return '<span class="pv-chip pv-empty" title="0 sets in this mode">' +
+        escapeHtml(m) + ' 0</span>';
     }
-    var cls = (status === 'empty') ? 'pv-empty' : muscleBandStatusCssClass(status);
-    var title = band
-      ? 'MEV ' + band.mev + ' · MAV ' + band.mavLow + '-' + band.mavHigh + ' · MRV ' + band.mrv
-      : (mode === 'fractional' ? 'No fractional band set' : 'No band set');
+    // Non-zero: prefer this mode's band; fall back to the other mode's
+    // band as a proxy when this mode is unconfigured (v3.6.17). Forearms'
+    // fractional band is the trigger case — the user's reference table
+    // marked it "not standardized," but the primary band is a reasonable
+    // proxy and the user expects 10.5 sets to render with a band color,
+    // not as a grey empty chip.
+    var band = muscleVolumeBand(m, mode);
+    var bandSource = mode;
+    if (!band) {
+      var otherMode = mode === 'primary' ? 'fractional' : 'primary';
+      var fallback = muscleVolumeBand(m, otherMode);
+      if (fallback) {
+        band = fallback;
+        bandSource = otherMode + ' (fallback)';
+      }
+    }
+    if (!band) {
+      // No band in either mode — render with a neutral "unknown" treatment
+      // (still distinct from zero grey). Value is real; we just have no
+      // ruler to grade it against.
+      return '<span class="pv-chip pv-empty" title="No band configured for ' + escapeAttr(m) + '">' +
+        escapeHtml(m) + ' ' + label + '</span>';
+    }
+    var status = muscleBandStatus(v, band);
+    var cls = muscleBandStatusCssClass(status);
+    var title = 'MEV ' + band.mev + ' · MAV ' + band.mavLow + '-' + band.mavHigh +
+                ' · MRV ' + band.mrv + ' (' + bandSource + ')';
     return '<span class="pv-chip ' + cls + '" title="' + escapeAttr(title) + '">' +
       escapeHtml(m) + ' ' + label + '</span>';
   }
