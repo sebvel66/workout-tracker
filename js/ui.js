@@ -1962,7 +1962,11 @@ async function openExerciseHistory(exerciseName) {
     // exercise. Form notes are usually a single row or null.
     var parallelRes = await Promise.all([
       sb.from('sets')
-        .select('id, weight, reps, rpe, set_order, done, note, duration_seconds, distance, workout_id, workouts(performed_at, plan_id, day_index, title, location_id)')
+        // v3.6.18: pull weight_mode so each session can render its
+        // effective mode tag ("Per side" / "Total"). Pre-v3.1.0 rows
+        // have weight_mode = null — the session falls back to the
+        // library default (row.weight_mode) for those.
+        .select('id, weight, reps, rpe, set_order, done, note, duration_seconds, distance, weight_mode, workout_id, workouts(performed_at, plan_id, day_index, title, location_id)')
         .eq('user_id', userId)
         .eq('exercise_id', row.id)
         .eq('done', true)
@@ -2042,6 +2046,23 @@ async function openExerciseHistory(exerciseName) {
         contextText += ' · @ ' + locationById[sess.locationId].name;
       }
       sess.sets.sort(function(a, b) { return a.set_order - b.set_order; });
+      // Per-session effective weight mode (v3.6.18). Per-set override wins;
+      // legacy null rows fall back to the library default (row.weight_mode).
+      // Only the "per_side" case gets a tag in the rendered context line —
+      // "Total" is the default-of-defaults and would be noisy to show on
+      // every row. Bodyweight / none / cardio rows get no mode tag.
+      var libDefaultMode = row && row.weight_mode ? row.weight_mode : 'total';
+      var sessionMode = libDefaultMode;
+      for (var smi = 0; smi < sess.sets.length; smi++) {
+        var smRow = sess.sets[smi];
+        if (smRow && smRow.weight_mode) { sessionMode = smRow.weight_mode; break; }
+      }
+      var modeRelevant = libDefaultMode !== 'bodyweight'
+        && libDefaultMode !== 'none'
+        && !isCardioExerciseName(exerciseName);
+      if (modeRelevant && sessionMode === 'per_side') {
+        contextText += ' · Per side';
+      }
       var recentUnit = getWeightUnit();
       // Cardio rows render as "30:00 / 0.5mi" instead of weight × reps.
       // Detection by exercise (resolved via library) — historical pre-
