@@ -1443,6 +1443,18 @@ function setRestTimerAuto(val) {
   try { localStorage.setItem('restTimerAuto', val ? 'true' : 'false'); } catch(_) {}
 }
 
+// Rest-timer completion chime (v3.6.19). Default: on. Device-local
+// preference — a user might want the chime on at home but off at a
+// quiet gym. Vibrate stays on unconditionally; it's silent feedback
+// and a separate modality.
+function getRestTimerSound() {
+  try { return localStorage.getItem('restTimerSound') !== 'false'; }
+  catch(_) { return true; }
+}
+function setRestTimerSound(val) {
+  try { localStorage.setItem('restTimerSound', val ? 'true' : 'false'); } catch(_) {}
+}
+
 function lbsToKg(lbs) {
   if (lbs == null) return null;
   return Math.round((lbs / LBS_PER_KG) * 10) / 10;

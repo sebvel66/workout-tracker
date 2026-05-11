@@ -1211,6 +1211,10 @@ function openMenu() {
   if (restRow) {
     restRow.textContent = 'Auto rest timer (' + (getRestTimerAuto() ? 'on' : 'off') + ')';
   }
+  var soundRow = document.getElementById('menuRestTimerSound');
+  if (soundRow) {
+    soundRow.textContent = 'Rest timer sound (' + (getRestTimerSound() ? 'on' : 'off') + ')';
+  }
 
 
   document.getElementById('menuOverlay').classList.add('show');
@@ -7454,7 +7458,9 @@ function restComplete() {
 // so there's no click. AudioContext is lazy-created and reused across rest
 // periods (browsers cap pages at ~6 contexts). The starting gesture that
 // opened the timer has already unlocked autoplay on iOS/Chrome.
+// Gated on getRestTimerSound() (v3.6.19) — user can mute via hamburger.
 function restBeep() {
+  if (!getRestTimerSound()) return;
   try {
     if (!restAudioCtx) restAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
     var ctx = restAudioCtx;
@@ -7998,6 +8004,14 @@ document.getElementById('menuRestTimerAuto').addEventListener('click', function(
   setRestTimerAuto(!getRestTimerAuto());
   closeMenu();
   showToast('Auto rest timer ' + (getRestTimerAuto() ? 'on' : 'off'), null);
+});
+document.getElementById('menuRestTimerSound').addEventListener('click', function() {
+  var next = !getRestTimerSound();
+  setRestTimerSound(next);
+  closeMenu();
+  // Preview the chime on flip-to-on so the user hears what they just enabled.
+  if (next) restBeep();
+  showToast('Rest timer sound ' + (next ? 'on' : 'off'), null);
 });
 document.getElementById('menuSignOut').addEventListener('click', function() {
   closeMenu();
