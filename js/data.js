@@ -1945,7 +1945,41 @@ function buildSetPayload(di, ei, si) {
   };
 }
 
+// Per-(di, ei, si) write serialization for persistSet (v3.6.21). The
+// v3.6.4 read-before-insert defense covers the SERIAL "in-memory setId
+// was lost; retry" case — but two persistSet calls firing concurrently
+// for the same set (e.g., user types weight then immediately clicks
+// check) can both hit the INSERT branch with their lookups in-flight
+// at the same time. Both lookups return "no row" before either INSERT
+// commits, both INSERTs land. Result: two rows at the same (workout,
+// exercise_id, exercise_order, set_order) — one done=false, one
+// done=true — and the next toggle of the done=false orphan to
+// done=true trips the partial unique index (23505).
+//
+// Chain per-set persistSet calls so a second call awaits the prior.
+// Each inner _persistSetInner reads fresh sl state, so queueing is
+// safe — older queued payloads are stale but always overwritten by
+// the next call's reads.
+var _persistSetInFlight = {};
+
 async function persistSet(di, ei, si) {
+  var key = String(di) + '_' + ei + '_' + si;
+  var prev = _persistSetInFlight[key];
+  var run = (async function() {
+    if (prev) {
+      try { await prev; } catch (_) { /* prior error already surfaced */ }
+    }
+    return _persistSetInner(di, ei, si);
+  })();
+  _persistSetInFlight[key] = run;
+  try {
+    return await run;
+  } finally {
+    if (_persistSetInFlight[key] === run) delete _persistSetInFlight[key];
+  }
+}
+
+async function _persistSetInner(di, ei, si) {
   try {
     await ensureWorkout(di);
     var exState = todayState.exercises['ex_' + ei];
