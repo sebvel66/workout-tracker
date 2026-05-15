@@ -2623,7 +2623,8 @@ async function renderBodyView() {
   h += '<div class="body-view-header">';
   h += '<div class="body-view-title">Sets per muscle this week</div>';
   h += '<div class="body-view-subtitle">' + escapeHtml(phaseLabel) + escapeHtml(goalLabel) + '</div>';
-  h += '<div class="body-view-band">Each muscle has its own MEV / MAV / MRV band (edit in Coaching Profile → Volume targets). Primary = exercise\'s primary muscle only. Fractional = Schoenfeld (primary 1.0 + each secondary 0.5). Colors: green in MAV, yellow below MAV, red below MEV / over MRV, orange between MAV and MRV.</div>';
+  h += '<div class="body-view-band">Primary = exercise\'s primary muscle only. Fractional = Schoenfeld (primary 1.0 + each secondary 0.5). Bands edit in Coaching Profile → Volume targets.</div>';
+  h += _bodyInfoPanelHtml();
   h += '</div>';
 
   // Section 1: this week's actuals (live count from completed sets).
@@ -2645,6 +2646,17 @@ async function renderBodyView() {
   h += '</div>';
 
   body.innerHTML = h;
+
+  // Persist the reference panel's open/closed state across visits.
+  var infoEl = document.getElementById('bodyInfoPanel');
+  if (infoEl) {
+    infoEl.addEventListener('toggle', function() {
+      try {
+        if (infoEl.open) localStorage.setItem('bodyInfoPanelOpen', 'true');
+        else localStorage.removeItem('bodyInfoPanelOpen');
+      } catch (_) {}
+    });
+  }
 
   // Async-load the actuals so the projected section paints immediately.
   if (!userId) {
@@ -2671,6 +2683,61 @@ async function renderBodyView() {
     var slotE = document.getElementById('bodyViewActualsSlot');
     if (slotE) slotE.innerHTML = '<div class="body-view-section-empty">Couldn\'t load this week\'s data.</div>';
   }
+}
+
+// Collapsible reference panel for the Body view (v3.6.22): plain-language
+// MEV/MAV/MRV definitions, the diverging color key (rendered with the same
+// pv-* classes as the chips so it can't drift), and a per-muscle range
+// table read through muscleVolumeBand() so Coaching-Profile overrides show
+// — not just the seeded DEFAULT_MUSCLE_BANDS. Native <details>, open state
+// restored from localStorage so there's no flash on render.
+function _bodyInfoPanelHtml() {
+  var open = false;
+  try { open = localStorage.getItem('bodyInfoPanelOpen') === 'true'; } catch (_) {}
+
+  var defs =
+    '<div class="body-info-def"><b>MEV — Minimum Effective Volume.</b> The fewest weekly sets that still drive growth. Below this you\'re under-dosed.</div>' +
+    '<div class="body-info-def"><b>MAV — Maximum Adaptive Volume.</b> The productive range where most growth happens. This is the target band.</div>' +
+    '<div class="body-info-def"><b>MRV — Maximum Recoverable Volume.</b> The most weekly sets you can recover from. Beyond this is junk volume / fatigue risk.</div>';
+
+  function keyRow(cls, label, meaning) {
+    return '<div class="body-info-key-row">' +
+      '<span class="pv-chip ' + cls + '">' + label + '</span>' +
+      '<span>' + meaning + '</span></div>';
+  }
+  var key =
+    keyRow('pv-deficit', 'below MEV', 'Under-dosed — a programming gap.') +
+    keyRow('pv-low', 'below MAV', 'Low but maintaining — still effective.') +
+    keyRow('pv-in', 'in MAV', 'In the productive range. The target.') +
+    keyRow('pv-high', 'above MAV', 'High but recoverable — approaching MRV.') +
+    keyRow('pv-excess', 'over MRV', 'Junk volume / fatigue risk.') +
+    keyRow('pv-empty', 'no data', 'No sets logged, or no band for this muscle.');
+
+  function fmt(band) {
+    if (!band) return '—';
+    return band.mev + ' / ' + band.mavLow + '–' + band.mavHigh + ' / ' + band.mrv;
+  }
+  var rows = '';
+  var muscles = (typeof DEFAULT_MUSCLE_BANDS === 'object' && DEFAULT_MUSCLE_BANDS)
+    ? Object.keys(DEFAULT_MUSCLE_BANDS) : [];
+  for (var i = 0; i < muscles.length; i++) {
+    var m = muscles[i];
+    rows += '<tr><td>' + escapeHtml(m) + '</td>' +
+      '<td>' + fmt(muscleVolumeBand(m, 'primary')) + '</td>' +
+      '<td>' + fmt(muscleVolumeBand(m, 'fractional')) + '</td></tr>';
+  }
+  var table =
+    '<table class="body-ranges-table"><thead><tr>' +
+    '<th>Muscle</th><th>Primary (MEV/MAV/MRV)</th><th>Fractional</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table>';
+
+  return '<details class="body-info" id="bodyInfoPanel"' + (open ? ' open' : '') + '>' +
+    '<summary>What do MEV / MAV / MRV mean?</summary>' +
+    '<div class="body-info-body">' +
+    '<div class="body-info-block"><div class="body-info-block-label">Definitions</div>' + defs + '</div>' +
+    '<div class="body-info-block"><div class="body-info-block-label">Color key</div>' + key + '</div>' +
+    '<div class="body-info-block"><div class="body-info-block-label">Ranges by muscle</div>' + table + '</div>' +
+    '</div></details>';
 }
 
 // Render two parallel chip rows — Primary and Fractional — over the
