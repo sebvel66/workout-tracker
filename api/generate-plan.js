@@ -39,41 +39,49 @@ const MAX_HISTORY_WEEKS = 12;
 // Swap mode — budget + prompt are separate from plan generation because the
 // task is narrower (one exercise, one JSON object) and we want it fast.
 // Cached system prompt + library block give a warm-path ~8-12s response.
-const SWAP_MAX_TOKENS = 500;
+const SWAP_MAX_TOKENS = 1400;  // three fully-prescribed exercises
 const SWAP_HISTORY_WEEKS = 2;  // enough for weight calibration on the movement
 
-const SWAP_SYSTEM_PROMPT = `You are a strength and hypertrophy coach. The client wants to replace one exercise in their plan. Suggest a single alternative that:
+const SWAP_SYSTEM_PROMPT = `You are a strength and hypertrophy coach. The client wants to replace one exercise. Suggest EXACTLY 3 alternatives, ranked best-fit first, each of which:
 1. Targets the same primary muscle group and movement pattern
 2. Uses equipment available in the client's exercise library (provided in the user message)
 3. Is not already programmed for the same day
 4. Has an appropriate weight prescription based on the client's recent history with similar movements
 
-If the client provided a reason for the swap, factor it in:
-- "different gym" or "equipment unavailable" → pick an exercise using different equipment
-- "knee pain" or injury-related → pick a joint-friendly alternative
-- "want variety" → pick something the client hasn't done recently
-- No reason given → pick the best general alternative
+Rank them by overall fit: #1 is the closest, most effective replacement; #2 and #3 are progressively different trade-offs (e.g. different equipment, more joint-friendly, more novel) that are still strong choices. If the client provided a reason for the swap, factor it into the ranking:
+- "different gym" or "equipment unavailable" → favor exercises using different equipment
+- "knee pain" or injury-related → favor joint-friendly alternatives
+- "want variety" → favor exercises the client hasn't done recently
+- No reason given → rank by best general fit
 
 Return ONLY valid JSON matching this exact structure, no other text (no markdown fences, no preamble, no explanation):
 {
-  "name": "Chest-Supported Machine Row",
-  "note": "Replaces Cable Row — similar horizontal pull, machine-based. Starting at 100 based on prior row history.",
-  "rest": 120,
-  "sets": [
-    {"weight": 100, "reps_target": 12, "reps_range": "10-12", "repeat": 3}
+  "options": [
+    {
+      "name": "Chest-Supported Machine Row",
+      "why": "#1 — same horizontal pull, machine-based, removes lower-back load.",
+      "note": "Starting at 100 based on prior row history.",
+      "rest": 120,
+      "sets": [
+        {"weight": 100, "reps_target": 12, "reps_range": "10-12", "repeat": 3}
+      ]
+    },
+    { "...": "option #2" },
+    { "...": "option #3" }
   ]
 }
 
 RULES:
+- Return EXACTLY 3 options, ordered best-fit first. The 3 names must be distinct, and none may equal the exercise being replaced.
 - "name" must be an exact, verbatim name from the AVAILABLE EXERCISES list. Preserve capitalization.
+- "why" explains why this option sits at this rank (lead with "#1"/"#2"/"#3"). Hard cap 15 words.
 - Weight must respect the exercise's weight_mode (per_side = per-hand/per-leg, total = bar/stack load, bodyweight = added load only, none = 0). The AVAILABLE EXERCISES list includes weight_mode for every entry.
 - Round weights to realistic gym increments: 2.5-5 lbs for dumbbells / plated barbells, 5-10 lbs for cables / machines. Never decimals like 67.5 for a dumbbell.
 - "rest" is an INTEGER in seconds (e.g., 120 for 2 min). Never a string.
 - Omit a "unit" field — the app defaults to lbs.
 - Use the "repeat": N shorthand when all sets are identical (single set object with repeat: N). Use separate set objects only when sets differ.
-- "note" explains why this replacement was chosen and how the weight was derived. Hard cap 20 words.
-- Return exactly ONE exercise. Do not offer options, do not hedge, do not list alternatives.
-- Do not suggest an exercise that is already programmed on the same day (list provided in the user message).
+- "note" explains how the weight was derived. Hard cap 20 words.
+- Do not suggest any exercise that is already programmed on the same day (list provided in the user message).
 
 COACHING CONTINUITY:
 The user message may include a RECENT COACHING CONVERSATIONS section with prior swap requests, injury discussions, and session notes from the last two weeks plus current week. If the client has discussed this exercise or muscle group recently, factor that into your suggestion. For example, if the client mentioned knee pain in chat earlier this week, prioritize knee-friendly alternatives even if they don't restate that in the swap reason. Don't repeat a substitute they recently rejected.
@@ -1464,14 +1472,15 @@ async function handleSwap(res, userId, rawInputs) {
   const rawText = claudeData.content && claudeData.content[0] && claudeData.content[0].text;
   if (!rawText) return jsonError(res, 422, 'No text in swap response', { raw: claudeData });
 
-  let replacement;
+  let parsed;
   try {
-    replacement = JSON.parse(stripJsonFences(rawText));
+    parsed = JSON.parse(stripJsonFences(rawText));
   } catch {
     return jsonError(res, 422, 'Swap response was not valid JSON', { raw: rawText });
   }
 
-  const validationError = validateSwapReplacement(replacement, libraryNames, exercise.name, otherToday);
+  const options = parsed && Array.isArray(parsed.options) ? parsed.options : null;
+  const validationError = validateSwapOptions(options, libraryNames, exercise.name, otherToday);
   if (validationError) {
     return jsonError(res, 422, 'Swap validation failed: ' + validationError, { raw: rawText });
   }
@@ -1479,10 +1488,10 @@ async function handleSwap(res, userId, rawInputs) {
   // Expand repeat: N shorthand into N identical set objects so the client
   // receives the canonical fully-expanded shape — matches plan-generation
   // output and keeps the client-side contract uniform.
-  expandSetRepeatsForOneExercise(replacement);
+  for (const opt of options) expandSetRepeatsForOneExercise(opt);
 
   return res.status(200).json({
-    replacement,
+    options,
     replaced: exercise.name,
     reason: reason || null,
     model: model,
@@ -1767,7 +1776,7 @@ function buildSwapUserMessage({ exercise, reason, dayName, otherToday, movementH
   // stays clean when there's nothing to inject.
   out += formatCoachHistory(coachHistory);
 
-  out += 'Return ONLY the JSON object for the replacement exercise. No preamble, no markdown fences, no trailing text.\n';
+  out += 'Return ONLY the JSON object with the "options" array of exactly 3 ranked replacements. No preamble, no markdown fences, no trailing text.\n';
   return out;
 }
 
@@ -1806,6 +1815,23 @@ function validateSwapReplacement(r, libraryNames, replacedName, otherToday) {
   if (otherToday.indexOf(r.name) !== -1) return `replacement "${r.name}" is already programmed on this day`;
   if (!Number.isFinite(r.rest)) return 'rest must be an integer (seconds)';
   if (!Array.isArray(r.sets) || !r.sets.length) return 'missing or empty sets';
+  return null;
+}
+
+// Validate the ranked options array: exactly 3, each individually valid,
+// no duplicate names across the three (a list of dupes is useless to the
+// user). Reuses the single-option validator so the rules can't drift.
+function validateSwapOptions(options, libraryNames, replacedName, otherToday) {
+  if (!Array.isArray(options)) return 'options is not an array';
+  if (options.length !== 3) return `expected exactly 3 options, got ${options.length}`;
+  const seen = new Set();
+  for (let i = 0; i < options.length; i++) {
+    const err = validateSwapReplacement(options[i], libraryNames, replacedName, otherToday);
+    if (err) return `option ${i + 1}: ${err}`;
+    const nm = options[i].name;
+    if (seen.has(nm)) return `duplicate option name "${nm}"`;
+    seen.add(nm);
+  }
   return null;
 }
 

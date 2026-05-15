@@ -852,7 +852,10 @@ function renderPlanDayExtraCard(di, xei, xState, mode, readOnly, badgeLabel) {
     '" type="button" data-di="' + escapeAttr(String(di)) + '" data-ei="' + xei +
     '" aria-label="' + (xInBlock ? 'Remove from superset' : 'Pair as superset') +
     '" title="' + (xInBlock ? 'Remove from superset' : 'Pair as superset') + '">⟷</button>';
-  h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + xBadgeHtml + escapeHtml(xMeta.name) + '<span class="extras-badge">added</span></div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(xMeta.name) + '">view recent</button>' + xChipHtml + '</div><div class="exercise-status ' + xsc + '">' + xstat + '</div>' + (readOnly ? '' : xSupersetBtn + '<button class="card-delete" data-di="' + di + '" data-ei="' + xei + '" aria-label="Delete exercise" type="button">×</button>') + '</div>';
+  var xSwapBtn = readOnly ? '' :
+    '<button class="card-swap card-swap-session" data-swap-session-ei="' + xei +
+    '" aria-label="Swap exercise" title="Swap / recommend" type="button">⇄</button>';
+  h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + xBadgeHtml + escapeHtml(xMeta.name) + '<span class="extras-badge">added</span></div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(xMeta.name) + '">view recent</button>' + xChipHtml + '</div><div class="exercise-status ' + xsc + '">' + xstat + '</div>' + (readOnly ? '' : xSwapBtn + xSupersetBtn + '<button class="card-delete" data-di="' + di + '" data-ei="' + xei + '" aria-label="Delete exercise" type="button">×</button>') + '</div>';
   h += renderInlineFormNotes(resolveCardExerciseId(null, xState), xei, readOnly);
   h += '<div class="sets-container">';
   var xStdSetNum = 0;
@@ -916,7 +919,9 @@ function renderAdHocExerciseCard(di, ei, exState, badgeLabel) {
     '" type="button" data-di="' + escapeAttr(String(di)) + '" data-ei="' + ei +
     '" aria-label="' + (inBlockAd ? 'Remove from superset' : 'Pair as superset') +
     '" title="' + (inBlockAd ? 'Remove from superset' : 'Pair as superset') + '">⟷</button>';
-  h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + badgeHtml + escapeHtml(meta.name) + '</div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(meta.name) + '">view recent</button>' + adChipHtml + '</div><div class="exercise-status ' + sc + '">' + stat + '</div>' + supersetBtnAd + '<button class="card-delete" data-di="' + di + '" data-ei="' + ei + '" aria-label="Delete exercise" type="button">×</button></div>';
+  var swapBtnAd = '<button class="card-swap card-swap-session" data-swap-session-ei="' + ei +
+    '" aria-label="Swap exercise" title="Swap / recommend" type="button">⇄</button>';
+  h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + badgeHtml + escapeHtml(meta.name) + '</div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(meta.name) + '">view recent</button>' + adChipHtml + '</div><div class="exercise-status ' + sc + '">' + stat + '</div>' + swapBtnAd + supersetBtnAd + '<button class="card-delete" data-di="' + di + '" data-ei="' + ei + '" aria-label="Delete exercise" type="button">×</button></div>';
   h += renderInlineFormNotes(resolveCardExerciseId(null, exState), ei, false);
   h += '<div class="sets-container">';
   var adStdSetNum = 0;
@@ -5760,6 +5765,59 @@ function _otherTodayForReview(di, sourceFlatEi) {
   return out;
 }
 
+// Swap an exercise that lives only in the running session — an ad-hoc
+// session exercise or an extra added to a plan day. There's no plan slot
+// and nothing persists beyond this session: acceptSwap's 'session'
+// branch replaces the runtime slot in todayState. di is currentDay
+// (plan-day index or 'ah_<id>' key); ei is the numeric exercise_order
+// (state key 'ex_<ei>'). Mirrors deleteExerciseCard's state resolution.
+function openSwapModalForSession(di, ei) {
+  if (typeof viewModeFor === 'function' && viewModeFor(di) !== 'editable') return;
+  if (!todayState || !todayState.exercises) return;
+  var ek = 'ex_' + ei;
+  var ex = todayState.exercises[ek];
+  if (!ex) return;
+  // Only ad-hoc exercises or plan-day extras swap here — prescribed plan
+  // exercises keep the plan-scoped openSwapModal path.
+  if (!ex.isExtra && !todayState.isAdHoc) return;
+  var meta = ex.exerciseMeta || { name: 'Exercise', weight_mode: 'total' };
+  swapState = {
+    context: 'session',
+    di: di,
+    ei: ei,
+    originalExercise: JSON.parse(JSON.stringify(ex)),
+    snapshot: {
+      name: meta.name,
+      sets: Array.isArray(ex.sets) ? ex.sets.slice() : [],
+      muscle_group: meta.muscle_group || null,
+      movement_pattern: meta.movement_pattern || null,
+      equipment: meta.equipment || null,
+      weight_mode: meta.weight_mode || 'total',
+    },
+    dayName: todayState.isAdHoc ? (todayState.title || 'Ad-hoc session') : 'Session',
+    view: 'input',
+    options: null,
+    reason: '',
+  };
+  document.getElementById('swapExerciseOverlay').classList.add('show');
+  renderSwapModal();
+}
+
+// Names of the other exercises in the running session (so Claude doesn't
+// suggest a duplicate). Used by fireSwapFetch when context === 'session'.
+function _otherTodayForSession(ei) {
+  var out = [];
+  if (!todayState || !todayState.exercises) return out;
+  var srcKey = 'ex_' + ei;
+  Object.keys(todayState.exercises).forEach(function(k) {
+    if (k === srcKey) return;
+    var ex = todayState.exercises[k];
+    var nm = ex && ex.exerciseMeta && ex.exerciseMeta.name;
+    if (nm) out.push(nm);
+  });
+  return out;
+}
+
 // Open the merge picker for the chain-link icon on a standalone card. Lists other
 // items on this day: standalone exercises (each pickable individually) and
 // existing supersets (pickable as join targets). Excludes the source.
@@ -5926,7 +5984,7 @@ function renderSwapModal() {
     title.textContent = 'Finding replacement…';
     renderSwapLoading(body);
   } else if (swapState.view === 'review') {
-    title.textContent = 'Review replacement';
+    title.textContent = 'Choose a replacement';
     renderSwapReview(body);
   }
 }
@@ -5967,41 +6025,53 @@ function renderSwapLoading(body) {
     '</div>';
 }
 
+// Ranked list of 3 alternatives, best-fit first. Each row is selectable
+// via "Use this" (data-swap-option=N → acceptSwap(N)). The scope note is
+// context-aware: plan-week for live/review, session-only for session.
 function renderSwapReview(body) {
-  var r = swapState.replacement || {};
+  var opts = Array.isArray(swapState.options) ? swapState.options : [];
   var h = '<div class="swap-review">';
   h += '<div><span class="swap-replacing-label">Replacing</span><div class="swap-review-name" style="opacity:0.7;text-decoration:line-through;">' +
        escapeHtml(swapState.snapshot.name) + '</div></div>';
-  h += '<div><span class="swap-replacing-label">With</span><div class="swap-review-name">' + escapeHtml(r.name || '') + '</div>';
-  var meta = exerciseLibraryByName ? exerciseLibraryByName[normName(r.name)] : null;
-  if (meta && (meta.movement_pattern || meta.equipment)) {
-    var bits = [];
-    if (meta.movement_pattern) bits.push(meta.movement_pattern);
-    if (meta.equipment) bits.push(meta.equipment);
-    h += '<span class="swap-review-meta">' + escapeHtml(bits.join(' · ')) + '</span>';
+  h += '<div class="swap-options">';
+  for (var i = 0; i < opts.length; i++) {
+    var r = opts[i] || {};
+    h += '<div class="swap-option">';
+    h += '<div class="swap-option-head">';
+    h += '<span class="swap-option-rank">#' + (i + 1) + '</span>';
+    h += '<span class="swap-option-name">' + escapeHtml(r.name || '') + '</span>';
+    h += '</div>';
+    var meta = (r.name && exerciseLibraryByName) ? exerciseLibraryByName[normName(r.name)] : null;
+    if (meta && (meta.movement_pattern || meta.equipment)) {
+      var bits = [];
+      if (meta.movement_pattern) bits.push(meta.movement_pattern);
+      if (meta.equipment) bits.push(meta.equipment);
+      h += '<div class="swap-review-meta">' + escapeHtml(bits.join(' · ')) + '</div>';
+    }
+    if (r.why) h += '<div class="swap-option-why">' + escapeHtml(r.why) + '</div>';
+    if (Array.isArray(r.sets) && r.sets.length) {
+      var setStrs = r.sets.map(function(s) {
+        var w = s.weight != null ? s.weight : '?';
+        var rp = s.reps_target != null ? s.reps_target : (s.reps_range || '?');
+        return w + ' × ' + rp;
+      });
+      h += '<div class="swap-review-sets">' + escapeHtml(setStrs.join('   ·   ')) +
+           (r.rest ? '   ·   ' + Math.round(r.rest) + 's rest' : '') + '</div>';
+    }
+    if (r.note) h += '<div class="swap-review-note">' + escapeHtml(r.note) + '</div>';
+    h += '<button type="button" class="swap-btn-accept swap-option-use" data-swap-option="' + i + '">Use this</button>';
+    h += '</div>';
   }
   h += '</div>';
-  // Sets rendered in the same shape as fmtP output: weight × reps_target, and repeat count.
-  if (Array.isArray(r.sets) && r.sets.length) {
-    var setStrs = r.sets.map(function(s) {
-      var w = s.weight != null ? s.weight : '?';
-      var rp = s.reps_target != null ? s.reps_target : (s.reps_range || '?');
-      return w + ' × ' + rp;
-    });
-    h += '<div class="swap-review-sets">' + escapeHtml(setStrs.join('   ·   ')) + '</div>';
-  }
-  if (r.rest) {
-    h += '<div class="swap-review-meta">Rest: ' + Math.round(r.rest) + 's</div>';
-  }
-  if (r.note) h += '<div class="swap-review-note">' + escapeHtml(r.note) + '</div>';
-  // Scope callout — makes the plan-level mutation explicit before the
-  // user taps Accept. Paired with the substitution (SUB) flow's toast
-  // that clarifies session-only scope. See DECISIONS v2.2.1 entry.
-  h += '<div class="swap-scope-warning">Accepting replaces this exercise in your plan for the rest of the week. For a one-session change, close this and use <strong>SUB</strong> on the card.</div>';
+  var scope = (swapState.context === 'session')
+    ? 'Replaces this exercise for this session only. Logged sets on it will be discarded.'
+    : (swapState.context === 'review'
+        ? 'Updates this exercise in the plan you\'re reviewing (not saved until you accept the plan).'
+        : 'Replaces this exercise in your plan for the rest of the week. For a one-session change, close this and use <strong>SUB</strong> on the card.');
+  h += '<div class="swap-scope-warning">' + scope + '</div>';
   h += '<div class="swap-actions">';
   h += '<button type="button" class="swap-btn-cancel" id="btnSwapCancel">Cancel</button>';
   h += '<button type="button" class="swap-btn-retry" id="btnSwapRetry">Try again</button>';
-  h += '<button type="button" class="swap-btn-accept" id="btnSwapAccept">Accept</button>';
   h += '</div>';
   h += '</div>';
   body.innerHTML = h;
@@ -6029,7 +6099,7 @@ async function retrySwapRequest() {
 async function fireSwapFetch() {
   if (!swapState) return;
   swapState.view = 'loading';
-  swapState.replacement = null;
+  swapState.options = null;
   renderSwapModal();
   if (swapAbortController) {
     try { swapAbortController.abort(); } catch(e) {}
@@ -6066,6 +6136,11 @@ async function fireSwapFetch() {
     // plan — send the names list explicitly instead.
     if (swapState.context === 'review') {
       payload.other_today = _otherTodayForReview(swapState.di, swapState.ei);
+    } else if (swapState.context === 'session') {
+      // Session swaps (ad-hoc / extras) have no server-side plan day to
+      // derive duplicates from — send the running session's other
+      // exercise names explicitly.
+      payload.other_today = _otherTodayForSession(swapState.ei);
     }
     var res = await fetch('/api/generate-plan', {
       method: 'POST',
@@ -6074,14 +6149,14 @@ async function fireSwapFetch() {
       signal: swapAbortController.signal,
     });
     var body = await res.json().catch(function() { return null; });
-    if (res.status !== 200 || !body || !body.replacement) {
+    if (res.status !== 200 || !body || !Array.isArray(body.options) || !body.options.length) {
       var msg = (body && body.error) || ('HTTP ' + res.status);
       swapState.view = 'input';
       renderSwapModal();
       showToast('Swap failed: ' + msg, null);
       return;
     }
-    swapState.replacement = body.replacement;
+    swapState.options = body.options;
     swapState.view = 'review';
     renderSwapModal();
     // Option L: suggestions aren't persisted in isolation. On accept,
@@ -6138,9 +6213,12 @@ function _writeFlatEiInPlanDay(dayPlan, flatEi, replacement) {
   return false;
 }
 
-async function acceptSwap() {
-  if (!swapState || !swapState.replacement) return;
+async function acceptSwap(optionIndex) {
+  if (!swapState || !Array.isArray(swapState.options)) return;
+  var repl = swapState.options[optionIndex];
+  if (!repl || !repl.name) return;
   var di = swapState.di, ei = swapState.ei;
+
   // Review-context branch: source is generatedPlan; mutate it in
   // place at the flat-ei slot (resolves through block.exercises[] for
   // members) and re-render the review. No DB persist — generatedPlan
@@ -6152,26 +6230,93 @@ async function acceptSwap() {
       closeSwapModal();
       return;
     }
-    var ok = _writeFlatEiInPlanDay(generatedPlan.days[di], ei, swapState.replacement);
+    var ok = _writeFlatEiInPlanDay(generatedPlan.days[di], ei, repl);
     if (!ok) {
       showToast('Exercise no longer in plan', null);
       closeSwapModal();
       return;
     }
     var swappedFrom = swapState.snapshot.name;
-    var swappedTo = swapState.replacement.name;
+    var swappedTo = repl.name;
     closeSwapModal();
     var generateBody = document.getElementById('generateBody');
     if (generateBody) renderGenerateReview(generateBody);
     showToast('Swapped ' + swappedFrom + ' → ' + swappedTo + ' in the review.', null);
     return;
   }
+
+  // Session-context branch: ad-hoc session exercise or plan-day extra.
+  // Nothing persists beyond this session — replace the runtime slot in
+  // todayState. If the slot has completed sets, confirm the discard
+  // first (per design). Old set rows are removed from the DB because the
+  // exercise identity changed.
+  if (swapState.context === 'session') {
+    if (!todayState || !todayState.exercises) { closeSwapModal(); return; }
+    var sek = 'ex_' + ei;
+    var sEx = todayState.exercises[sek];
+    if (!sEx) {
+      showToast('Exercise no longer in this session', null);
+      closeSwapModal();
+      return;
+    }
+    var sOldName = swapState.snapshot.name;
+    var hasDone = Array.isArray(sEx.sets) && sEx.sets.some(function(s) { return s && s.done; });
+    if (hasDone && !confirm('This exercise has logged sets — swapping to ' + repl.name + ' will discard them. Continue?')) {
+      return;
+    }
+    var useBtn = document.querySelector('[data-swap-option="' + optionIndex + '"]');
+    if (useBtn) { useBtn.disabled = true; useBtn.textContent = 'Applying…'; }
+    try {
+      if (todayState.workoutId) {
+        var dr = await sb.from('sets').delete()
+          .eq('workout_id', todayState.workoutId)
+          .eq('exercise_order', ei);
+        if (dr.error) throw dr.error;
+      }
+    } catch (errS) {
+      console.error('acceptSwap session delete error:', errS);
+      showToast("Couldn't swap: " + (errS.message || 'unknown error'), null);
+      if (useBtn) { useBtn.disabled = false; useBtn.textContent = 'Use this'; }
+      return;
+    }
+    var libRow = exerciseLibraryByName ? exerciseLibraryByName[normName(repl.name)] : null;
+    var keepExtra = !!sEx.isExtra;
+    var newSets = (Array.isArray(repl.sets) && repl.sets.length)
+      ? repl.sets.map(function(s) {
+          var entry = { isExtra: keepExtra };
+          if (s && s.weight != null && s.weight !== 0) entry.weight = Number(s.weight);
+          return entry;
+        })
+      : [{ isExtra: keepExtra }];
+    todayState.exercises[sek] = {
+      rpe: null,
+      note: (repl.note || ''),
+      sub: '',
+      subExercise: null,
+      sets: newSets,
+      isExtra: keepExtra,
+      exerciseId: libRow ? libRow.id : null,
+      exerciseMeta: libRow || { name: repl.name, weight_mode: 'total' },
+    };
+    if (libRow && libRow.id) exerciseIdCache[repl.name] = libRow.id;
+    var sReason = (swapState.reason && swapState.reason.trim()) || 'no reason given';
+    var sRationale = (repl.note && repl.note.trim()) ? repl.note.trim() : '';
+    var sLog = 'Accepted swap: ' + sOldName + ' → ' + repl.name + ' (reason: ' + sReason + ')';
+    if (sRationale) sLog += ". Coach's rationale: " + sRationale;
+    logCoachMessage('user', sLog, 'swap', sOldName);
+    closeSwapModal();
+    buildTabs();
+    buildDay(currentDay);
+    if (typeof saveHydrationSnapshot === 'function') saveHydrationSnapshot();
+    showToast('Swapped ' + sOldName + ' → ' + repl.name + ' for this session.', null);
+    return;
+  }
+
   if (!plan || !plan.days || !plan.days[di] || !plan.days[di].exercises[ei]) {
     showToast('Exercise no longer in plan', null);
     closeSwapModal();
     return;
   }
-  var repl = swapState.replacement;
   var oldName = swapState.snapshot.name;
   // Mutate the plan blob in place at the same exercise_order slot. Logged
   // sets on the old exercise remain attached to their set rows (which reference
@@ -6185,7 +6330,7 @@ async function acceptSwap() {
     sets: Array.isArray(repl.sets) ? repl.sets.slice() : [],
   };
 
-  var acceptBtn = document.getElementById('btnSwapAccept');
+  var acceptBtn = document.querySelector('[data-swap-option="' + optionIndex + '"]');
   if (acceptBtn) { acceptBtn.disabled = true; acceptBtn.textContent = 'Saving…'; }
   try {
     var up = await sb.from('plans').update({ data: plan }).eq('id', activePlanId);
@@ -6215,7 +6360,7 @@ async function acceptSwap() {
     // from DB. originalExercise is a deep clone captured at modal-open time.
     plan.days[di].exercises[ei] = swapState.originalExercise;
     showToast("Couldn't save swap: " + (err.message || 'unknown error'), null);
-    if (acceptBtn) { acceptBtn.disabled = false; acceptBtn.textContent = 'Accept'; }
+    if (acceptBtn) { acceptBtn.disabled = false; acceptBtn.textContent = 'Use this'; }
   }
 }
 
@@ -8213,7 +8358,12 @@ document.getElementById('swapExerciseBody').addEventListener('click', function(e
   if (!e.target || !e.target.closest) return;
   if (e.target.closest('#btnSwapSubmit')) { submitSwapRequest(); return; }
   if (e.target.closest('#btnSwapRetry')) { retrySwapRequest(); return; }
-  if (e.target.closest('#btnSwapAccept')) { acceptSwap(); return; }
+  var useBtn = e.target.closest('.swap-option-use');
+  if (useBtn) {
+    var oi = parseInt(useBtn.getAttribute('data-swap-option'), 10);
+    if (!isNaN(oi)) acceptSwap(oi);
+    return;
+  }
   if (e.target.closest('#btnSwapCancel')) { closeSwapModal(); return; }
   if (e.target.closest('#btnSwapAbort')) { closeSwapModal(); return; }
 });
@@ -8736,8 +8886,19 @@ document.getElementById('workoutContainer').addEventListener('click', function(e
     );
     return;
   }
-  // Swap icon on plan exercise cards. Only rendered in editable mode and
-  // never on ad-hoc / extras cards (see buildDay prescribed loop).
+  // Swap icon on ad-hoc / extra session cards (session-scoped). Checked
+  // before the generic .card-swap branch because that selector also
+  // matches this button (it carries both classes for shared styling).
+  var swapSessionEarly = target.closest ? target.closest('.card-swap-session') : null;
+  if (swapSessionEarly) {
+    openSwapModalForSession(
+      currentDay,
+      parseInt(swapSessionEarly.getAttribute('data-swap-session-ei'), 10)
+    );
+    return;
+  }
+  // Swap icon on prescribed plan exercise cards. Only rendered in
+  // editable mode.
   var swapBtnEarly = target.closest ? target.closest('.card-swap') : null;
   if (swapBtnEarly) {
     openSwapModal(

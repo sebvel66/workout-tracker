@@ -3247,8 +3247,40 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
   font-size: 10px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.5px;
 }
 .swap-actions {
-  display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
   margin-top: 4px;
+}
+/* Ranked options list (v3.6.23) */
+.swap-options {
+  display: flex; flex-direction: column; gap: 10px;
+}
+.swap-option {
+  display: flex; flex-direction: column; gap: 7px;
+  padding: 12px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.swap-option-head {
+  display: flex; align-items: baseline; gap: 8px;
+}
+.swap-option-rank {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px; font-weight: 700; color: var(--accent2);
+  flex: none;
+}
+.swap-option-name {
+  font-size: 16px; font-weight: 600; color: var(--text);
+}
+.swap-option-why {
+  font-size: 12px; color: var(--text2); line-height: 1.4;
+}
+.swap-option-use {
+  align-self: flex-start;
+  padding: 8px 16px;
+  border-radius: 10px;
+  font-family: 'Outfit', sans-serif; font-size: 13px; font-weight: 600;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
 }
 .swap-actions button {
   padding: 10px 12px;
