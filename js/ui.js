@@ -2638,16 +2638,12 @@ async function renderBodyView() {
   h += '<div id="bodyViewActualsSlot"><div class="body-view-section-empty">Loading…</div></div>';
   h += '</div>';
 
-  // Section 2: projected from the active plan, if any.
+  // Section 2: week-aware Planned (v3.6.24) — done plan-days from their
+  // own plan + ad-hoc actuals + the active plan's remaining days.
+  // Computed in fetchWeekSummary, so it fills async like the actuals.
   h += '<div class="body-view-section">';
-  h += '<div class="body-view-section-label">Planned (active plan, full week)</div>';
-  if (plan && Array.isArray(plan.days) && plan.days.length) {
-    var projectedF = computePlanVolumeByMuscle(plan);
-    var projectedP = computePlanVolumeByMusclePrimary(plan);
-    h += _dualChipRowsHtml(projectedP, projectedF);
-  } else {
-    h += '<div class="body-view-section-empty">No active plan — generate or activate a template to see projected volume.</div>';
-  }
+  h += '<div class="body-view-section-label">Planned (this week)</div>';
+  h += '<div id="bodyViewPlannedSlot"><div class="body-view-section-empty">Loading…</div></div>';
   h += '</div>';
 
   body.innerHTML = h;
@@ -2663,10 +2659,12 @@ async function renderBodyView() {
     });
   }
 
-  // Async-load the actuals so the projected section paints immediately.
+  // Both sections fill from the same week summary.
   if (!userId) {
     var slot = document.getElementById('bodyViewActualsSlot');
     if (slot) slot.innerHTML = '<div class="body-view-section-empty">Sign in to see this week\'s volume.</div>';
+    var pslot0 = document.getElementById('bodyViewPlannedSlot');
+    if (pslot0) pslot0.innerHTML = '<div class="body-view-section-empty">Sign in to see this week\'s plan.</div>';
     return;
   }
   try {
@@ -2674,19 +2672,34 @@ async function renderBodyView() {
     var weekStart = weekStartForLocalDate(new Date(todayStr + 'T00:00:00'));
     var weekEnd = addDaysToDateString(weekStart, 6);
     var summary = await fetchWeekSummary(userId, weekStart, weekEnd);
+
     var slot2 = document.getElementById('bodyViewActualsSlot');
-    if (!slot2) return;
-    var actualsF = (summary && summary.volumeByMuscleGroup) || {};
-    var actualsP = (summary && summary.volumeByMuscleGroupPrimary) || {};
-    if (!Object.keys(actualsF).length && !Object.keys(actualsP).length) {
-      slot2.innerHTML = '<div class="body-view-section-empty">No completed sets this week yet.</div>';
-      return;
+    if (slot2) {
+      var actualsF = (summary && summary.volumeByMuscleGroup) || {};
+      var actualsP = (summary && summary.volumeByMuscleGroupPrimary) || {};
+      if (!Object.keys(actualsF).length && !Object.keys(actualsP).length) {
+        slot2.innerHTML = '<div class="body-view-section-empty">No completed sets this week yet.</div>';
+      } else {
+        slot2.innerHTML = _dualChipRowsHtml(actualsP, actualsF);
+      }
     }
-    slot2.innerHTML = _dualChipRowsHtml(actualsP, actualsF);
+
+    var pslot = document.getElementById('bodyViewPlannedSlot');
+    if (pslot) {
+      var plannedF = (summary && summary.plannedByMuscleGroup) || {};
+      var plannedP = (summary && summary.plannedByMuscleGroupPrimary) || {};
+      if (!Object.keys(plannedF).length && !Object.keys(plannedP).length) {
+        pslot.innerHTML = '<div class="body-view-section-empty">No active plan and nothing done this week — generate or activate a plan to see your target.</div>';
+      } else {
+        pslot.innerHTML = _dualChipRowsHtml(plannedP, plannedF);
+      }
+    }
   } catch (err) {
-    console.error('renderBodyView actuals error:', err);
+    console.error('renderBodyView week summary error:', err);
     var slotE = document.getElementById('bodyViewActualsSlot');
     if (slotE) slotE.innerHTML = '<div class="body-view-section-empty">Couldn\'t load this week\'s data.</div>';
+    var pslotE = document.getElementById('bodyViewPlannedSlot');
+    if (pslotE) pslotE.innerHTML = '<div class="body-view-section-empty">Couldn\'t load this week\'s plan.</div>';
   }
 }
 
@@ -2742,6 +2755,9 @@ function _bodyInfoPanelHtml() {
     '<div class="body-info-block"><div class="body-info-block-label">Definitions</div>' + defs + '</div>' +
     '<div class="body-info-block"><div class="body-info-block-label">Color key</div>' + key + '</div>' +
     '<div class="body-info-block"><div class="body-info-block-label">Ranges by muscle</div>' + table + '</div>' +
+    '<div class="body-info-block"><div class="body-info-block-label">How the counts work</div>' +
+    '<div class="body-info-def"><b>This week so far</b> — every set you\'ve completed this week, across plan days and ad-hoc sessions.</div>' +
+    '<div class="body-info-def"><b>Planned (this week)</b> — the plan-days you\'ve already done this week (counted from whichever plan they belonged to, so switching plans mid-week stays accurate), plus any ad-hoc sessions you did, plus the remaining days of your current active plan. It reflects what you actually committed to, not just the active plan in isolation.</div></div>' +
     '</div></details>';
 }
 

@@ -691,30 +691,42 @@ async function fetchRecentWorkouts(userId, limit) {
 // right ballpark for sanity-checking against weekly target bands. Refining
 // to "drop = 0.5 set" would track sport-science conventions more closely
 // but isn't worth the complexity for plan review.
-function computePlanVolumeByMuscle(plan) {
-  var out = {};
-  if (!plan || !Array.isArray(plan.days)) return out;
-  for (var di = 0; di < plan.days.length; di++) {
-    var day = plan.days[di];
-    var entries = Array.isArray(day && day.exercises) ? day.exercises : [];
-    for (var ei = 0; ei < entries.length; ei++) {
-      var e = entries[ei];
-      if (e && e.superset === true && Array.isArray(e.exercises)) {
-        for (var mi = 0; mi < e.exercises.length; mi++) {
-          _accumulatePlanExercise(e.exercises[mi], out);
-        }
-      } else {
-        _accumulatePlanExercise(e, out);
+// Walk one plan day's entries (superset-aware), accumulating fractional
+// (Schoenfeld) set counts by muscle into `out`. Factored so the weekly
+// week-aware Planned calc (fetchWeekSummary) can score individual days
+// from whichever plan they belonged to. v3.6.24.
+function _accumulatePlanDayFrac(day, out) {
+  var entries = Array.isArray(day && day.exercises) ? day.exercises : [];
+  for (var ei = 0; ei < entries.length; ei++) {
+    var e = entries[ei];
+    if (e && e.superset === true && Array.isArray(e.exercises)) {
+      for (var mi = 0; mi < e.exercises.length; mi++) {
+        _accumulatePlanExercise(e.exercises[mi], out);
       }
+    } else {
+      _accumulatePlanExercise(e, out);
     }
   }
-  // Round to one decimal so floating-point accumulation doesn't surface
-  // 14.499999...; the consumer treats halves as exact.
+}
+
+// Round accumulated set counts to one decimal so floating-point
+// accumulation doesn't surface 14.499999...; consumers treat halves as
+// exact.
+function _roundVolumeMap(out) {
   var keys = Object.keys(out);
   for (var k = 0; k < keys.length; k++) {
     out[keys[k]] = Math.round(out[keys[k]] * 10) / 10;
   }
   return out;
+}
+
+function computePlanVolumeByMuscle(plan) {
+  var out = {};
+  if (!plan || !Array.isArray(plan.days)) return out;
+  for (var di = 0; di < plan.days.length; di++) {
+    _accumulatePlanDayFrac(plan.days[di], out);
+  }
+  return _roundVolumeMap(out);
 }
 
 function _accumulatePlanExercise(ex, out) {
@@ -855,22 +867,27 @@ function muscleBandStatusCssClass(status) {
 // Primary-only plan volume (no Schoenfeld secondary attribution).
 // Parallel to computePlanVolumeByMuscle (which is fractional). Used by
 // the dual-display chips that show both counts side-by-side.
+// Primary-only parallel to _accumulatePlanDayFrac (no secondary
+// attribution). v3.6.24.
+function _accumulatePlanDayPrimary(day, out) {
+  var entries = Array.isArray(day && day.exercises) ? day.exercises : [];
+  for (var ei = 0; ei < entries.length; ei++) {
+    var e = entries[ei];
+    if (e && e.superset === true && Array.isArray(e.exercises)) {
+      for (var mi = 0; mi < e.exercises.length; mi++) {
+        _accumulatePlanExercisePrimary(e.exercises[mi], out);
+      }
+    } else {
+      _accumulatePlanExercisePrimary(e, out);
+    }
+  }
+}
+
 function computePlanVolumeByMusclePrimary(plan) {
   var out = {};
   if (!plan || !Array.isArray(plan.days)) return out;
   for (var di = 0; di < plan.days.length; di++) {
-    var day = plan.days[di];
-    var entries = Array.isArray(day && day.exercises) ? day.exercises : [];
-    for (var ei = 0; ei < entries.length; ei++) {
-      var e = entries[ei];
-      if (e && e.superset === true && Array.isArray(e.exercises)) {
-        for (var mi = 0; mi < e.exercises.length; mi++) {
-          _accumulatePlanExercisePrimary(e.exercises[mi], out);
-        }
-      } else {
-        _accumulatePlanExercisePrimary(e, out);
-      }
-    }
+    _accumulatePlanDayPrimary(plan.days[di], out);
   }
   return out;
 }
@@ -1021,6 +1038,13 @@ async function fetchWeekSummary(userId, weekStartDate, weekEndDate) {
 
   var workouts = rows.map(_summarizeWorkoutRow);
 
+  // Week-aware Planned (v3.6.24). Computed before the rollup loop, which
+  // strips the transient _planBlob/_dayIndex/_planId fields this needs.
+  var activeBlob = (activePlanId && plan && Array.isArray(plan.days))
+    ? plan
+    : (activePlanId ? planCache[activePlanId] : null);
+  var weekPlanned = _weekPlannedVolume(workouts, activePlanId, activeBlob);
+
   // Week-level rollup. Plans are grouped by plan_id so a week with two
   // distinct plans (e.g., user ended Plan A mid-week and started Plan B)
   // produces a correct per-plan completion breakdown — the prior
@@ -1128,7 +1152,60 @@ async function fetchWeekSummary(userId, weekStartDate, weekEndDate) {
     plansBreakdown: plansBreakdown,
     volumeByMuscleGroup: volByMuscle,
     volumeByMuscleGroupPrimary: volByMusclePrimary,
+    plannedByMuscleGroup: weekPlanned.frac,
+    plannedByMuscleGroupPrimary: weekPlanned.prim,
   };
+}
+
+// Week-aware "Planned" target (v3.6.24). Pure function so it can be
+// unit-tested. For the week's summarized workouts:
+//   - ad-hoc session with >=1 completed set → its ACTUAL volume (no
+//     prescription exists for ad-hoc).
+//   - plan-day with >=1 completed set → that day's PRESCRIBED volume
+//     from the plan it was performed under (so a mid-week plan switch
+//     stays accurate); if it was the active plan, that day index is
+//     marked done so it isn't re-counted below.
+//   - every active-plan day not done this week → its prescribed volume.
+// The >=1-completed-set rule mirrors the perPlan "trained" semantics.
+// Expects the transient _planBlob/_dayIndex/_planId fields still present
+// on the workout objects (call before the rollup loop strips them).
+function _weekPlannedVolume(workouts, activePlanId, activeBlob) {
+  var frac = {};
+  var prim = {};
+  var doneActiveDays = {};
+  for (var i = 0; i < workouts.length; i++) {
+    var w = workouts[i];
+    if (!w || !(w.completedSets > 0)) continue;
+    if (w.isAdHoc) {
+      if (w.setsByMuscleGroup) {
+        Object.keys(w.setsByMuscleGroup).forEach(function(mg) {
+          frac[mg] = (frac[mg] || 0) + w.setsByMuscleGroup[mg];
+        });
+      }
+      if (w.setsByMuscleGroupPrimary) {
+        Object.keys(w.setsByMuscleGroupPrimary).forEach(function(mg) {
+          prim[mg] = (prim[mg] || 0) + w.setsByMuscleGroupPrimary[mg];
+        });
+      }
+    } else if (w._planBlob && w._planBlob.days && w._dayIndex != null) {
+      var doneDay = w._planBlob.days[w._dayIndex];
+      if (doneDay) {
+        _accumulatePlanDayFrac(doneDay, frac);
+        _accumulatePlanDayPrimary(doneDay, prim);
+        if (w._planId && w._planId === activePlanId) {
+          doneActiveDays[w._dayIndex] = true;
+        }
+      }
+    }
+  }
+  if (activeBlob && Array.isArray(activeBlob.days)) {
+    for (var ad = 0; ad < activeBlob.days.length; ad++) {
+      if (doneActiveDays[ad]) continue;
+      _accumulatePlanDayFrac(activeBlob.days[ad], frac);
+      _accumulatePlanDayPrimary(activeBlob.days[ad], prim);
+    }
+  }
+  return { frac: _roundVolumeMap(frac), prim: _roundVolumeMap(prim) };
 }
 
 // Map one workouts row (with sets + exercises joined) into the per-workout
