@@ -86,22 +86,34 @@ All changes are confined to the rest-timer section of
      [js/ui.js:8814](../../../js/ui.js#L8814)) → cancel and re-schedule the
      chime at the new remaining time (derived from `restRemainingMs()` after
      `restTargetMs` is adjusted).
-   - **Mute mid-rest** (rest-timer-sound toggled off,
-     [js/ui.js:8317](../../../js/ui.js#L8317)) → cancel the scheduled chime.
-     (Re-enabling mid-rest does not reschedule; matches today's fire-time
-     gating semantics closely enough and avoids extra complexity.)
+   - **Rest-timer-sound toggled mid-rest** (handler at
+     [js/ui.js:8377](../../../js/ui.js#L8377)): toggled **off** → cancel the
+     scheduled chime; toggled **back on** → reschedule at the current
+     remaining time. Rescheduling on re-enable is required because the
+     scheduled chime is now the *only* sound source (see component 5), so
+     skipping it would leave the rest with no chime even in the foreground.
 
-5. **`restComplete()`** — unchanged as the foreground path (vibrate + UI +
-   `stopRestTimer`). The `restCompleted` guard already makes the foreground
-   `setInterval` path idempotent against the audio-thread chime, so no
-   double-beep. The `visibilitychange` catch-up remains as the JS-side UI
+5. **`restComplete()`** — sound is now driven **solely** by the scheduled
+   chime (foreground and background alike), so `restComplete()` no longer
+   calls `restBeep()`. It keeps vibrate + UI + `stopRestTimer()` and adds
+   stopping the keep-alive source. This guarantees exactly one chime in the
+   foreground (no scheduled-vs-immediate double-beep) and avoids a
+   cancel-before-it-rings race. `restBeep()` itself is retained — it is still
+   used for the flip-to-on preview in the sound toggle. The `restCompleted`
+   guard and the `visibilitychange` catch-up remain as the JS-side UI
    fallback.
+
+   To preserve the foreground-completion guarantee, chime cancellation is
+   **not** placed inside the shared `stopRestTimer()` (which natural
+   completion calls). Skip uses a dedicated `skipRest()` wrapper that cancels
+   the chime + keep-alive *then* calls `stopRestTimer()`; `startRestTimer()`
+   clears any prior scheduled chime explicitly before scheduling the new one.
 
 ## Data flow
 
-- **Foreground:** scheduled chime fires on the audio thread; `setInterval`
-  also reaches 0 and runs `restComplete()` (vibrate + UI). `restCompleted`
-  guard prevents double action.
+- **Foreground:** the scheduled chime fires on the audio thread (the only
+  sound source); `setInterval` also reaches 0 and runs `restComplete()`
+  (vibrate + UI + stop keep-alive, no beep). Exactly one chime.
 - **Backgrounded / locked, still in memory:** scheduled chime fires on time;
   no vibration; UI catches up via `visibilitychange` on reopen.
 - **Force-quit / evicted:** nothing fires (accepted).
