@@ -8940,7 +8940,7 @@ function skipRest() {
 }
 document.getElementById('btnStopRest').addEventListener('click', skipRest);
 document.getElementById('btnStopHold').addEventListener('click', function() { stopHoldTimer(true); });
-document.getElementById('restOverlay').addEventListener('click', stopRestTimer);
+document.getElementById('restOverlay').addEventListener('click', skipRest);
 
 // Rest timer drag-to-move (v3.6.2; v3.6.8 fix: drags compose). Pointer-
 // events for unified mobile + desktop. Drag only initiates on pointerdown
