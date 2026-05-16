@@ -8470,6 +8470,13 @@ document.getElementById('menuRestTimerSound').addEventListener('click', function
   closeMenu();
   // Preview the chime on flip-to-on so the user hears what they just enabled.
   if (next) restBeep();
+  // If a rest is in progress, keep the scheduled chime consistent with the
+  // new setting: off -> cancel the pending chime; on -> (re)schedule it,
+  // since the scheduled chime is now the only sound source.
+  if (restInterval) {
+    if (next) scheduleRestChime(restRemainingMs() / 1000);
+    else cancelRestChime();
+  }
   showToast('Rest timer sound ' + (next ? 'on' : 'off'), null);
 });
 document.getElementById('menuSignOut').addEventListener('click', function() {
@@ -9017,6 +9024,7 @@ function resetRestTimerDragOffset() {
 document.getElementById('btnRestPlus').addEventListener('click', function() {
   if (!restInterval) return;
   restTargetMs += 15000;
+  scheduleRestChime(restRemainingMs() / 1000); // cancels + reschedules
   updateRestDisplay();
 });
 document.getElementById('btnRestMinus').addEventListener('click', function() {
@@ -9024,6 +9032,7 @@ document.getElementById('btnRestMinus').addEventListener('click', function() {
   // Clamp so the deadline stays at least 5 seconds out from now. Preserves
   // the pre-existing 5s floor; additional -15s taps at the floor are no-ops.
   restTargetMs = Math.max(Date.now() + 5000, restTargetMs - 15000);
+  scheduleRestChime(restRemainingMs() / 1000); // cancels + reschedules
   updateRestDisplay();
 });
 // Wall-clock catch-up after backgrounding. If we return to the app past the
