@@ -7835,8 +7835,7 @@ function stopRestKeepAlive() {
     if (unlocked) return;
     unlocked = true;
     try {
-      if (!restAudioCtx) restAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      var ctx = restAudioCtx;
+      var ctx = ensureRestAudioCtx();
       if (ctx.state === 'suspended') ctx.resume();
       var osc = ctx.createOscillator();
       var gain = ctx.createGain();
@@ -7860,8 +7859,7 @@ function stopRestKeepAlive() {
 function restBeep() {
   if (!getRestTimerSound()) return;
   try {
-    if (!restAudioCtx) restAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    var ctx = restAudioCtx;
+    var ctx = ensureRestAudioCtx();
     if (ctx.state === 'suspended') ctx.resume();
     var osc = ctx.createOscillator();
     var gain = ctx.createGain();
