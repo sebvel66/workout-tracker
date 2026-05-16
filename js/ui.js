@@ -7704,8 +7704,14 @@ function startRestTimer(sec) {
   pill.classList.remove('dragging');
   resetRestTimerDragOffset();
   updateRestDisplay();
-  // 250ms tick so catch-up after backgrounding feels snappy; the callback
-  // itself is cheap (one DOM read, one Date.now(), one DOM write).
+  // Audio-thread completion chime (fires even when JS is frozen / phone
+  // locked) + silent keep-alive that holds the AudioContext open in the
+  // background. stopRestTimer() above already cleared any prior rest; this
+  // schedules fresh for the current one.
+  startRestKeepAlive();
+  scheduleRestChime(restRemainingMs() / 1000);
+  // 250ms tick — visual countdown only. It is fine for this to freeze when
+  // backgrounded; the chime no longer depends on it.
   restInterval = setInterval(function() {
     if (restRemainingMs() <= 0) { restComplete(); return; }
     updateRestDisplay();
@@ -7728,7 +7734,12 @@ function restComplete() {
   if (restCompleted) return;
   restCompleted = true;
   if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
-  restBeep();
+  // Sound is now solely the scheduled chime (foreground + background alike),
+  // so we do NOT beep here — that would double up in the foreground. The
+  // scheduled chime's t0 is ~now at natural completion, so it rings as this
+  // runs. Chime is intentionally NOT cancelled here (only on skip/mute);
+  // cancelling at completion could race ahead of it ringing.
+  stopRestKeepAlive();
   stopRestTimer();
 }
 
@@ -8919,7 +8930,15 @@ document.getElementById('importTemplateModal').addEventListener('click', functio
   if (e.target === this) this.classList.remove('show');
 });
 document.getElementById('btnRest').addEventListener('click', function() { startRestTimer(90); });
-document.getElementById('btnStopRest').addEventListener('click', stopRestTimer);
+// Skip must silence the pending chime + keep-alive. This is kept OUT of the
+// shared stopRestTimer() because natural completion also calls that and must
+// let the (already-due) chime ring.
+function skipRest() {
+  cancelRestChime();
+  stopRestKeepAlive();
+  stopRestTimer();
+}
+document.getElementById('btnStopRest').addEventListener('click', skipRest);
 document.getElementById('btnStopHold').addEventListener('click', function() { stopHoldTimer(true); });
 document.getElementById('restOverlay').addEventListener('click', stopRestTimer);
 
