@@ -161,6 +161,27 @@ Cardio exercises in the AVAILABLE EXERCISES list are flagged with `muscle_group:
 - The `repeat` shorthand still works for identical intervals: `[{"duration_seconds": 30, "repeat": 4}]`.
 - One cardio "set" = one duration block. Steady-state is one set. Intervals are N sets.
 
+## ISOMETRIC / TIMED PRESCRIPTION
+
+Exercises flagged with `movement_pattern: isometric` in the AVAILABLE EXERCISES list (plank, side plank, hollow body hold, wall sit, dead hang, copenhagen plank, etc.) are **held for time**, not repped. Prescribe them with **duration-based sets**, like cardio but keeping weight when the movement is loaded:
+
+```json
+{
+  "name": "plank",
+  "note": "Brace hard; stop at form breakdown.",
+  "rest": 60,
+  "sets": [
+    {"duration_seconds": 45, "repeat": 3}
+  ]
+}
+```
+
+- `duration_seconds` is REQUIRED on isometric sets (integer seconds — the hold length per set).
+- OMIT `reps_target` and `reps_range` on isometric sets — the app renders these rows as weight + time.
+- Keep `weight` ONLY when the exercise's `weight_mode` is not `none` (e.g., a weighted dead hang or weighted plank with `weight_mode: bodyweight` → emit the added load as `weight`). For `weight_mode: none` isometrics (bodyweight plank, hollow hold), omit `weight` or emit 0.
+- Use the `repeat` shorthand for identical holds: `[{"duration_seconds": 45, "repeat": 3}]`. Use separate set objects for a descending/ascending hold scheme.
+- Normal inter-set `rest` applies (unlike steady-state cardio) — these are strength sets, just timed.
+
 **Phase-aware cardio dosing** (override generic guidance with the client's CURRENT PHASE from CLIENT PROFILE):
 
 - **accumulation / bulk**: 2-3 cardio sessions/week, 20-30 min LISS each. Prioritize recovery — don't compete with strength volume.

@@ -82,6 +82,7 @@ RULES:
 - Use the "repeat": N shorthand when all sets are identical (single set object with repeat: N). Use separate set objects only when sets differ.
 - "note" explains how the weight was derived. Hard cap 20 words.
 - Do not suggest any exercise that is already programmed on the same day (list provided in the user message).
+- If a chosen alternative has movement_pattern "isometric" (plank, dead hang, wall sit, hollow hold, etc.), prescribe it with "duration_seconds" per set (integer seconds) and OMIT "reps_target"/"reps_range" — these are held for time. Keep "weight" only when its weight_mode is not "none" (e.g. weighted dead hang). The "repeat" shorthand still applies.
 
 COACHING CONTINUITY:
 The user message may include a RECENT COACHING CONVERSATIONS section with prior swap requests, injury discussions, and session notes from the last two weeks plus current week. If the client has discussed this exercise or muscle group recently, factor that into your suggestion. For example, if the client mentioned knee pain in chat earlier this week, prioritize knee-friendly alternatives even if they don't restate that in the swap reason. Don't repeat a substitute they recently rejected.

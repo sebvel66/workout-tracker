@@ -135,6 +135,23 @@ function renderWeightModeChip(ei, mode, meta, ctx, workoutId) {
   return '<button class="' + classes + '"' + attrs + '>' + label + '</button>';
 }
 
+// Per-exercise "timed" chip (v3.6.25): flips an exercise between
+// weight+time and weight+reps. Hidden for cardio (own duration path).
+// `isTimed` is the resolved state (isTimedExercise). `ctx` mirrors
+// renderWeightModeChip: 'editable' → clickable; 'history-readonly' →
+// static. Carries data-toggle-timed-ei for the workoutContainer click
+// delegator.
+function renderTimedChip(ei, isTimed, meta, ctx) {
+  if (!meta) return '';
+  if (meta.muscle_group === 'cardio') return '';
+  var label = isTimed ? 'timed' : 'reps';
+  var classes = 'timed-chip' + (isTimed ? ' is-timed' : '');
+  if (ctx === 'history-readonly') {
+    return '<span class="' + classes + ' is-readonly">' + label + '</span>';
+  }
+  return '<button class="' + classes + '" type="button" data-toggle-timed-ei="' + ei + '">' + label + '</button>';
+}
+
 // Clamp a form input value to [min, max]; fall back to `fallback` if missing/invalid.
 function clampFormInt(raw, min, max, fallback) {
   var n = raw == null ? NaN : parseInt(String(raw), 10);
@@ -294,7 +311,7 @@ function renderDurationEditBtn(workoutId, currentMs, endedAt, ctx) {
 }
 
 // ---- Render helpers ----
-function renderSetRow(di, ei, si, sl, prescribedSet, weightMode, disabledAttr, prText, deletable, isCardio, displaySetNum) {
+function renderSetRow(di, ei, si, sl, prescribedSet, weightMode, disabledAttr, prText, deletable, isCardio, displaySetNum, isTimed) {
   var currentUnit = getWeightUnit();
   var isDropChild = sl && sl.setType === 'drop';
 
@@ -359,9 +376,28 @@ function renderSetRow(di, ei, si, sl, prescribedSet, weightMode, disabledAttr, p
       if (weightMode === 'per_side') out += '<div class="weight-mode-hint">per side</div>';
       out += '</div>';
     }
-    out += '<div class="input-group"><label class="input-label">REPS</label>';
-    out += '<input type="number" inputmode="numeric" class="set-input ' + repsCls + '" value="' + (sl.reps != null ? sl.reps : '') + '" placeholder="' + repsPlaceholder + '" data-di="' + di + '" data-ei="' + ei + '" data-si="' + si + '" data-field="reps" onfocus="this.select()"' + disabledAttr + '>';
-    out += '</div>';
+    if (isTimed) {
+      // Timed (v3.6.25): TIME replaces REPS — weight input above stays
+      // exactly as the resistance path renders it (driven by weightMode,
+      // so 'none' → no weight field, 'bodyweight' → ADD WT). Same
+      // duration input shape as cardio (mm:ss, parseDurationMSS).
+      var tDur = formatDurationMSS(sl.duration_seconds);
+      var tPh = (prescribedSet && prescribedSet.duration_seconds != null)
+        ? formatDurationMSS(prescribedSet.duration_seconds) : 'mm:ss';
+      out += '<div class="input-group"><label class="input-label">TIME</label>';
+      out += '<input type="text" inputmode="text" class="set-input" value="' + escapeAttr(tDur) +
+        '" placeholder="' + escapeAttr(tPh) +
+        '" data-di="' + di + '" data-ei="' + ei + '" data-si="' + si + '" data-field="duration_seconds" onfocus="this.select()"' + disabledAttr + '>';
+      out += '</div>';
+      if (!disabledAttr) {
+        out += '<button class="hold-timer-start" type="button" data-hold-di="' + escapeAttr(String(di)) +
+          '" data-hold-ei="' + ei + '" data-hold-si="' + si + '" aria-label="Start hold timer" title="Start hold timer">▶</button>';
+      }
+    } else {
+      out += '<div class="input-group"><label class="input-label">REPS</label>';
+      out += '<input type="number" inputmode="numeric" class="set-input ' + repsCls + '" value="' + (sl.reps != null ? sl.reps : '') + '" placeholder="' + repsPlaceholder + '" data-di="' + di + '" data-ei="' + ei + '" data-si="' + si + '" data-field="reps" onfocus="this.select()"' + disabledAttr + '>';
+      out += '</div>';
+    }
   }
 
   out += '</div>';
@@ -681,6 +717,7 @@ function renderPlanDayExerciseCard(di, ei, planEx, exState, mode, readOnly, badg
   // subs incline treadmill walk for a stalled accessory).
   var displayNameForCardio = exState.subExercise ? exState.subExercise.name : ex.name;
   var isCardioRow = isCardioExerciseName(displayNameForCardio);
+  var isTimedRow = !isCardioRow && isTimedExerciseName(displayNameForCardio);
   var displayName = exState.subExercise ? exState.subExercise.name : ex.name;
   var prescribedBadge = exState.subExercise
     ? '<span class="exercise-sub-origin">was: ' + escapeHtml(ex.name) + '</span>'
@@ -702,7 +739,8 @@ function renderPlanDayExerciseCard(di, ei, planEx, exState, mode, readOnly, badg
   // else the prescribed exercise's library row. (Lookup mirrors what
   // weightModeForName does internally.)
   var chipMeta = exState.subExercise || exerciseLibraryByName[normName(ex.name)] || null;
-  var chipHtml = renderWeightModeChip(ei, weightMode, chipMeta, readOnly ? 'history-readonly' : 'editable', null);
+  var chipHtml = renderWeightModeChip(ei, weightMode, chipMeta, readOnly ? 'history-readonly' : 'editable', null)
+    + renderTimedChip(ei, isTimedRow, chipMeta, readOnly ? 'history-readonly' : 'editable');
   var badgeHtml = badgeLabel ? '<span class="superset-badge">' + escapeHtml(badgeLabel) + '</span>' : '';
   h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + badgeHtml + escapeHtml(displayName) + prescribedBadge + '</div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(displayName) + '">view recent</button>' + chipHtml + '</div><div class="exercise-status ' + sc + '">' + stat + '</div>' + swapBtn + supersetBtn + '</div>';
   if (ex.note) h += '<div class="exercise-note">' + escapeHtml(ex.note) + '</div>';
@@ -750,7 +788,7 @@ function renderPlanDayExerciseCard(di, ei, planEx, exState, mode, readOnly, badg
       stdSetNum++;
       pSetLabel = stdSetNum;
     }
-    h += renderSetRow(di, ei, si, sl, effectiveSet, (sl.weight_mode || weightMode), dis, pr, false, isCardioRow, pSetLabel);
+    h += renderSetRow(di, ei, si, sl, effectiveSet, (sl.weight_mode || weightMode), dis, pr, false, isCardioRow, pSetLabel, isTimedRow);
   }
 
   // Extras on this prescribed exercise: sets past the plan-defined count.
@@ -765,7 +803,7 @@ function renderPlanDayExerciseCard(di, ei, planEx, exState, mode, readOnly, badg
       stdSetNum++;
       slExtraNum = stdSetNum;
     }
-    h += renderSetRow(di, ei, siExtra, slExtra, null, (slExtra.weight_mode || weightMode), dis, '—', !readOnly, isCardioRow, slExtraNum);
+    h += renderSetRow(di, ei, siExtra, slExtra, null, (slExtra.weight_mode || weightMode), dis, '—', !readOnly, isCardioRow, slExtraNum, isTimedRow);
   }
   if (mode === 'editable') {
     h += '<button class="add-set-btn" data-add-set-ei="' + ei + '">+ Add Set</button>';
@@ -830,6 +868,7 @@ function renderPlanDayExtraCard(di, xei, xState, mode, readOnly, badgeLabel) {
   var xWeightMode = (xState && xState.weight_mode_override)
     || effectiveWeightMode(xState.sets[0], xMeta);
   var xIsCardio = xMeta.muscle_group === 'cardio';
+  var xIsTimed = !xIsCardio && isTimedExercise(xMeta);
   var xSetCount = xState.sets.length || 1;
   var totalSets = xSetCount;
   var xdn = 0;
@@ -845,7 +884,8 @@ function renderPlanDayExtraCard(di, xei, xState, mode, readOnly, badgeLabel) {
 
   var xBadgeHtml = badgeLabel ? '<span class="superset-badge">' + escapeHtml(badgeLabel) + '</span>' : '';
   h += '<div class="exercise-card' + xcc + '">';
-  var xChipHtml = renderWeightModeChip(xei, xWeightMode, xMeta, readOnly ? 'history-readonly' : 'editable', null);
+  var xChipHtml = renderWeightModeChip(xei, xWeightMode, xMeta, readOnly ? 'history-readonly' : 'editable', null)
+    + renderTimedChip(xei, xIsTimed, xMeta, readOnly ? 'history-readonly' : 'editable');
   var xInBlock = !!(xState && xState.supersetGroup);
   var xSupersetBtn = readOnly ? '' :
     '<button class="ex-superset-btn' + (xInBlock ? ' in-block' : '') +
@@ -866,7 +906,7 @@ function renderPlanDayExtraCard(di, xei, xState, mode, readOnly, badgeLabel) {
       xStdSetNum++;
       xLabelNum = xStdSetNum;
     }
-    h += renderSetRow(di, xei, xsi2, xsl, null, (xsl.weight_mode || xWeightMode), dis, '—', !readOnly, xIsCardio, xLabelNum);
+    h += renderSetRow(di, xei, xsi2, xsl, null, (xsl.weight_mode || xWeightMode), dis, '—', !readOnly, xIsCardio, xLabelNum, xIsTimed);
   }
   if (mode === 'editable') {
     h += '<button class="add-set-btn" data-add-set-ei="' + xei + '">+ Add Set</button>';
@@ -898,6 +938,7 @@ function renderAdHocExerciseCard(di, ei, exState, badgeLabel) {
   var weightMode = (exState && exState.weight_mode_override)
     || effectiveWeightMode(exState.sets[0], meta);
   var isCardioRow = meta.muscle_group === 'cardio';
+  var adIsTimed = !isCardioRow && isTimedExercise(meta);
   var setCount = exState.sets.length || 1;
   var totalSets = setCount;
   var dn = 0;
@@ -913,7 +954,8 @@ function renderAdHocExerciseCard(di, ei, exState, badgeLabel) {
 
   var badgeHtml = badgeLabel ? '<span class="superset-badge">' + escapeHtml(badgeLabel) + '</span>' : '';
   h += '<div class="exercise-card' + cc + '">';
-  var adChipHtml = renderWeightModeChip(ei, weightMode, meta, 'editable', null);
+  var adChipHtml = renderWeightModeChip(ei, weightMode, meta, 'editable', null)
+    + renderTimedChip(ei, adIsTimed, meta, 'editable');
   var inBlockAd = !!(exState && exState.supersetGroup);
   var supersetBtnAd = '<button class="ex-superset-btn' + (inBlockAd ? ' in-block' : '') +
     '" type="button" data-di="' + escapeAttr(String(di)) + '" data-ei="' + ei +
@@ -932,7 +974,7 @@ function renderAdHocExerciseCard(di, ei, exState, badgeLabel) {
       adStdSetNum++;
       adLabelNum = adStdSetNum;
     }
-    h += renderSetRow(di, ei, si, sl, null, (sl.weight_mode || weightMode), dis, '—', true, isCardioRow, adLabelNum);
+    h += renderSetRow(di, ei, si, sl, null, (sl.weight_mode || weightMode), dis, '—', true, isCardioRow, adLabelNum, adIsTimed);
   }
   h += '<button class="add-set-btn" data-add-set-ei="' + ei + '">+ Add Set</button>';
   var adHasParentForDrop = (exState.sets || []).some(function(s) { return s != null; });
@@ -3688,7 +3730,8 @@ function renderHistoryExerciseCard(ei, exState, name, weightMode, prescribedSets
   // exState.exerciseMeta is null.
   var histChipCtx = historyEditMode ? 'history-edit' : 'history-readonly';
   var histChipMeta = exState.exerciseMeta || exerciseLibraryByName[normName(name)] || null;
-  var histChipHtml = renderWeightModeChip(ei, weightMode, histChipMeta, histChipCtx, histWorkoutId);
+  var histChipHtml = renderWeightModeChip(ei, weightMode, histChipMeta, histChipCtx, histWorkoutId)
+    + renderTimedChip(ei, isTimedExercise(histChipMeta), histChipMeta, 'history-readonly');
   var histBadgeHtml = badgeLabel ? '<span class="superset-badge">' + escapeHtml(badgeLabel) + '</span>' : '';
   h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + histBadgeHtml + escapeHtml(name) + '</div>' + histChipHtml + '</div><div class="exercise-status ' + sc + '">' + stat + '</div></div>';
   h += '<div class="sets-container">';
@@ -3707,7 +3750,12 @@ function renderHistoryExerciseCard(ei, exState, name, weightMode, prescribedSets
     // Prescribed (non-extra) rows stay non-deletable — protects the
     // historical record from accidental clicks.
     var histDeletable = historyEditMode && !!sl.isExtra;
-    h += renderSetRow('history', ei, si, sl, prescribed, (sl.weight_mode || weightMode), disabledAttr, prText, histDeletable, isCardioRow, histLabelNum);
+    // Backward-compat: a historical set is "timed" only if it actually
+    // logged a duration. Pre-feature isometric sets recorded reps with
+    // duration_seconds null → fall back to the resistance render so the
+    // logged reps still show (mirrors the cardio pre-feature fallback).
+    var histIsTimed = !isCardioRow && sl && sl.duration_seconds != null;
+    h += renderSetRow('history', ei, si, sl, prescribed, (sl.weight_mode || weightMode), disabledAttr, prText, histDeletable, isCardioRow, histLabelNum, histIsTimed);
   }
   // History-edit "+ Add Set" affordance (v3.6.3). Inserts a new set at
   // the next set_order for this exercise. Skipped on cardio to avoid
@@ -7745,6 +7793,67 @@ function updateRestDisplay() {
   document.getElementById('restTime').textContent = m + ':' + (s < 10 ? '0' : '') + s;
 }
 
+// ---- Count-up hold timer (v3.6.25) ----
+// For timed/isometric sets. Wall-clock based (survives backgrounding,
+// like the rest timer). Stop writes elapsed whole seconds to the set's
+// duration_seconds and routes through the normal set-done path so it
+// persists and the rest timer fires exactly as a check-tap would.
+var holdStartMs = 0;
+var holdInterval = null;
+var holdTarget = null;   // { di, ei, si }
+
+function updateHoldDisplay() {
+  var el = document.getElementById('holdTimerTime');
+  if (el) el.textContent = fmtElapsed(Date.now() - holdStartMs);
+}
+
+function startHoldTimer(di, ei, si) {
+  if (viewModeFor(di) !== 'editable') return;
+  stopHoldTimer(true);  // commit any prior running hold before starting a new one
+  holdTarget = { di: di, ei: ei, si: si };
+  holdStartMs = Date.now();
+  var pill = document.getElementById('holdTimer');
+  var lbl = document.getElementById('holdTimerLabel');
+  if (lbl) {
+    var st = isAdHocKey(di) ? findAdHoc(di) : (typeof todayState !== 'undefined' ? todayState : null);
+    var exState = st && st.exercises ? st.exercises['ex_' + ei] : null;
+    var nm = (exState && exState.exerciseMeta && exState.exerciseMeta.name)
+      || (!isAdHocKey(di) && plan && plan.days && plan.days[di] && plan.days[di].exercises[ei] && plan.days[di].exercises[ei].name)
+      || 'Hold';
+    lbl.textContent = nm;
+  }
+  if (pill) pill.classList.add('show');
+  updateHoldDisplay();
+  holdInterval = setInterval(updateHoldDisplay, 250);
+}
+
+// commit=true: log the elapsed time to the set and mark it done.
+// commit=false: just dismiss the pill (cancel) without writing.
+async function stopHoldTimer(commit) {
+  if (!holdInterval && !holdTarget) return;
+  if (holdInterval) { clearInterval(holdInterval); holdInterval = null; }
+  var pill = document.getElementById('holdTimer');
+  if (pill) pill.classList.remove('show');
+  var t = holdTarget;
+  holdTarget = null;
+  if (!commit || !t) return;
+  var secs = Math.max(1, Math.round((Date.now() - holdStartMs) / 1000));
+  var st = getOrInitToday(t.di);
+  if (!st) return;
+  var exState = getOrInitExercise(st, t.ei);
+  var sl = getOrInitSet(exState, t.si);
+  sl.duration_seconds = secs;
+  if (!sl.startedAt) sl.startedAt = new Date(holdStartMs).toISOString();
+  if (!sl.done) {
+    // toggleSet flips done→true, auto-fills only null fields (our
+    // duration stays), persists, fires the rest timer, and rebuilds.
+    await toggleSet(t.di, t.ei, t.si);
+  } else {
+    if (sl.setId) await persistSet(t.di, t.ei, t.si);
+    buildDay(t.di);
+  }
+}
+
 // ---- Export ----
 // ---- Export ----
 // Open the export modal, defaulting the range to the last 30 days (end = today).
@@ -8732,6 +8841,7 @@ document.getElementById('importTemplateModal').addEventListener('click', functio
 });
 document.getElementById('btnRest').addEventListener('click', function() { startRestTimer(90); });
 document.getElementById('btnStopRest').addEventListener('click', stopRestTimer);
+document.getElementById('btnStopHold').addEventListener('click', function() { stopHoldTimer(true); });
 document.getElementById('restOverlay').addEventListener('click', stopRestTimer);
 
 // Rest timer drag-to-move (v3.6.2; v3.6.8 fix: drags compose). Pointer-
@@ -8983,6 +9093,47 @@ document.getElementById('workoutContainer').addEventListener('click', function(e
   var histBtn = target.closest ? target.closest('.ex-history-btn') : null;
   if (histBtn) {
     openExerciseHistory(histBtn.getAttribute('data-exercise-name'));
+    return;
+  }
+  // ▶ Start hold timer on a timed set row (v3.6.25).
+  var holdBtn = target.closest ? target.closest('.hold-timer-start') : null;
+  if (holdBtn) {
+    var hDiRaw = holdBtn.getAttribute('data-hold-di');
+    if (hDiRaw === 'history') return;  // history edits type the time manually
+    var hDi = isAdHocKey(hDiRaw) ? hDiRaw : parseInt(hDiRaw, 10);
+    var hEi = parseInt(holdBtn.getAttribute('data-hold-ei'), 10);
+    var hSi = parseInt(holdBtn.getAttribute('data-hold-si'), 10);
+    if (!isNaN(hEi) && !isNaN(hSi)) startHoldTimer(hDi, hEi, hSi);
+    return;
+  }
+  // Per-exercise "timed" chip toggle (v3.6.25). Flips weight+time vs
+  // weight+reps for this exercise, persisted per-user in exercise_prefs.
+  // Resolves the exercise meta the same way the weight-mode chip does.
+  var tmChip = target.closest ? target.closest('[data-toggle-timed-ei]') : null;
+  if (tmChip) {
+    if (tmChip.disabled) return;
+    var tmEi = parseInt(tmChip.getAttribute('data-toggle-timed-ei'), 10);
+    if (isNaN(tmEi)) return;
+    var tmDi = currentDay;
+    var tmSt = isAdHocKey(tmDi) ? findAdHoc(tmDi) : getOrInitToday(tmDi);
+    if (!tmSt) return;
+    var tmExState = getOrInitExercise(tmSt, tmEi);
+    var tmMeta = tmExState.subExercise || tmExState.exerciseMeta;
+    if (!tmMeta && !tmSt.isAdHoc && plan && plan.days && plan.days[tmDi] && plan.days[tmDi].exercises && plan.days[tmDi].exercises[tmEi]) {
+      tmMeta = exerciseLibraryByName[normName(plan.days[tmDi].exercises[tmEi].name)] || null;
+    }
+    if (!tmMeta || !tmMeta.id) {
+      showToast('Save this exercise to the library first to mark it timed.', null);
+      return;
+    }
+    var tmNext = !isTimedExercise(tmMeta);
+    setExerciseTimedPref(tmMeta.id, tmNext).then(function() {
+      buildDay(tmDi);
+    }).catch(function(err) {
+      console.error('setExerciseTimedPref error:', err);
+      showToast("Couldn't change tracking mode: " + (err.message || 'unknown'), null);
+      buildDay(tmDi);
+    });
     return;
   }
   // Per-workout weight-mode chip toggle (v3.1.0). Editable today + ad-hoc.

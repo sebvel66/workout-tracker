@@ -74,6 +74,7 @@ var exerciseIdCache = {};     // normName -> uuid
 var exerciseLibrary = [];        // array of exercise rows
 var exerciseLibraryByName = {};  // normName -> row
 var exerciseLibraryById = {};    // uuid -> row
+var exercisePrefsById = {};      // exercise uuid -> bool (timed override, v3.6.25)
 var recentExercises = [];        // most-recently-logged first, up to 10
 
 // Coaching profile (v2.5): per-user adaptive client profile replacing the
@@ -502,6 +503,42 @@ async function loadExerciseLibrary() {
     var dh = key.replace(/-/g, ' ');
     if (dh !== key && !exerciseLibraryByName[dh]) exerciseLibraryByName[dh] = row;
   }
+  await loadExercisePrefs();
+}
+
+// Per-user timed overrides (v3.6.25). RLS scopes the select to the
+// signed-in user, so no explicit filter is needed. Best-effort: a
+// missing table / error just leaves prefs empty (auto isometric
+// detection still works).
+async function loadExercisePrefs() {
+  exercisePrefsById = {};
+  try {
+    var res = await sb.from('exercise_prefs').select('exercise_id, timed');
+    if (res.error) return;
+    var rows = res.data || [];
+    for (var i = 0; i < rows.length; i++) {
+      exercisePrefsById[rows[i].exercise_id] = !!rows[i].timed;
+    }
+  } catch (_) { /* prefs are optional polish */ }
+}
+
+// Upsert (or clear) the per-user timed override for one exercise and
+// update the in-memory cache. Pass null to revert to auto-detection.
+async function setExerciseTimedPref(exerciseId, timed) {
+  if (!exerciseId || !userId) return;
+  if (timed == null) {
+    delete exercisePrefsById[exerciseId];
+    var d = await sb.from('exercise_prefs').delete()
+      .eq('user_id', userId).eq('exercise_id', exerciseId);
+    if (d.error) throw d.error;
+    return;
+  }
+  exercisePrefsById[exerciseId] = !!timed;
+  var r = await sb.from('exercise_prefs')
+    .upsert({ user_id: userId, exercise_id: exerciseId, timed: !!timed,
+              updated_at: new Date().toISOString() },
+            { onConflict: 'user_id,exercise_id' });
+  if (r.error) throw r.error;
 }
 
 async function loadRecentExercises() {
@@ -1688,6 +1725,23 @@ function weightModeForName(name) {
 function isCardioExerciseName(name) {
   var row = exerciseLibraryByName[normName(name)];
   return !!(row && row.muscle_group === 'cardio');
+}
+
+// Whether an exercise is "timed" — logged/prescribed as weight + time
+// instead of weight + reps (plank, dead hang, wall sit, ...). Auto from
+// movement_pattern='isometric'; a per-user exercise_prefs row overrides
+// either way. Cardio always wins its own (duration+distance) path.
+// v3.6.25.
+function isTimedExercise(meta) {
+  if (!meta) return false;
+  if (meta.muscle_group === 'cardio') return false;
+  var ov = (meta.id != null) ? exercisePrefsById[meta.id] : undefined;
+  if (ov === true || ov === false) return ov;
+  return meta.movement_pattern === 'isometric';
+}
+
+function isTimedExerciseName(name) {
+  return isTimedExercise(exerciseLibraryByName[normName(name)]);
 }
 
 // Duration helpers for cardio set inputs. We persist seconds so any

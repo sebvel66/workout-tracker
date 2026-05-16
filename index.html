@@ -2629,6 +2629,70 @@ body[data-view="log"] #logView { display: block; }
   opacity: 0.85;
 }
 
+/* Per-exercise timed chip (v3.6.25) — same shape as the weight-mode
+ * chip; accent fill when the exercise is in time mode. */
+.timed-chip {
+  align-self: flex-start;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text2);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 6px;
+  margin-top: 4px;
+  border-radius: 3px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.timed-chip.is-timed {
+  background: var(--accent-soft, var(--surface3));
+  color: var(--accent, var(--text));
+  border-color: var(--accent, var(--border));
+}
+.timed-chip:disabled,
+.timed-chip.is-readonly { cursor: default; opacity: 0.85; }
+
+/* Count-up hold timer pill (v3.6.25). Mirrors the rest-timer pill but
+ * counts up and has a single Stop&log action; no drag/adjust. */
+.hold-timer {
+  position: fixed; bottom: 88px; left: 50%; transform: translateX(-50%);
+  background: var(--surface);
+  border: 1.5px solid var(--accent);
+  border-radius: 999px;
+  padding: 6px 10px 6px 14px;
+  display: none; z-index: 200;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  align-items: center;
+  gap: 10px;
+}
+.hold-timer.show { display: flex; }
+.hold-timer-label {
+  font-family: 'Outfit', sans-serif; font-size: 12px; font-weight: 600;
+  color: var(--text2); max-width: 120px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.hold-timer-time {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 22px; font-weight: 700; color: var(--accent);
+  min-width: 56px; text-align: center; letter-spacing: 0.5px;
+}
+/* ▶ start button on a timed set row, sits where it reads naturally
+ * after the TIME input. */
+.hold-timer-start {
+  background: transparent;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  border-radius: 8px;
+  font-size: 13px;
+  padding: 0 10px;
+  margin-left: 4px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  align-self: stretch;
+}
+
 .ex-history-session {
   padding: 14px 16px;
   border-bottom: 1px solid var(--border);
@@ -4052,6 +4116,13 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
     <button class="rest-timer-btn" id="btnStopRest">Skip</button>
     <button class="rest-timer-adjust" id="btnRestPlus" type="button">+15s</button>
   </div>
+</div>
+
+<!-- Count-up hold timer for timed/isometric sets (v3.6.25). -->
+<div class="hold-timer" id="holdTimer">
+  <div class="hold-timer-label" id="holdTimerLabel">Hold</div>
+  <div class="hold-timer-time" id="holdTimerTime">0:00</div>
+  <button class="rest-timer-btn" id="btnStopHold" type="button">Stop &amp; log</button>
 </div>
 
 <div class="modal-overlay" id="resumePromptOverlay" style="z-index:260;">
