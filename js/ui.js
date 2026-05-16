@@ -16,6 +16,8 @@ var restInterval = null;
 var restTargetMs = 0;
 var restCompleted = false;
 var restAudioCtx = null;
+var restChimeNode = null;   // scheduled completion oscillator (audio-thread timed)
+var restKeepAlive = null;   // silent looping source that keeps the ctx alive bg
 var sessionTimerInterval = null;
 
 var pickerState = { search: '', equipment: [], muscleGroup: [] };
@@ -7739,6 +7741,80 @@ function restComplete() {
 // click, creates the AudioContext, resumes it, and plays a 1ms zero-gain
 // tone to flip iOS's unlock state. Listener auto-removes after one fire.
 // Cheap (couple of nodes), idempotent (the `unlocked` guard).
+
+// Lazily create (and return) the shared rest AudioContext. Browsers cap a
+// page at ~6 contexts, so we create exactly one and reuse it across rest
+// periods, the iOS unlock, the scheduled chime, and the keep-alive source.
+function ensureRestAudioCtx() {
+  if (!restAudioCtx) restAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return restAudioCtx;
+}
+
+// Schedule the completion chime on the Web Audio clock so it fires on the
+// audio thread even when JS timers are frozen (screen locked / backgrounded).
+// whenSec is seconds from now. Same 880Hz / ~0.25s envelope as restBeep().
+// Gated on getRestTimerSound() at schedule time; rescheduled on adjust/unmute.
+function scheduleRestChime(whenSec) {
+  cancelRestChime();
+  if (!getRestTimerSound()) return;
+  try {
+    var ctx = ensureRestAudioCtx();
+    if (ctx.state === 'suspended') ctx.resume();
+    var t0 = ctx.currentTime + Math.max(0, whenSec);
+    var osc = ctx.createOscillator();
+    var gain = ctx.createGain();
+    osc.frequency.value = 880;
+    osc.type = 'sine';
+    gain.gain.setValueAtTime(0, t0);
+    gain.gain.linearRampToValueAtTime(0.15, t0 + 0.01);
+    gain.gain.linearRampToValueAtTime(0, t0 + 0.22);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(t0);
+    osc.stop(t0 + 0.25);
+    restChimeNode = osc;
+  } catch (e) { /* audio is a nice-to-have; vibrate + UI still fire */ }
+}
+
+// Cancel a pending scheduled chime (Skip, adjust-before-reschedule, mute,
+// superseded by a new rest). No-op if it already rang or was never set.
+function cancelRestChime() {
+  if (restChimeNode) {
+    try { restChimeNode.stop(); } catch (_) {}
+    try { restChimeNode.disconnect(); } catch (_) {}
+    restChimeNode = null;
+  }
+}
+
+// Start a continuous near-silent looping source. iOS keeps the AudioContext
+// running (so the scheduled chime fires on time when locked) only while there
+// is active audio output. Idempotent. Stopped at rest end/skip to save battery.
+function startRestKeepAlive() {
+  try {
+    var ctx = ensureRestAudioCtx();
+    if (ctx.state === 'suspended') ctx.resume();
+    if (restKeepAlive) return;
+    var buf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate); // 1s of silence
+    var src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    var g = ctx.createGain();
+    g.gain.value = 0.0001;
+    src.connect(g);
+    g.connect(ctx.destination);
+    src.start();
+    restKeepAlive = src;
+  } catch (e) { /* best effort */ }
+}
+
+function stopRestKeepAlive() {
+  if (restKeepAlive) {
+    try { restKeepAlive.stop(); } catch (_) {}
+    try { restKeepAlive.disconnect(); } catch (_) {}
+    restKeepAlive = null;
+  }
+}
+
 (function wireAudioUnlock() {
   var unlocked = false;
   function unlock() {
