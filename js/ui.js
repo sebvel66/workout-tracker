@@ -7770,6 +7770,10 @@ function scheduleRestChime(whenSec) {
     gain.gain.linearRampToValueAtTime(0, t0 + 0.22);
     osc.connect(gain);
     gain.connect(ctx.destination);
+    osc.onended = function() {
+      try { gain.disconnect(); } catch (_) {}
+      if (restChimeNode === osc) restChimeNode = null;
+    };
     osc.start(t0);
     osc.stop(t0 + 0.25);
     restChimeNode = osc;
@@ -7794,14 +7798,13 @@ function startRestKeepAlive() {
     var ctx = ensureRestAudioCtx();
     if (ctx.state === 'suspended') ctx.resume();
     if (restKeepAlive) return;
+    // createBuffer() returns a zero-filled (digitally silent) buffer, so no
+    // gain node is needed — connect the looping source straight to output.
     var buf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate); // 1s of silence
     var src = ctx.createBufferSource();
     src.buffer = buf;
     src.loop = true;
-    var g = ctx.createGain();
-    g.gain.value = 0.0001;
-    src.connect(g);
-    g.connect(ctx.destination);
+    src.connect(ctx.destination);
     src.start();
     restKeepAlive = src;
   } catch (e) { /* best effort */ }
