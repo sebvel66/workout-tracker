@@ -101,7 +101,7 @@ DO NOT INCLUDE:
 
 You are NOT coaching this client today. You are documenting how this exercise is performed for THIS client given their notes, period. The output will be saved and re-read across many future sessions.`;
 
-// form_video mode (v3.6.26): given ONE exercise, use web search to find
+// form_video mode (v3.6.27): given ONE exercise, use web search to find
 // the single best technique tutorial and return STRICT JSON only — no
 // prose, no markdown. Saved per (user × exercise) in exercise_form_notes
 // and re-read across sessions, so it must be a real, current URL (web

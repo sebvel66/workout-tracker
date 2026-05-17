@@ -1,4 +1,4 @@
--- Web-grounded form-video link per (user × exercise), v3.6.26.
+-- Web-grounded form-video link per (user × exercise), v3.6.27.
 -- Sits alongside the existing AI/user form notes in exercise_form_notes.
 -- Populated on demand via /api/coach-chat mode:'form_video' (Anthropic
 -- server-side web search), re-read across future sessions like ai_note.

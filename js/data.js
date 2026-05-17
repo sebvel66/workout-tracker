@@ -5138,7 +5138,7 @@ async function generateAiFormNote(exerciseRow, userNote) {
   return String(body.reply).trim();
 }
 
-// Web-grounded video lookup (v3.6.26). Mirrors generateAiFormNote's
+// Web-grounded video lookup (v3.6.27). Mirrors generateAiFormNote's
 // transport (session token + /api/coach-chat) but with mode:'form_video'
 // so the server attaches Anthropic web search and returns parsed JSON.
 // Resolves to { url, title, channel }; url is null when nothing solid
