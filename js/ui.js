@@ -7825,6 +7825,38 @@ function restComplete() {
 // tone to flip iOS's unlock state. Listener auto-removes after one fire.
 // Cheap (couple of nodes), idempotent (the `unlocked` guard).
 
+// ---- Rest-chime on-device diagnostics (gated; off by default) ----
+// Enable on the device with: localStorage.setItem('rtDebug','1') then reload.
+// Writes a compact readout to #rtDebug so a locked-screen test produces
+// evidence (AudioContext state + clock progression) instead of pass/fail.
+var rtDiag = {};
+function getRtDebug() {
+  try { return localStorage.getItem('rtDebug') === '1'; } catch (_) { return false; }
+}
+function rtDiagRender() {
+  if (!getRtDebug()) return;
+  try {
+    var el = document.getElementById('rtDebug');
+    if (!el) return;
+    var d = rtDiag;
+    var ctxAdv = (d.retCtxTime != null && d.schedCtxTime != null)
+      ? (d.retCtxTime - d.schedCtxTime).toFixed(2) : '-';
+    var wallAdv = (d.retWall != null && d.schedWall != null)
+      ? ((d.retWall - d.schedWall) / 1000).toFixed(2) : '-';
+    el.textContent =
+      'rt sched: state=' + (d.schedCtxState || '-') +
+      ' ctxT=' + (d.schedCtxTime != null ? d.schedCtxTime.toFixed(2) : '-') +
+      ' when=' + (d.whenSec != null ? d.whenSec.toFixed(1) : '-') + '\n' +
+      'rt rang: ' + (d.rang ? 'yes' : 'no') + '\n' +
+      'rt ret:  state=' + (d.retCtxState || '-') +
+      ' ctxT=' + (d.retCtxTime != null ? d.retCtxTime.toFixed(2) : '-') +
+      ' elPaused=' + (d.elPaused == null ? '-' : d.elPaused) +
+      ' elT=' + (d.elTime != null ? d.elTime.toFixed(2) : '-') + '\n' +
+      'rt adv:  ctx=' + ctxAdv + 's wall=' + wallAdv + 's';
+    el.style.display = 'block';
+  } catch (_) {}
+}
+
 // Lazily create (and return) the shared rest AudioContext. Browsers cap a
 // page at ~6 contexts, so we create exactly one and reuse it across rest
 // periods, the iOS unlock, the scheduled chime, and the keep-alive source.
@@ -7962,6 +7994,13 @@ function stopRestKeepAlive() {
       gain.connect(ctx.destination);
       osc.start(ctx.currentTime);
       osc.stop(ctx.currentTime + 0.001);
+      // Prime the keep-alive media element within this user gesture so iOS
+      // marks it user-activated for later gesture-initiated plays.
+      var kel = ensureKeepAliveEl();
+      if (kel) {
+        var pp = kel.play();
+        if (pp && pp.then) pp.then(function () { try { kel.pause(); } catch (_) {} }).catch(function () {});
+      }
     } catch(_) {}
   }
   document.addEventListener('touchstart', unlock, { once: true, passive: true });
