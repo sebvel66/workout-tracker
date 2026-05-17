@@ -101,6 +101,24 @@ DO NOT INCLUDE:
 
 You are NOT coaching this client today. You are documenting how this exercise is performed for THIS client given their notes, period. The output will be saved and re-read across many future sessions.`;
 
+// form_video mode (v3.6.26): given ONE exercise, use web search to find
+// the single best technique tutorial and return STRICT JSON only — no
+// prose, no markdown. Saved per (user × exercise) in exercise_form_notes
+// and re-read across sessions, so it must be a real, current URL (web
+// search grounds it; the model never invents a URL from memory).
+const FORM_VIDEO_SYSTEM_PROMPT = `You are a tool that finds the single best-quality form/technique tutorial video for a strength-training exercise.
+
+Use the web search tool to find a video that:
+- Is a focused tutorial on HOW TO PERFORM the given exercise with correct form (not a workout vlog, compilation, or "top 10" list).
+- Comes from a reputable strength/hypertrophy coach or an established, well-known fitness channel.
+- Is currently live (you searched for it; do not invent or guess URLs).
+
+Output contract — your entire response MUST be a single JSON object and nothing else (no prose before or after, no markdown fences):
+- If you found a solid video: {"url": "<direct watch URL>", "title": "<video title>", "channel": "<channel name>"}
+- If you could not find a reputable, on-topic video: {"url": null}
+
+Do not output explanations, citations, or commentary. JSON only.`;
+
 export default async function handler(req, res) {
   // Warmup branch — keep a Fluid Compute instance hot without touching Anthropic.
   // Accept GET or POST for convenience; cron hits via GET.
@@ -155,8 +173,9 @@ export default async function handler(req, res) {
     // how to execute this movement." Output is saved per exercise and
     // re-read across sessions, so it must be plan-independent.
     const formOnlyMode = body && body.mode === 'form_only';
+    const formVideoMode = body && body.mode === 'form_video';
 
-    if (!formOnlyMode) {
+    if (!formOnlyMode && !formVideoMode) {
       // Side-channel fetches for profile + coach history. Run in parallel;
       // both are non-fatal (formatters return '' on empty input). The
       // results get spliced into messages[0] (the COACHING CONTEXT block
@@ -199,20 +218,25 @@ export default async function handler(req, res) {
         }
       }
     } else {
-      console.log('[coach-chat] form_only mode — skipping side-channel fetches + context splice');
+      console.log('[coach-chat] ' + (formVideoMode ? 'form_video' : 'form_only') + ' mode — skipping side-channel fetches + context splice');
     }
 
     // Pick the system prompt based on mode. Each gets its own 1h cache
     // window in the Anthropic prompt cache; both stay warm under regular
     // use without contaminating each other.
-    const systemPromptText = formOnlyMode ? FORM_ONLY_SYSTEM_PROMPT : COACH_SYSTEM_PROMPT;
+    const systemPromptText = formVideoMode
+      ? FORM_VIDEO_SYSTEM_PROMPT
+      : formOnlyMode ? FORM_ONLY_SYSTEM_PROMPT : COACH_SYSTEM_PROMPT;
 
     const t0 = Date.now();
     // Client-initiated timeout. Coach chat should never take more than ~8s
     // (Haiku + 500 tokens is typically 1-2s); 25s gives slack for slow days
     // while staying under maxDuration.
     const claudeAbort = new AbortController();
-    const claudeTimeout = setTimeout(() => claudeAbort.abort(), 25000);
+    // Web search adds round-trips; give form_video 40s. Other modes keep
+    // the 25s budget. Both are well under the platform function default.
+    const abortMs = formVideoMode ? 40000 : 25000;
+    const claudeTimeout = setTimeout(() => claudeAbort.abort(), abortMs);
     let claudeRes;
     try {
       claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
@@ -226,6 +250,7 @@ export default async function handler(req, res) {
           model: model,
           max_tokens: MAX_TOKENS,
           ...(modelSupportsTemperature(model) ? { temperature: TEMPERATURE } : {}),
+          ...(formVideoMode ? { tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }] } : {}),
           system: [{
             type: 'text',
             text: systemPromptText,
@@ -257,7 +282,26 @@ export default async function handler(req, res) {
     const claudeData = await claudeRes.json();
     console.log('[coach-chat] elapsed:', Date.now() - t0, 'ms · usage:', JSON.stringify(claudeData.usage || {}));
 
-    const text = claudeData.content && claudeData.content[0] && claudeData.content[0].text;
+    // A web-search response interleaves server_tool_use / web_search_tool_result
+    // blocks with text blocks. Concatenate every text block (the old code read
+    // only content[0].text, which is empty when block 0 is a tool block).
+    const blocks = Array.isArray(claudeData.content) ? claudeData.content : [];
+    const text = blocks
+      .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+      .map((b) => b.text)
+      .join('')
+      .trim();
+
+    if (formVideoMode) {
+      const video = parseFormVideo(text);
+      // video is always an object; { url: null } means "no solid result".
+      return res.status(200).json({
+        video: video,
+        model: model,
+        usage: claudeData.usage || null,
+      });
+    }
+
     if (!text) return jsonError(res, 422, 'No text in coach response', { raw: claudeData });
 
     return res.status(200).json({
@@ -269,6 +313,37 @@ export default async function handler(req, res) {
     console.error('[coach-chat] error:', err);
     return jsonError(res, 500, err.message || 'Internal server error');
   }
+}
+
+// Extract the strict JSON object the form_video system prompt promises.
+// Tolerant of stray whitespace / accidental fences. Returns a normalized
+// { url, title, channel } with url:null whenever the model found nothing,
+// returned malformed JSON, or returned a non-http(s) URL. Never throws.
+function parseFormVideo(text) {
+  const empty = { url: null };
+  if (!text) return empty;
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) return empty;
+  let obj;
+  try {
+    obj = JSON.parse(match[0]);
+  } catch (_) {
+    return empty;
+  }
+  if (!obj || typeof obj !== 'object' || obj.url == null) return empty;
+  const url = String(obj.url).trim();
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch (_) {
+    return empty;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return empty;
+  return {
+    url: url,
+    title: obj.title ? String(obj.title).trim() : '',
+    channel: obj.channel ? String(obj.channel).trim() : '',
+  };
 }
 
 function jsonError(res, status, message, extra) {
