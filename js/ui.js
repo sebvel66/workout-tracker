@@ -7888,10 +7888,16 @@ function scheduleRestChime(whenSec) {
     osc.onended = function() {
       try { gain.disconnect(); } catch (_) {}
       if (restChimeNode === osc) restChimeNode = null;
+      if (getRtDebug()) { rtDiag.rang = true; rtDiag.rangWall = Date.now(); rtDiagRender(); }
     };
     osc.start(t0);
     osc.stop(t0 + 0.25);
     restChimeNode = osc;
+    if (getRtDebug()) {
+      rtDiag = { schedWall: Date.now(), schedCtxState: ctx.state,
+                 schedCtxTime: ctx.currentTime, whenSec: whenSec, rang: false };
+      rtDiagRender();
+    }
   } catch (e) { /* audio is a nice-to-have; vibrate + UI still fire */ }
 }
 
@@ -9197,7 +9203,16 @@ document.getElementById('btnRestMinus').addEventListener('click', function() {
 // Wall-clock catch-up after backgrounding. If we return to the app past the
 // deadline and the tick interval missed the completion, fire it now.
 document.addEventListener('visibilitychange', function() {
-  if (document.visibilityState === 'visible' && restInterval && restRemainingMs() <= 0) {
+  if (document.visibilityState !== 'visible') return;
+  if (getRtDebug() && restInterval) {
+    rtDiag.retWall = Date.now();
+    rtDiag.retCtxState = restAudioCtx ? restAudioCtx.state : 'no-ctx';
+    rtDiag.retCtxTime = restAudioCtx ? restAudioCtx.currentTime : null;
+    rtDiag.elPaused = restKeepAliveEl ? restKeepAliveEl.paused : 'no-el';
+    rtDiag.elTime = restKeepAliveEl ? restKeepAliveEl.currentTime : null;
+    rtDiagRender();
+  }
+  if (restInterval && restRemainingMs() <= 0) {
     restComplete();
   }
 });
