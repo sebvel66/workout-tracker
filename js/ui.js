@@ -1976,7 +1976,7 @@ function renderStartPathDayList() {
 // Per-exercise modal with two tabs: Recent (prior sessions) and Form
 // (AI coach notes + user's own notes, persisted in exercise_form_notes).
 // State is module-scoped so tab switches don't trigger re-fetches.
-var exModalState = { tab: 'recent', exerciseRow: null, exerciseName: null, sessionsHtml: '', formNotes: null, formGenerating: false };
+var exModalState = { tab: 'recent', exerciseRow: null, exerciseName: null, sessionsHtml: '', formNotes: null, formGenerating: false, videoGenerating: false };
 
 // ---- Inline form notes on live cards (v3.6.10) ----
 // formNotesCache mirrors the exercise_form_notes table for ids the user
@@ -2001,7 +2001,7 @@ async function openExerciseHistory(exerciseName) {
   var body = document.getElementById('exHistoryBody');
   body.innerHTML = '<div class="history-empty">Loading…</div>';
   document.getElementById('exHistoryOverlay').classList.add('show');
-  exModalState = { tab: 'recent', exerciseRow: null, exerciseName: exerciseName, sessionsHtml: '', formNotes: null, formGenerating: false };
+  exModalState = { tab: 'recent', exerciseRow: null, exerciseName: exerciseName, sessionsHtml: '', formNotes: null, formGenerating: false, videoGenerating: false };
 
   var row = resolveLibraryRow(exerciseName);
   if (!row) {
@@ -2182,6 +2182,13 @@ function renderExerciseModal() {
   body.innerHTML = h;
 }
 
+// Plain YouTube search URL — the transparent no-result fallback. Always
+// valid; clearly a search, not a vetted pick (label says so in the UI).
+function youtubeSearchUrl(exerciseName) {
+  var q = encodeURIComponent(String(exerciseName || '').trim() + ' proper form');
+  return 'https://www.youtube.com/results?search_query=' + q;
+}
+
 function renderFormNotesPane() {
   var fn = exModalState.formNotes || {};
   var aiNote = fn.ai_note || '';
@@ -2214,6 +2221,36 @@ function renderFormNotesPane() {
     h += '<div class="form-notes-text" style="opacity:0.6">…</div>';
   } else {
     h += '<div class="form-notes-empty">No AI notes yet — tap "Ask the coach" for 3-4 sentences of form cues. Saved per exercise so you can come back to them anytime.</div>';
+  }
+  h += '</div>';
+  // Form video section (web-grounded link, cached per exercise)
+  var videoUrl = fn.ai_video_url || '';
+  var videoTitle = fn.ai_video_title || '';
+  var videoAt = fn.ai_video_generated_at || '';
+  var videoGenerating = !!exModalState.videoGenerating;
+  var videoStamp = '';
+  if (videoAt) {
+    try {
+      videoStamp = new Date(videoAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    } catch (_) { videoStamp = ''; }
+  }
+  h += '<div class="form-notes-section">';
+  h += '<div class="form-notes-section-header">';
+  h += '<span class="form-notes-section-label">Form Video</span>';
+  h += '<button type="button" class="form-notes-regen-btn" id="btnFormVideoFind"' + (videoGenerating ? ' disabled' : '') + '>' +
+       (videoGenerating ? 'Searching…' : (videoUrl ? 'Re-search' : 'Find form video')) + '</button>';
+  h += '</div>';
+  if (videoGenerating) {
+    h += '<div class="form-notes-text" style="opacity:0.6">Searching the web for a good demo…</div>';
+  } else if (videoUrl) {
+    var label = videoTitle || 'Watch form video';
+    if (fn.ai_video_channel) label += ' · ' + fn.ai_video_channel;
+    h += '<div class="form-notes-text"><a href="' + escapeHtml(videoUrl) + '" target="_blank" rel="noopener">▶ ' + escapeHtml(label) + '</a></div>';
+    if (videoStamp) {
+      h += '<div class="form-notes-meta">Found: ' + escapeHtml(videoStamp) + '</div>';
+    }
+  } else {
+    h += '<div class="form-notes-empty">No video yet — tap "Find form video" to search the web for a vetted technique demo, saved per exercise.</div>';
   }
   h += '</div>';
   // User notes section
@@ -2257,6 +2294,40 @@ async function onFormNotesRegen() {
     showToast('Couldn\'t generate notes: ' + (err.message || 'unknown'), null);
   } finally {
     exModalState.formGenerating = false;
+    renderExerciseModal();
+  }
+}
+
+async function onFormVideoFind() {
+  if (exModalState.videoGenerating || !exModalState.exerciseRow) return;
+  exModalState.videoGenerating = true;
+  renderExerciseModal();
+  var exId = exModalState.exerciseRow.id;
+  try {
+    var v = await generateAiFormVideo(exModalState.exerciseRow);
+    if (v && v.url) {
+      await saveAiFormVideo(exId, { url: v.url, title: v.title });
+      exModalState.formNotes = exModalState.formNotes || {};
+      exModalState.formNotes.ai_video_url = v.url;
+      exModalState.formNotes.ai_video_title = v.title;
+      exModalState.formNotes.ai_video_channel = v.channel; // in-memory only
+      exModalState.formNotes.ai_video_generated_at = new Date().toISOString();
+      formNotesCache[exId] = Object.assign({}, formNotesCache[exId] || {}, {
+        ai_video_url: v.url,
+        ai_video_title: v.title,
+        ai_video_generated_at: exModalState.formNotes.ai_video_generated_at,
+      });
+    } else {
+      // No solid pick — do NOT overwrite any existing saved video.
+      var name = exModalState.exerciseRow.name;
+      showToast('Couldn\'t find a vetted video — opening a YouTube search instead.', null);
+      window.open(youtubeSearchUrl(name), '_blank', 'noopener');
+    }
+  } catch (err) {
+    console.error('onFormVideoFind error:', err);
+    showToast('Couldn\'t search right now: ' + (err.message || 'unknown'), null);
+  } finally {
+    exModalState.videoGenerating = false;
     renderExerciseModal();
   }
 }
@@ -8717,6 +8788,10 @@ document.getElementById('exHistoryBody').addEventListener('click', function(e) {
   }
   if (e.target.closest && e.target.closest('#btnFormNotesRegen')) {
     onFormNotesRegen();
+    return;
+  }
+  if (e.target.closest && e.target.closest('#btnFormVideoFind')) {
+    onFormVideoFind();
     return;
   }
 });
