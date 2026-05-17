@@ -2245,7 +2245,7 @@ function renderFormNotesPane() {
   } else if (videoUrl) {
     var label = videoTitle || 'Watch form video';
     if (fn.ai_video_channel) label += ' · ' + fn.ai_video_channel;
-    h += '<div class="form-notes-text"><a href="' + escapeHtml(videoUrl) + '" target="_blank" rel="noopener">▶ ' + escapeHtml(label) + '</a></div>';
+    h += '<div class="form-notes-text"><a href="' + escapeAttr(videoUrl) + '" target="_blank" rel="noopener">▶ ' + escapeHtml(label) + '</a></div>';
     if (videoStamp) {
       h += '<div class="form-notes-meta">Found: ' + escapeHtml(videoStamp) + '</div>';
     }
@@ -2310,7 +2310,7 @@ async function onFormVideoFind() {
       exModalState.formNotes = exModalState.formNotes || {};
       exModalState.formNotes.ai_video_url = v.url;
       exModalState.formNotes.ai_video_title = v.title;
-      exModalState.formNotes.ai_video_channel = v.channel; // in-memory only
+      exModalState.formNotes.ai_video_channel = v.channel; // in-memory only — channel is decorative; not persisted (no DB column) so it shows this session then drops to title-only on reopen
       exModalState.formNotes.ai_video_generated_at = new Date().toISOString();
       formNotesCache[exId] = Object.assign({}, formNotesCache[exId] || {}, {
         ai_video_url: v.url,
