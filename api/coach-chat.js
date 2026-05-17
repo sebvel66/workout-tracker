@@ -15,7 +15,7 @@
 // touching Anthropic. Cron hits this every 5 min to keep Fluid Compute
 // warm (see vercel.json).
 
-export const maxDuration = 30;  // Haiku @ 500 tokens lands well under this.
+export const maxDuration = 60;  // Hobby ceiling; form_video's 45s abort must fire under this.
 
 import { resolveModel, modelSupportsTemperature } from './_models.js';
 const MAX_TOKENS = 500;
@@ -233,9 +233,10 @@ export default async function handler(req, res) {
     // (Haiku + 500 tokens is typically 1-2s); 25s gives slack for slow days
     // while staying under maxDuration.
     const claudeAbort = new AbortController();
-    // Web search adds round-trips; give form_video 40s. Other modes keep
-    // the 25s budget. Both are well under the platform function default.
-    const abortMs = formVideoMode ? 40000 : 25000;
+    // Web search adds round-trips; give form_video 45s. Other modes keep
+    // the 25s budget. Both stay under this function's maxDuration (60s),
+    // so the graceful 504 path below fires before the platform kills us.
+    const abortMs = formVideoMode ? 45000 : 25000;
     const claudeTimeout = setTimeout(() => claudeAbort.abort(), abortMs);
     let claudeRes;
     try {
