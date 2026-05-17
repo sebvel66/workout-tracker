@@ -4999,7 +4999,7 @@ async function loadFormNotes(exerciseId) {
 // Batch loader — one query for many exercise_ids (v3.6.10). Powers the
 // inline form-notes pills on every live exercise card without N round-
 // trips. Returns a map { exercise_id: { user_note, ai_note,
-// ai_generated_at } } — missing ids simply don't appear in the map.
+// ai_generated_at, ai_video_url, ai_video_title, ai_video_generated_at } } — missing ids simply don't appear in the map.
 async function loadFormNotesBatch(exerciseIds) {
   if (!userId || !Array.isArray(exerciseIds) || !exerciseIds.length) return {};
   var seen = {};
@@ -5167,8 +5167,11 @@ async function generateAiFormVideo(exerciseRow) {
     throw new Error((errBody && errBody.error) || ('HTTP ' + res.status));
   }
   var body = await res.json();
+  // A missing/malformed body.video is treated as "nothing found" (not an
+  // error) so the caller can fall back to a YouTube search link. !v.url
+  // also rejects an empty-string url, matching saveAiFormVideo's check.
   var v = body && body.video;
-  if (!v || v.url == null) return { url: null };
+  if (!v || !v.url) return { url: null };
   return { url: String(v.url), title: String(v.title || ''), channel: String(v.channel || '') };
 }
 
