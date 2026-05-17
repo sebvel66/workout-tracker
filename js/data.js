@@ -4981,7 +4981,7 @@ async function loadFormNotes(exerciseId) {
   if (!userId || !exerciseId) return null;
   try {
     var res = await sb.from('exercise_form_notes')
-      .select('user_note, ai_note, ai_generated_at')
+      .select('user_note, ai_note, ai_generated_at, ai_video_url, ai_video_title, ai_video_generated_at')
       .eq('user_id', userId)
       .eq('exercise_id', exerciseId)
       .maybeSingle();
@@ -5011,7 +5011,7 @@ async function loadFormNotesBatch(exerciseIds) {
   if (!unique.length) return {};
   try {
     var res = await sb.from('exercise_form_notes')
-      .select('exercise_id, user_note, ai_note, ai_generated_at')
+      .select('exercise_id, user_note, ai_note, ai_generated_at, ai_video_url, ai_video_title, ai_video_generated_at')
       .eq('user_id', userId)
       .in('exercise_id', unique);
     if (res.error) {
@@ -5025,6 +5025,9 @@ async function loadFormNotesBatch(exerciseIds) {
         user_note: rows[ri].user_note,
         ai_note: rows[ri].ai_note,
         ai_generated_at: rows[ri].ai_generated_at,
+        ai_video_url: rows[ri].ai_video_url,
+        ai_video_title: rows[ri].ai_video_title,
+        ai_video_generated_at: rows[ri].ai_video_generated_at,
       };
     }
     return map;
@@ -5058,6 +5061,26 @@ async function saveAiFormNote(exerciseId, text) {
     exercise_id: exerciseId,
     ai_note: (text == null) ? null : String(text),
     ai_generated_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  var res = await sb.from('exercise_form_notes')
+    .upsert(payload, { onConflict: 'user_id,exercise_id' });
+  if (res.error) throw new Error(res.error.message);
+}
+
+// Upsert the web-grounded video link for (user, exercise). Pass a
+// { url, title } object to set it; pass null to clear all three video
+// fields. Mirrors saveAiFormNote's upsert (same conflict key); only
+// touches the video columns + updated_at so it never clobbers notes.
+async function saveAiFormVideo(exerciseId, video) {
+  if (!userId || !exerciseId) throw new Error('Not signed in');
+  var clearing = (video == null) || !video.url;
+  var payload = {
+    user_id: userId,
+    exercise_id: exerciseId,
+    ai_video_url: clearing ? null : String(video.url),
+    ai_video_title: clearing ? null : String(video.title || ''),
+    ai_video_generated_at: clearing ? null : new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
   var res = await sb.from('exercise_form_notes')
@@ -5113,6 +5136,40 @@ async function generateAiFormNote(exerciseRow, userNote) {
   var body = await res.json();
   if (!body || !body.reply) throw new Error('Empty reply');
   return String(body.reply).trim();
+}
+
+// Web-grounded video lookup (v3.6.26). Mirrors generateAiFormNote's
+// transport (session token + /api/coach-chat) but with mode:'form_video'
+// so the server attaches Anthropic web search and returns parsed JSON.
+// Resolves to { url, title, channel }; url is null when nothing solid
+// was found (caller falls back to a YouTube search link).
+async function generateAiFormVideo(exerciseRow) {
+  if (!userId) throw new Error('Not signed in');
+  if (!exerciseRow || !exerciseRow.name) throw new Error('Exercise not found');
+  var sessionRes = await sb.auth.getSession();
+  var token = sessionRes.data && sessionRes.data.session && sessionRes.data.session.access_token;
+  if (!token) throw new Error('Not signed in');
+  var prompt = 'Exercise: ' + exerciseRow.name +
+    '\nEquipment: ' + (exerciseRow.equipment || 'unknown') +
+    '\nPrimary muscle: ' + (exerciseRow.muscle_group || 'unspecified') +
+    '\n\nFind the best form tutorial video for this exercise per your rules.';
+  var res = await fetch('/api/coach-chat', {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: modelForCoach(),
+      mode: 'form_video',
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  });
+  if (!res.ok) {
+    var errBody = await res.json().catch(function() { return null; });
+    throw new Error((errBody && errBody.error) || ('HTTP ' + res.status));
+  }
+  var body = await res.json();
+  var v = body && body.video;
+  if (!v || v.url == null) return { url: null };
+  return { url: String(v.url), title: String(v.title || ''), channel: String(v.channel || '') };
 }
 
 // Expand `"repeat": N` shorthand into N identical set objects, in place.
