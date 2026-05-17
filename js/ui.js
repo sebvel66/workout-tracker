@@ -17,7 +17,8 @@ var restTargetMs = 0;
 var restCompleted = false;
 var restAudioCtx = null;
 var restChimeNode = null;   // scheduled completion oscillator (audio-thread timed)
-var restKeepAlive = null;   // silent looping source that keeps the ctx alive bg
+var restKeepAliveEl = null;   // looping <audio> keep-alive (holds iOS audio session)
+var restKeepAliveNode = null; // its single MediaElementSourceNode (one per element, ever)
 var sessionTimerInterval = null;
 
 var pickerState = { search: '', equipment: [], muscleGroup: [] };
@@ -7776,9 +7777,9 @@ function startRestTimer(sec) {
   resetRestTimerDragOffset();
   updateRestDisplay();
   // Audio-thread completion chime (fires even when JS is frozen / phone
-  // locked) + silent keep-alive that holds the AudioContext open in the
-  // background. stopRestTimer() above already cleared any prior rest; this
-  // schedules fresh for the current one.
+  // locked) + a looping <audio> keep-alive that holds the iOS audio session
+  // (and thus the AudioContext) open in the background. stopRestTimer() above
+  // already cleared any prior rest; this schedules fresh for the current one.
   startRestKeepAlive();
   scheduleRestChime(restRemainingMs() / 1000);
   // 250ms tick — visual countdown only. It is fine for this to freeze when
@@ -7872,31 +7873,77 @@ function cancelRestChime() {
   }
 }
 
-// Start a continuous near-silent looping source. iOS keeps the AudioContext
-// running (so the scheduled chime fires on time when locked) only while there
-// is active audio output. Idempotent. Stopped at rest end/skip to save battery.
+// Build a tiny in-memory WAV (mono, 8kHz, 1s, 16-bit) carrying a very
+// low-amplitude 60Hz sine (~-60 dBFS, inaudible). NOT digital silence: iOS
+// ignores silent media for background-audio purposes. 60 full cycles over
+// exactly 1s means the loop boundary is sample-continuous (no click). Returned
+// as a self-contained data: URI so no binary asset ships in the repo.
+function buildKeepAliveDataUri() {
+  var sr = 8000, n = sr; // 1 second
+  var dataLen = n * 2;
+  var buf = new ArrayBuffer(44 + dataLen);
+  var dv = new DataView(buf);
+  function ws(off, s) { for (var i = 0; i < s.length; i++) dv.setUint8(off + i, s.charCodeAt(i)); }
+  ws(0, 'RIFF'); dv.setUint32(4, 36 + dataLen, true); ws(8, 'WAVE');
+  ws(12, 'fmt '); dv.setUint32(16, 16, true);
+  dv.setUint16(20, 1, true);  // PCM
+  dv.setUint16(22, 1, true);  // mono
+  dv.setUint32(24, sr, true);
+  dv.setUint32(28, sr * 2, true); // byteRate
+  dv.setUint16(32, 2, true);  // blockAlign
+  dv.setUint16(34, 16, true); // bits
+  ws(36, 'data'); dv.setUint32(40, dataLen, true);
+  var off = 44;
+  for (var i = 0; i < n; i++) {
+    dv.setInt16(off, Math.round(32 * Math.sin(2 * Math.PI * 60 * i / sr)), true);
+    off += 2;
+  }
+  var bytes = new Uint8Array(buf), bin = '';
+  for (var j = 0; j < bytes.length; j++) bin += String.fromCharCode(bytes[j]);
+  return 'data:audio/wav;base64,' + btoa(bin);
+}
+
+// Lazily create the single persistent keep-alive <audio> element and route it
+// through the AudioContext (createMediaElementSource is one-per-element for
+// the element's lifetime, so it must persist and be reused).
+function ensureKeepAliveEl() {
+  if (restKeepAliveEl) return restKeepAliveEl;
+  try {
+    var el = document.createElement('audio');
+    el.loop = true;
+    el.preload = 'auto';
+    el.playsInline = true;
+    el.setAttribute('playsinline', '');
+    el.src = buildKeepAliveDataUri();
+    el.style.display = 'none';
+    document.body.appendChild(el);
+    var ctx = ensureRestAudioCtx();
+    restKeepAliveNode = ctx.createMediaElementSource(el);
+    restKeepAliveNode.connect(ctx.destination);
+    restKeepAliveEl = el;
+  } catch (e) { /* best effort; leave restKeepAliveEl null to retry later */ }
+  return restKeepAliveEl;
+}
+
+// Play the looping keep-alive element. An actively-playing HTMLMediaElement is
+// what keeps iOS from suspending the AudioContext in the background, so the
+// scheduled chime oscillator fires on time while locked. Idempotent.
 function startRestKeepAlive() {
   try {
     var ctx = ensureRestAudioCtx();
     if (ctx.state === 'suspended') ctx.resume();
-    if (restKeepAlive) return;
-    // createBuffer() returns a zero-filled (digitally silent) buffer, so no
-    // gain node is needed — connect the looping source straight to output.
-    var buf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate); // 1s of silence
-    var src = ctx.createBufferSource();
-    src.buffer = buf;
-    src.loop = true;
-    src.connect(ctx.destination);
-    src.start();
-    restKeepAlive = src;
+    var el = ensureKeepAliveEl();
+    if (!el || !el.paused) return;
+    try { el.currentTime = 0; } catch (_) {}
+    var p = el.play();
+    if (p && p.catch) p.catch(function () {});
   } catch (e) { /* best effort */ }
 }
 
+// Pause (not teardown) — the single MediaElementSource must persist for reuse.
 function stopRestKeepAlive() {
-  if (restKeepAlive) {
-    try { restKeepAlive.stop(); } catch (_) {}
-    try { restKeepAlive.disconnect(); } catch (_) {}
-    restKeepAlive = null;
+  if (restKeepAliveEl && !restKeepAliveEl.paused) {
+    try { restKeepAliveEl.pause(); } catch (_) {}
   }
 }
 
