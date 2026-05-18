@@ -17,8 +17,6 @@ var restTargetMs = 0;
 var restCompleted = false;
 var restAudioCtx = null;
 var restChimeNode = null;   // scheduled completion oscillator (audio-thread timed)
-var restKeepAliveEl = null;   // looping <audio> keep-alive (holds iOS audio session)
-var restKeepAliveNode = null; // its single MediaElementSourceNode (one per element, ever)
 var sessionTimerInterval = null;
 
 var pickerState = { search: '', equipment: [], muscleGroup: [] };
@@ -7776,14 +7774,13 @@ function startRestTimer(sec) {
   pill.classList.remove('dragging');
   resetRestTimerDragOffset();
   updateRestDisplay();
-  // Audio-thread completion chime (fires even when JS is frozen / phone
-  // locked) + a looping <audio> keep-alive that holds the iOS audio session
-  // (and thus the AudioContext) open in the background. stopRestTimer() above
-  // already cleared any prior rest; this schedules fresh for the current one.
-  startRestKeepAlive();
+  // Scheduled completion chime (Web Audio oscillator). Fires on time while the
+  // app is foregrounded; if the phone is locked iOS suspends the AudioContext
+  // so it rings on return — accepted tradeoff to never seize the iOS audio
+  // session (a media-element keep-alive interrupted the user's music).
+  // stopRestTimer() above already cleared any prior rest.
   scheduleRestChime(restRemainingMs() / 1000);
-  // 250ms tick — visual countdown only. It is fine for this to freeze when
-  // backgrounded; the chime no longer depends on it.
+  // 250ms tick — visual countdown (and the catch-up path on return).
   restInterval = setInterval(function() {
     if (restRemainingMs() <= 0) { restComplete(); return; }
     updateRestDisplay();
@@ -7806,12 +7803,10 @@ function restComplete() {
   if (restCompleted) return;
   restCompleted = true;
   if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
-  // Sound is now solely the scheduled chime (foreground + background alike),
-  // so we do NOT beep here — that would double up in the foreground. The
-  // scheduled chime's t0 is ~now at natural completion, so it rings as this
-  // runs. Chime is intentionally NOT cancelled here (only on skip/mute);
-  // cancelling at completion could race ahead of it ringing.
-  stopRestKeepAlive();
+  // Sound is solely the scheduled chime, so we do NOT beep here — that would
+  // double up in the foreground. The scheduled chime's t0 is ~now at natural
+  // completion, so it rings as this runs. Chime is intentionally NOT cancelled
+  // here (only on skip/mute); cancelling at completion could race the ring.
   stopRestTimer();
 }
 
@@ -7825,41 +7820,9 @@ function restComplete() {
 // tone to flip iOS's unlock state. Listener auto-removes after one fire.
 // Cheap (couple of nodes), idempotent (the `unlocked` guard).
 
-// ---- Rest-chime on-device diagnostics (gated; off by default) ----
-// Enable on the device with: localStorage.setItem('rtDebug','1') then reload.
-// Writes a compact readout to #rtDebug so a locked-screen test produces
-// evidence (AudioContext state + clock progression) instead of pass/fail.
-var rtDiag = {};
-function getRtDebug() {
-  try { return localStorage.getItem('rtDebug') === '1'; } catch (_) { return false; }
-}
-function rtDiagRender() {
-  if (!getRtDebug()) return;
-  try {
-    var el = document.getElementById('rtDebug');
-    if (!el) return;
-    var d = rtDiag;
-    var ctxAdv = (d.retCtxTime != null && d.schedCtxTime != null)
-      ? (d.retCtxTime - d.schedCtxTime).toFixed(2) : '-';
-    var wallAdv = (d.retWall != null && d.schedWall != null)
-      ? ((d.retWall - d.schedWall) / 1000).toFixed(2) : '-';
-    el.textContent =
-      'rt sched: state=' + (d.schedCtxState || '-') +
-      ' ctxT=' + (d.schedCtxTime != null ? d.schedCtxTime.toFixed(2) : '-') +
-      ' when=' + (d.whenSec != null ? d.whenSec.toFixed(1) : '-') + '\n' +
-      'rt rang: ' + (d.rang ? 'yes' : 'no') + '\n' +
-      'rt ret:  state=' + (d.retCtxState || '-') +
-      ' ctxT=' + (d.retCtxTime != null ? d.retCtxTime.toFixed(2) : '-') +
-      ' elPaused=' + (d.elPaused == null ? '-' : d.elPaused) +
-      ' elT=' + (d.elTime != null ? d.elTime.toFixed(2) : '-') + '\n' +
-      'rt adv:  ctx=' + ctxAdv + 's wall=' + wallAdv + 's';
-    el.style.display = 'block';
-  } catch (_) {}
-}
-
 // Lazily create (and return) the shared rest AudioContext. Browsers cap a
 // page at ~6 contexts, so we create exactly one and reuse it across rest
-// periods, the iOS unlock, the scheduled chime, and the keep-alive source.
+// periods, the iOS unlock, and the scheduled chime.
 function ensureRestAudioCtx() {
   if (!restAudioCtx) restAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
   return restAudioCtx;
@@ -7889,16 +7852,10 @@ function scheduleRestChime(whenSec) {
     osc.onended = function() {
       try { gain.disconnect(); } catch (_) {}
       if (restChimeNode === osc) restChimeNode = null;
-      if (getRtDebug()) { rtDiag.rang = true; rtDiag.rangWall = Date.now(); rtDiagRender(); }
     };
     osc.start(t0);
     osc.stop(t0 + 0.42);
     restChimeNode = osc;
-    if (getRtDebug()) {
-      rtDiag = { schedWall: Date.now(), schedCtxState: ctx.state,
-                 schedCtxTime: ctx.currentTime, whenSec: whenSec, rang: false };
-      rtDiagRender();
-    }
   } catch (e) { /* audio is a nice-to-have; vibrate + UI still fire */ }
 }
 
@@ -7909,80 +7866,6 @@ function cancelRestChime() {
     try { restChimeNode.stop(); } catch (_) {}
     try { restChimeNode.disconnect(); } catch (_) {}
     restChimeNode = null;
-  }
-}
-
-// Build a tiny in-memory WAV (mono, 8kHz, 1s, 16-bit) carrying a very
-// low-amplitude 60Hz sine (~-60 dBFS, inaudible). NOT digital silence: iOS
-// ignores silent media for background-audio purposes. 60 full cycles over
-// exactly 1s means the loop boundary is sample-continuous (no click). Returned
-// as a self-contained data: URI so no binary asset ships in the repo.
-function buildKeepAliveDataUri() {
-  var sr = 8000, n = sr; // 1 second
-  var dataLen = n * 2;
-  var buf = new ArrayBuffer(44 + dataLen);
-  var dv = new DataView(buf);
-  function ws(off, s) { for (var i = 0; i < s.length; i++) dv.setUint8(off + i, s.charCodeAt(i)); }
-  ws(0, 'RIFF'); dv.setUint32(4, 36 + dataLen, true); ws(8, 'WAVE');
-  ws(12, 'fmt '); dv.setUint32(16, 16, true);
-  dv.setUint16(20, 1, true);  // PCM
-  dv.setUint16(22, 1, true);  // mono
-  dv.setUint32(24, sr, true);
-  dv.setUint32(28, sr * 2, true); // byteRate
-  dv.setUint16(32, 2, true);  // blockAlign
-  dv.setUint16(34, 16, true); // bits
-  ws(36, 'data'); dv.setUint32(40, dataLen, true);
-  var off = 44;
-  for (var i = 0; i < n; i++) {
-    dv.setInt16(off, Math.round(32 * Math.sin(2 * Math.PI * 60 * i / sr)), true);
-    off += 2;
-  }
-  var bytes = new Uint8Array(buf), bin = '';
-  for (var j = 0; j < bytes.length; j++) bin += String.fromCharCode(bytes[j]);
-  return 'data:audio/wav;base64,' + btoa(bin);
-}
-
-// Lazily create the single persistent keep-alive <audio> element and route it
-// through the AudioContext (createMediaElementSource is one-per-element for
-// the element's lifetime, so it must persist and be reused).
-function ensureKeepAliveEl() {
-  if (restKeepAliveEl) return restKeepAliveEl;
-  try {
-    var el = document.createElement('audio');
-    el.loop = true;
-    el.preload = 'auto';
-    el.playsInline = true;
-    el.setAttribute('playsinline', '');
-    el.src = buildKeepAliveDataUri();
-    el.style.display = 'none';
-    document.body.appendChild(el);
-    var ctx = ensureRestAudioCtx();
-    restKeepAliveNode = ctx.createMediaElementSource(el);
-    restKeepAliveNode.connect(ctx.destination);
-    restKeepAliveEl = el;
-  } catch (e) { /* best effort; leave restKeepAliveEl null to retry later */ }
-  return restKeepAliveEl;
-}
-
-// Play the looping keep-alive element. An actively-playing HTMLMediaElement is
-// what keeps iOS from suspending the AudioContext in the background, so the
-// scheduled chime oscillator fires on time while locked. Idempotent.
-function startRestKeepAlive() {
-  try {
-    var ctx = ensureRestAudioCtx();
-    if (ctx.state === 'suspended') ctx.resume();
-    var el = ensureKeepAliveEl();
-    if (!el || !el.paused) return;
-    try { el.currentTime = 0; } catch (_) {}
-    var p = el.play();
-    if (p && p.catch) p.catch(function () {});
-  } catch (e) { /* best effort */ }
-}
-
-// Pause (not teardown) — the single MediaElementSource must persist for reuse.
-function stopRestKeepAlive() {
-  if (restKeepAliveEl && !restKeepAliveEl.paused) {
-    try { restKeepAliveEl.pause(); } catch (_) {}
   }
 }
 
@@ -8001,13 +7884,6 @@ function stopRestKeepAlive() {
       gain.connect(ctx.destination);
       osc.start(ctx.currentTime);
       osc.stop(ctx.currentTime + 0.001);
-      // Prime the keep-alive media element within this user gesture so iOS
-      // marks it user-activated for later gesture-initiated plays.
-      var kel = ensureKeepAliveEl();
-      if (kel) {
-        var pp = kel.play();
-        if (pp && pp.then) pp.then(function () { try { kel.pause(); } catch (_) {} }).catch(function () {});
-      }
     } catch(_) {}
   }
   document.addEventListener('touchstart', unlock, { once: true, passive: true });
@@ -9105,12 +8981,11 @@ document.getElementById('importTemplateModal').addEventListener('click', functio
   if (e.target === this) this.classList.remove('show');
 });
 document.getElementById('btnRest').addEventListener('click', function() { startRestTimer(90); });
-// Skip must silence the pending chime + keep-alive. This is kept OUT of the
-// shared stopRestTimer() because natural completion also calls that and must
-// let the (already-due) chime ring.
+// Skip must silence the pending chime. Kept OUT of the shared stopRestTimer()
+// because natural completion also calls that and must let the (already-due)
+// chime ring.
 function skipRest() {
   cancelRestChime();
-  stopRestKeepAlive();
   stopRestTimer();
 }
 document.getElementById('btnStopRest').addEventListener('click', skipRest);
@@ -9206,16 +9081,7 @@ document.getElementById('btnRestMinus').addEventListener('click', function() {
 // Wall-clock catch-up after backgrounding. If we return to the app past the
 // deadline and the tick interval missed the completion, fire it now.
 document.addEventListener('visibilitychange', function() {
-  if (document.visibilityState !== 'visible') return;
-  if (getRtDebug() && restInterval) {
-    rtDiag.retWall = Date.now();
-    rtDiag.retCtxState = restAudioCtx ? restAudioCtx.state : 'no-ctx';
-    rtDiag.retCtxTime = restAudioCtx ? restAudioCtx.currentTime : null;
-    rtDiag.elPaused = restKeepAliveEl ? restKeepAliveEl.paused : 'no-el';
-    rtDiag.elTime = restKeepAliveEl ? restKeepAliveEl.currentTime : null;
-    rtDiagRender();
-  }
-  if (restInterval && restRemainingMs() <= 0) {
+  if (document.visibilityState === 'visible' && restInterval && restRemainingMs() <= 0) {
     restComplete();
   }
 });
