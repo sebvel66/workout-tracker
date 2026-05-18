@@ -7867,7 +7867,7 @@ function ensureRestAudioCtx() {
 
 // Schedule the completion chime on the Web Audio clock so it fires on the
 // audio thread even when JS timers are frozen (screen locked / backgrounded).
-// whenSec is seconds from now. Same 880Hz / ~0.25s envelope as restBeep().
+// whenSec is seconds from now. Same 880Hz / ~0.42s envelope as restBeep().
 // Gated on getRestTimerSound() at schedule time; rescheduled on adjust/unmute.
 function scheduleRestChime(whenSec) {
   cancelRestChime();
@@ -7881,8 +7881,9 @@ function scheduleRestChime(whenSec) {
     osc.frequency.value = 880;
     osc.type = 'sine';
     gain.gain.setValueAtTime(0, t0);
-    gain.gain.linearRampToValueAtTime(0.15, t0 + 0.01);
-    gain.gain.linearRampToValueAtTime(0, t0 + 0.22);
+    gain.gain.linearRampToValueAtTime(0.38, t0 + 0.01);  // attack
+    gain.gain.linearRampToValueAtTime(0.38, t0 + 0.18);  // sustain hold
+    gain.gain.linearRampToValueAtTime(0, t0 + 0.40);     // release
     osc.connect(gain);
     gain.connect(ctx.destination);
     osc.onended = function() {
@@ -7891,7 +7892,7 @@ function scheduleRestChime(whenSec) {
       if (getRtDebug()) { rtDiag.rang = true; rtDiag.rangWall = Date.now(); rtDiagRender(); }
     };
     osc.start(t0);
-    osc.stop(t0 + 0.25);
+    osc.stop(t0 + 0.42);
     restChimeNode = osc;
     if (getRtDebug()) {
       rtDiag = { schedWall: Date.now(), schedCtxState: ctx.state,
@@ -8013,8 +8014,9 @@ function stopRestKeepAlive() {
   document.addEventListener('click', unlock, { once: true });
 })();
 
-// Single 880Hz sine chime, ~¼ second, with a smooth attack/release envelope
-// so there's no click. AudioContext is lazy-created and reused across rest
+// Single 880Hz sine chime, ~0.42s (attack / brief sustain / release) at a
+// prominent level so it carries. Starts and ends at 0 gain so there's no
+// click. AudioContext is lazy-created and reused across rest
 // periods (browsers cap pages at ~6 contexts). The starting gesture that
 // opened the timer has already unlocked autoplay on iOS/Chrome via
 // wireAudioUnlock above.
@@ -8029,12 +8031,13 @@ function restBeep() {
     osc.frequency.value = 880;
     osc.type = 'sine';
     gain.gain.setValueAtTime(0, ctx.currentTime);
-    gain.gain.linearRampToValueAtTime(0.15, ctx.currentTime + 0.01);
-    gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.22);
+    gain.gain.linearRampToValueAtTime(0.38, ctx.currentTime + 0.01);  // attack
+    gain.gain.linearRampToValueAtTime(0.38, ctx.currentTime + 0.18);  // sustain hold
+    gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.40);     // release
     osc.connect(gain);
     gain.connect(ctx.destination);
     osc.start(ctx.currentTime);
-    osc.stop(ctx.currentTime + 0.25);
+    osc.stop(ctx.currentTime + 0.42);
   } catch(e) { /* audio is a nice-to-have; vibrate + UI still fire */ }
 }
 
