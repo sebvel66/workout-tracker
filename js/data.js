@@ -3107,21 +3107,6 @@ async function historyDeleteSet(setId) {
 }
 
 // ---- Drag-to-reorder: compute map + persist -----------------------------
-// Computes the exercise_order permutation for a single move. Keys are the
-// old positions that need updating; values are the new positions. Positions
-// outside the move's range aren't in the map (unchanged).
-function computeReorderMap(oldIndex, newIndex) {
-  var map = {};
-  if (oldIndex === newIndex) return map;
-  map[oldIndex] = newIndex;
-  if (newIndex > oldIndex) {
-    for (var i = oldIndex + 1; i <= newIndex; i++) map[i] = i - 1;
-  } else {
-    for (var j = newIndex; j < oldIndex; j++) map[j] = j + 1;
-  }
-  return map;
-}
-
 // Apply a reorder map to the in-memory state.exercises keys. Ex slots at
 // remapped positions get their new ex_<N> key; unchanged slots stay put.
 function remapStateExerciseKeys(state, mapping) {
@@ -3168,11 +3153,38 @@ async function persistExerciseReorder(workoutId, mapping) {
   for (var j = 0; j < r2.length; j++) if (r2[j].error) throw new Error(r2[j].error.message);
 }
 
+// Compute (start, count) flat-ei ranges for each plan-day entry. Superset
+// blocks span (members.length) flat slots; standalones span 1. Used by
+// reorderPlanExercises to translate a plan-day index move into a flat
+// exercise_order permutation — pre-v3.6.31 the reorder treated plan-day
+// indices as flat exercise_order, which mis-mapped sets whenever a block
+// existed (and left workouts.superset_groups pointing at stale positions).
+function _flatRangesForEntries(entries) {
+  var ranges = new Array(entries.length);
+  var flat = 0;
+  for (var i = 0; i < entries.length; i++) {
+    var e = entries[i];
+    var count = (e && e.superset === true && Array.isArray(e.exercises)) ? e.exercises.length : 1;
+    ranges[i] = { start: flat, count: count };
+    flat += count;
+  }
+  return ranges;
+}
+
 // Plan-level reorder. Mirrors Swap (v2.0.29) semantics: mutates the active
 // plan's day exercises, persists plans.data, then remaps the current
 // workout's sets so already-logged sets stay attached to their exercise.
 // Scope: rest of the week — future sessions on this plan day follow the
 // new order. Toast calls this out explicitly.
+//
+// v3.6.31: block-aware. Translates the plan-day index move into a flat
+// exercise_order permutation (a superset block at plan-day index i with N
+// members occupies N consecutive flat slots, not 1). Also rewrites
+// workouts.superset_groups against the new plan-day shape and restates
+// in-memory supersetGroup markers — without that, a reorder around a block
+// left stale state.supersetGroup on the wrong exercises, which surfaced as
+// ghost "Remove from superset" buttons that silently no-op'd at
+// _applySupersetSeparatePlan.
 async function reorderPlanExercises(di, oldIndex, newIndex) {
   if (!plan || !plan.days || !plan.days[di]) return;
   if (oldIndex === newIndex) return;
@@ -3184,8 +3196,35 @@ async function reorderPlanExercises(di, oldIndex, newIndex) {
   // Snapshot for rollback if Supabase writes fail.
   var originalCopy = JSON.parse(JSON.stringify(exercises));
 
+  // Capture flat ranges BEFORE mutating so we can map old→new flat positions.
+  var oldRanges = _flatRangesForEntries(exercises);
+
   var moved = exercises.splice(oldIndex, 1)[0];
   exercises.splice(newIndex, 0, moved);
+
+  var newRanges = _flatRangesForEntries(exercises);
+
+  // Build OLD_FLAT_EI → NEW_FLAT_EI map. The splice+insert is identity-
+  // preserving, so every new position j corresponds to a known old position
+  // (the inverse of a single splice-out + splice-in), and we map its old
+  // flat range to its new flat range slot-for-slot.
+  var lo = Math.min(oldIndex, newIndex);
+  var hi = Math.max(oldIndex, newIndex);
+  var mapping = {};
+  for (var j = 0; j < exercises.length; j++) {
+    var oldPos;
+    if (j === newIndex) oldPos = oldIndex;
+    else if (j < lo || j > hi) oldPos = j;
+    else if (oldIndex < newIndex) oldPos = j + 1;
+    else oldPos = j - 1;
+    var oldRange = oldRanges[oldPos];
+    var newRange = newRanges[j];
+    for (var k = 0; k < newRange.count; k++) {
+      var oldFlat = oldRange.start + k;
+      var newFlat = newRange.start + k;
+      if (oldFlat !== newFlat) mapping[oldFlat] = newFlat;
+    }
+  }
 
   try {
     var pr = await sb.from('plans').update({ data: plan }).eq('id', activePlanId);
@@ -3200,11 +3239,17 @@ async function reorderPlanExercises(di, oldIndex, newIndex) {
     return;
   }
 
-  var mapping = computeReorderMap(oldIndex, newIndex);
+  var todayPlanState = todayPlanStates[di];
   try {
-    if (todayState && todayState.workoutId && !todayState.isAdHoc) {
-      await persistExerciseReorder(todayState.workoutId, mapping);
-      remapStateExerciseKeys(todayState, mapping);
+    if (todayPlanState && todayPlanState.workoutId) {
+      await persistExerciseReorder(todayPlanState.workoutId, mapping);
+      remapStateExerciseKeys(todayPlanState, mapping);
+
+      var newGroups = supersetGroupsFromPlanDay(plan.days[di]);
+      var wr = await sb.from('workouts').update({ superset_groups: newGroups })
+        .eq('id', todayPlanState.workoutId);
+      if (wr.error) throw new Error(wr.error.message);
+      _restateFromSupersetGroups(todayPlanState, newGroups);
     }
   } catch(err) {
     // Plan already wrote; sets may now be mis-attributed on this workout.

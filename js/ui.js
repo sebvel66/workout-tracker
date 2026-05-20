@@ -728,9 +728,11 @@ function renderPlanDayExerciseCard(di, ei, planEx, exState, mode, readOnly, badg
   var swapBtn = readOnly ? '' : '<button class="card-swap" data-swap-di="' + di + '" data-swap-ei="' + ei + '" aria-label="Swap exercise" type="button">⇄</button>';
   // badgeLabel is the canonical "this card is a member of a block" signal —
   // set by the buildDay caller when emitting a block run, null for
-  // standalones. Reliable pre-session too, where exState.supersetGroup
-  // isn't populated yet (state lazy-creates on session start).
-  var inBlock = badgeLabel != null || !!(exState && exState.supersetGroup);
+  // standalones. The renderer's block detection walks plan-day shape (the
+  // truthful source); falling back to exState.supersetGroup risked drift —
+  // a stale state marker after reorderPlanExercises pre-v3.6.31 produced
+  // ghost "Remove from superset" buttons on standalones that no-op'd.
+  var inBlock = badgeLabel != null;
   var supersetBtn = readOnly ? '' :
     '<button class="ex-superset-btn' + (inBlock ? ' in-block' : '') +
     '" type="button" data-di="' + escapeAttr(String(di)) + '" data-ei="' + ei +
@@ -887,7 +889,7 @@ function renderPlanDayExtraCard(di, xei, xState, mode, readOnly, badgeLabel) {
   h += '<div class="exercise-card' + xcc + '">';
   var xChipHtml = renderWeightModeChip(xei, xWeightMode, xMeta, readOnly ? 'history-readonly' : 'editable', null)
     + renderTimedChip(xei, xIsTimed, xMeta, readOnly ? 'history-readonly' : 'editable');
-  var xInBlock = !!(xState && xState.supersetGroup);
+  var xInBlock = badgeLabel != null;
   var xSupersetBtn = readOnly ? '' :
     '<button class="ex-superset-btn' + (xInBlock ? ' in-block' : '') +
     '" type="button" data-di="' + escapeAttr(String(di)) + '" data-ei="' + xei +
@@ -957,7 +959,7 @@ function renderAdHocExerciseCard(di, ei, exState, badgeLabel) {
   h += '<div class="exercise-card' + cc + '">';
   var adChipHtml = renderWeightModeChip(ei, weightMode, meta, 'editable', null)
     + renderTimedChip(ei, adIsTimed, meta, 'editable');
-  var inBlockAd = !!(exState && exState.supersetGroup);
+  var inBlockAd = badgeLabel != null;
   var supersetBtnAd = '<button class="ex-superset-btn' + (inBlockAd ? ' in-block' : '') +
     '" type="button" data-di="' + escapeAttr(String(di)) + '" data-ei="' + ei +
     '" aria-label="' + (inBlockAd ? 'Remove from superset' : 'Pair as superset') +
