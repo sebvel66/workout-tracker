@@ -2610,97 +2610,10 @@ var bodyRecentWeeksState = {
   } catch (_) {}
 })();
 
-// Volume trends dashboard (v3.5.4). Hamburger entry → modal table with
-// muscle groups as rows, last N weeks as columns, inline-SVG sparklines
-// per muscle. Default 8 weeks; selectable 4/8/12. Fetches via
-// fetchVolumeTrends which uses the same primary 1.0 + secondary 0.5
-// counting as the History summary + analyze prompt — numbers match
-// across surfaces.
-var volumeTrendsState = { weeks: 8, inFlight: false, data: null };
-async function openVolumeTrends() {
-  var overlay = document.getElementById('volumeTrendsOverlay');
-  if (!overlay) return;
-  overlay.classList.add('show');
-  await loadAndRenderVolumeTrends(volumeTrendsState.weeks);
-}
-function closeVolumeTrends() {
-  document.getElementById('volumeTrendsOverlay').classList.remove('show');
-}
-async function loadAndRenderVolumeTrends(weeks) {
-  if (volumeTrendsState.inFlight) return;
-  volumeTrendsState.inFlight = true;
-  volumeTrendsState.weeks = weeks;
-  var body = document.getElementById('volumeTrendsBody');
-  if (body) {
-    body.innerHTML = renderVolumeTrendsControls(weeks) +
-      '<div class="vt-loading">Loading…</div>';
-  }
-  try {
-    if (!userId) throw new Error('Not signed in');
-    var data = await fetchVolumeTrends(userId, weeks);
-    volumeTrendsState.data = data;
-    renderVolumeTrends(data, weeks);
-  } catch (err) {
-    console.error('loadAndRenderVolumeTrends error:', err);
-    if (body) {
-      body.innerHTML = renderVolumeTrendsControls(weeks) +
-        '<div class="vt-empty">Couldn\'t load volume data: ' + escapeHtml(err.message || 'unknown error') + '</div>';
-    }
-  } finally {
-    volumeTrendsState.inFlight = false;
-  }
-}
-function renderVolumeTrendsControls(weeks) {
-  var btns = [4, 8, 12].map(function(n) {
-    var active = n === weeks ? ' active' : '';
-    return '<button type="button" class="' + (active ? 'active' : '') + '" data-vt-weeks="' + n + '">' + n + 'w</button>';
-  }).join('');
-  var html = '<div class="vt-controls">' + btns + '</div>';
-  html += '<div class="vt-banner">Sets/week target — accumulation: 10-20 · maintain/pre-cut: 8-12 · cut maintenance: 5-8. Counting: primary 1.0 + each secondary 0.5 (Schoenfeld).</div>';
-  return html;
-}
-function renderVolumeTrends(data, weeks) {
-  var body = document.getElementById('volumeTrendsBody');
-  if (!body) return;
-  var html = renderVolumeTrendsControls(weeks);
-  if (!data.muscles.length) {
-    html += '<div class="vt-empty">No completed sets in the last ' + weeks + ' weeks.</div>';
-    body.innerHTML = html;
-    return;
-  }
-  html += '<div class="vt-table-wrap"><table class="vt-table">';
-  // Header: muscle | sparkline | week labels (oldest → newest) | avg
-  html += '<thead><tr>';
-  html += '<th style="text-align:left">Muscle</th>';
-  html += '<th>Trend</th>';
-  for (var wi = 0; wi < data.weeks.length; wi++) {
-    html += '<th>' + escapeHtml(data.weeks[wi].label) + '</th>';
-  }
-  html += '<th>Avg</th>';
-  html += '</tr></thead><tbody>';
-  for (var mi = 0; mi < data.muscles.length; mi++) {
-    var m = data.muscles[mi];
-    var arr = data.byMuscle[m];
-    html += '<tr>';
-    html += '<td class="vt-muscle">' + escapeHtml(m) + '</td>';
-    html += '<td>' + _vtSparklineSvg(arr) + '</td>';
-    for (var ci = 0; ci < arr.length; ci++) {
-      var v = arr[ci];
-      var label = (v === Math.floor(v)) ? String(v) : v.toFixed(1);
-      var zeroClass = v === 0 ? ' vt-zero' : '';
-      html += '<td class="vt-week' + zeroClass + '">' + label + '</td>';
-    }
-    var avg = data.averages[m];
-    var avgLabel = (avg === Math.floor(avg)) ? String(avg) : avg.toFixed(1);
-    html += '<td class="vt-avg">' + avgLabel + '</td>';
-    html += '</tr>';
-  }
-  html += '</tbody></table></div>';
-  body.innerHTML = html;
-}
-// Inline-SVG sparkline. Per-row scaling — each muscle uses its own y-axis
-// max so the trend reads regardless of absolute volume. No chart library;
-// ~30 lines of polyline + dots.
+// Inline-SVG sparkline. Per-row scaling — each muscle uses its own
+// y-axis max so the trend reads regardless of absolute volume. Used by
+// the Body tab's "Recent weeks" section (Volume Trends modal removed
+// in v3.6.32). ~30 lines of polyline + dots; no chart library.
 function _vtSparklineSvg(values) {
   var n = values.length;
   if (!n) return '';
@@ -3128,9 +3041,8 @@ function _dualChipRowsHtml(primaryCounts, fractionalCounts) {
     '</div>';
 }
 
-// Log view: launchpad to existing History modal + Volume Trends modal.
-// Two big cards. Lighter v1 — inlining the full History/Trends content
-// would mean refactoring those modals' click handlers, deferred for v2.
+// Log view: launchpad to existing History modal. Volume trends moved
+// to the Body tab in v3.6.32 — "Recent weeks" section.
 function renderLogView() {
   var body = document.getElementById('logViewBody');
   if (!body) return;
@@ -3138,10 +3050,6 @@ function renderLogView() {
   h += '<button class="log-card" type="button" data-log-card="history">';
   h += '<div class="log-card-title">History</div>';
   h += '<div class="log-card-desc">Week-by-week sessions. Tap a workout to see set-level detail or edit retroactively.</div>';
-  h += '</button>';
-  h += '<button class="log-card" type="button" data-log-card="trends">';
-  h += '<div class="log-card-title">Volume trends</div>';
-  h += '<div class="log-card-desc">Sets per muscle group over the last 4-12 weeks with sparklines, against Schoenfeld bands.</div>';
   h += '</button>';
   body.innerHTML = h;
 }
@@ -8421,10 +8329,6 @@ document.getElementById('menuHistory').addEventListener('click', function() {
   closeMenu();
   openHistory();
 });
-document.getElementById('menuVolumeTrends').addEventListener('click', function() {
-  closeMenu();
-  openVolumeTrends();
-});
 document.getElementById('menuCoachingProfile').addEventListener('click', function() {
   closeMenu();
   openCoachingProfile();
@@ -8940,21 +8844,8 @@ document.getElementById('logViewBody').addEventListener('click', function(e) {
   if (!card) return;
   var which = card.getAttribute('data-log-card');
   if (which === 'history') openHistory();
-  else if (which === 'trends') openVolumeTrends();
 });
 document.getElementById('btnHistoryClose').addEventListener('click', closeHistory);
-document.getElementById('btnVolumeTrendsClose').addEventListener('click', closeVolumeTrends);
-document.getElementById('volumeTrendsOverlay').addEventListener('click', function(e) {
-  if (e.target === this) closeVolumeTrends();
-});
-document.getElementById('volumeTrendsBody').addEventListener('click', function(e) {
-  var btn = e.target.closest && e.target.closest('[data-vt-weeks]');
-  if (!btn) return;
-  var w = parseInt(btn.getAttribute('data-vt-weeks'), 10);
-  if (Number.isFinite(w) && w !== volumeTrendsState.weeks) {
-    loadAndRenderVolumeTrends(w);
-  }
-});
 document.getElementById('btnExHistoryClose').addEventListener('click', closeExerciseHistory);
 document.getElementById('exHistoryOverlay').addEventListener('click', function(e) {
   if (e.target === this) closeExerciseHistory();
