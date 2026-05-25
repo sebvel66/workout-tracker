@@ -2879,28 +2879,47 @@ async function loadAndRenderBodyRecentWeeks() {
 }
 
 // Pure-render: takes whatever is in bodyRecentWeeksState.data and paints
-// the slot. Used by both the initial fetch and (in Task 3) the mode
-// toggle, which re-paints without re-fetching.
+// the slot. Used by both the initial fetch and the mode toggle, which
+// re-paints without re-fetching.
 function renderBodyRecentWeeks() {
   var slot = document.getElementById('bodyViewRecentWeeksSlot');
   if (!slot) return;
   var data = bodyRecentWeeksState.data;
-  if (!data) { slot.innerHTML = '<div class="body-view-section-empty">Loading…</div>'; return; }
+  var html = _bodyRwControlsHtml();
+  if (!data) { slot.innerHTML = html + '<div class="body-view-section-empty">Loading…</div>'; return; }
   if (!data.muscles || !data.muscles.length) {
-    slot.innerHTML = '<div class="body-view-section-empty">No completed sets in the last ' +
+    slot.innerHTML = html + '<div class="body-view-section-empty">No completed sets in the last ' +
       bodyRecentWeeksState.weeks + ' weeks.</div>';
     return;
   }
   var mode = bodyRecentWeeksState.mode;
   var byMuscle = mode === 'primary' ? data.byMusclePrimary : data.byMuscle;
   var averages = mode === 'primary' ? data.averagesPrimary : data.averages;
-  var rowsHtml = '';
   for (var mi = 0; mi < data.muscles.length; mi++) {
     var m = data.muscles[mi];
     var arr = byMuscle[m] || [];
-    rowsHtml += _bodyRwRowHtml(m, arr, averages[m]);
+    html += _bodyRwRowHtml(m, arr, averages[m]);
   }
-  slot.innerHTML = rowsHtml;
+  slot.innerHTML = html;
+}
+
+function _bodyRwControlsHtml() {
+  var mode = bodyRecentWeeksState.mode;
+  var weeks = bodyRecentWeeksState.weeks;
+  function modeBtn(val, label) {
+    var active = val === mode ? ' active' : '';
+    return '<button type="button" class="' + (active ? 'active' : '') +
+      '" data-rw-mode="' + val + '">' + label + '</button>';
+  }
+  function weekBtn(val) {
+    var active = val === weeks ? ' active' : '';
+    return '<button type="button" class="' + (active ? 'active' : '') +
+      '" data-rw-weeks="' + val + '">' + val + 'w</button>';
+  }
+  return '<div class="body-rw-controls">' +
+    '<div class="body-rw-group">' + modeBtn('primary', 'Primary') + modeBtn('fractional', 'Fractional') + '</div>' +
+    '<div class="body-rw-group">' + weekBtn(4) + weekBtn(8) + weekBtn(12) + '</div>' +
+    '</div>';
 }
 
 function _bodyRwRowHtml(muscle, weeklyValues, avg) {
@@ -8843,6 +8862,31 @@ document.getElementById('bottomTabBar').addEventListener('click', function(e) {
   if (!btn) return;
   var name = btn.getAttribute('data-tab');
   setActiveView(name);
+});
+// Recent weeks controls — mode toggle re-paints from cache, window
+// toggle re-fetches. Both persist to localStorage.
+document.getElementById('bodyView').addEventListener('click', function(e) {
+  var modeBtn = e.target.closest && e.target.closest('[data-rw-mode]');
+  if (modeBtn) {
+    var m = modeBtn.getAttribute('data-rw-mode');
+    if (m !== 'primary' && m !== 'fractional') return;
+    if (m === bodyRecentWeeksState.mode) return;
+    bodyRecentWeeksState.mode = m;
+    try { localStorage.setItem('bodyRecentWeeks.mode', m); } catch (_) {}
+    renderBodyRecentWeeks();
+    return;
+  }
+  var wBtn = e.target.closest && e.target.closest('[data-rw-weeks]');
+  if (wBtn) {
+    var w = parseInt(wBtn.getAttribute('data-rw-weeks'), 10);
+    if (!(w === 4 || w === 8 || w === 12)) return;
+    if (w === bodyRecentWeeksState.weeks) return;
+    bodyRecentWeeksState.weeks = w;
+    try { localStorage.setItem('bodyRecentWeeks.weeks', String(w)); } catch (_) {}
+    bodyRecentWeeksState.data = null;
+    renderBodyRecentWeeks(); // immediately re-render to show "Loading…"
+    loadAndRenderBodyRecentWeeks();
+  }
 });
 // Log view launchpad cards open the existing modals.
 document.getElementById('logViewBody').addEventListener('click', function(e) {
