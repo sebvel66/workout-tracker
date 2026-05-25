@@ -924,7 +924,10 @@ function formatExerciseLibrary(exercises) {
 // but narrower output — ~500-800 tokens of structured JSON with trends /
 // progressing / concerns / next_week sections. User can copy next_week
 // forward into plan-gen's notes field to chain analysis → plan.
-const ANALYZE_MAX_TOKENS = 1400;  // 400 headroom vs the pre-profile-updates budget
+// 4 sections (~530-800 tok) + variable profile_updates (3-8 entries × ~80-150 tok
+// = up to ~1000 tok) can realistically push past 1800. 3000 keeps comfortable
+// headroom and still fits within the 55s claudeAbort window at Sonnet's ~60-80 t/s.
+const ANALYZE_MAX_TOKENS = 3000;
 // Analyze mode pulls more progress photos than plan-gen so Claude can
 // compare them chronologically for over-time observations. 4 keeps token
 // cost bounded (~6-8K image tokens at this count) while giving a useful
