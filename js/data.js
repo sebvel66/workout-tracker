@@ -950,11 +950,12 @@ function _accumulatePlanExercisePrimary(ex, out) {
 //
 // Returns:
 //   {
-//     weeks:    [{ weekStart, label }, ...] // chronological, length = weeksBack
-//     muscles:  [muscle_group, ...]         // sorted by total across window, descending
-//     byMuscle: { muscle_group: [n, n, n, ...] }  // one entry per week, aligned to `weeks`
-//     totals:   { muscle_group: n }         // sum across the window
-//     averages: { muscle_group: n }         // total / weeksBack (rounded to 1 decimal)
+//     weeks:    [{ weekStart, label }, ...]   // chronological, length = weeksBack
+//     muscles:  [muscle_group, ...]            // sorted by fractional total desc
+//     byMuscle:        { mg: [n, ...] }        // fractional, one entry per week
+//     byMusclePrimary: { mg: [n, ...] }        // primary-only, one entry per week
+//     totals / averages:                fractional totals/avgs per muscle
+//     totalsPrimary / averagesPrimary:  primary-only totals/avgs per muscle
 //   }
 async function fetchVolumeTrends(userId, weeksBack) {
   if (!Number.isFinite(weeksBack) || weeksBack < 1) weeksBack = 8;
@@ -983,8 +984,14 @@ async function fetchVolumeTrends(userId, weeksBack) {
     .lte('performed_on', endDate);
   if (res.error) throw res.error;
 
-  // byMuscle starts empty; populate lazily as muscles surface in the data.
+  // byMuscle (fractional) + byMusclePrimary (primary-only) populated in
+  // the same pass. Same counting rules used everywhere else:
+  //   primary    — each completed set = 1.0 to ex.muscle_group
+  //   fractional — each completed set = 1.0 to ex.muscle_group + 0.5 to
+  //                each entry in ex.secondary_muscles
+  // Cardio + mobility filtered.
   var byMuscle = {};
+  var byMusclePrimary = {};
   var rows = res.data || [];
   for (var ri = 0; ri < rows.length; ri++) {
     var row = rows[ri];
@@ -1000,6 +1007,7 @@ async function fetchVolumeTrends(userId, weeksBack) {
       var primary = ex.muscle_group;
       if (!primary || primary === 'cardio' || primary === 'mobility') continue;
       _vtAdd(byMuscle, primary, widx, weeksBack, 1);
+      _vtAdd(byMusclePrimary, primary, widx, weeksBack, 1);
       var sec = Array.isArray(ex.secondary_muscles) ? ex.secondary_muscles : [];
       for (var k = 0; k < sec.length; k++) {
         var mg = sec[k];
@@ -1009,9 +1017,12 @@ async function fetchVolumeTrends(userId, weeksBack) {
     }
   }
 
-  // Totals + averages per muscle, then sort muscles by total descending.
+  // Totals + averages for both modes. Muscle ordering is driven by the
+  // fractional total (matches the existing modal + every existing caller).
   var totals = {};
   var averages = {};
+  var totalsPrimary = {};
+  var averagesPrimary = {};
   var muscles = Object.keys(byMuscle);
   for (var mi = 0; mi < muscles.length; mi++) {
     var mname = muscles[mi];
@@ -1020,10 +1031,29 @@ async function fetchVolumeTrends(userId, weeksBack) {
     for (var aj = 0; aj < arr.length; aj++) sum += arr[aj] || 0;
     totals[mname] = Math.round(sum * 10) / 10;
     averages[mname] = Math.round((sum / weeksBack) * 10) / 10;
+    var arrP = byMusclePrimary[mname];
+    if (arrP) {
+      var sumP = 0;
+      for (var ap = 0; ap < arrP.length; ap++) sumP += arrP[ap] || 0;
+      totalsPrimary[mname] = Math.round(sumP * 10) / 10;
+      averagesPrimary[mname] = Math.round((sumP / weeksBack) * 10) / 10;
+    } else {
+      totalsPrimary[mname] = 0;
+      averagesPrimary[mname] = 0;
+    }
   }
   muscles.sort(function(a, b) { return totals[b] - totals[a]; });
 
-  return { weeks: weeks, muscles: muscles, byMuscle: byMuscle, totals: totals, averages: averages };
+  return {
+    weeks: weeks,
+    muscles: muscles,
+    byMuscle: byMuscle,
+    byMusclePrimary: byMusclePrimary,
+    totals: totals,
+    totalsPrimary: totalsPrimary,
+    averages: averages,
+    averagesPrimary: averagesPrimary,
+  };
 }
 
 function _vtAdd(byMuscle, mg, widx, weeksBack, factor) {
