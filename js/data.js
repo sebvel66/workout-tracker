@@ -1031,6 +1031,9 @@ async function fetchVolumeTrends(userId, weeksBack) {
     for (var aj = 0; aj < arr.length; aj++) sum += arr[aj] || 0;
     totals[mname] = Math.round(sum * 10) / 10;
     averages[mname] = Math.round((sum / weeksBack) * 10) / 10;
+    // mname may be secondary-only (appears in byMuscle via the 0.5
+    // secondary contribution but never as an exercise's primary), in
+    // which case byMusclePrimary has no entry — falls through to 0.
     var arrP = byMusclePrimary[mname];
     if (arrP) {
       var sumP = 0;
