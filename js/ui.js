@@ -2877,11 +2877,15 @@ function _bodyRwRowHtml(muscle, weeklyValues, avg) {
     pills += '<span class="body-rw-pill ' + cls + '" title="' + escapeAttr(title) + '">' + label + '</span>';
   }
   var avgLabel = (avg == null) ? '—' : ((avg === Math.floor(avg)) ? String(avg) : avg.toFixed(1));
+  // Sparkline drops the current (in-progress) week — its mid-week 0 made
+  // every trend visually plunge to the floor (v3.6.34). The pills row still
+  // shows the live count so the user can see this week's progress.
+  var sparkValues = weeklyValues.slice(0, -1);
   var rowHtml = '<button type="button" class="body-rw-row' + (expanded ? ' is-expanded' : '') +
     '" data-rw-muscle="' + escapeAttr(muscle) + '">' +
     '<div class="body-rw-muscle">' + escapeHtml(muscle) + '</div>' +
     '<div class="body-rw-pills">' + pills + '</div>' +
-    '<div class="body-rw-spark">' + _vtSparklineSvg(weeklyValues) + '</div>' +
+    '<div class="body-rw-spark">' + _vtSparklineSvg(sparkValues) + '</div>' +
     '<div class="body-rw-avg">' + avgLabel + '</div>' +
     '</button>';
   if (expanded) rowHtml += _bodyRwExpandHtml(muscle);
