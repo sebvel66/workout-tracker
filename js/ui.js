@@ -2859,6 +2859,10 @@ async function loadAndRenderBodyRecentWeeks() {
     slot.innerHTML = '<div class="body-view-section-empty">Sign in to see recent weeks.</div>';
     return;
   }
+  // Concurrent calls (e.g. rapid window-toggle clicks landing in Task 3)
+  // are silently dropped while a fetch is in flight. The Task 3 toggle
+  // path is responsible for triggering a fresh fetch on settle if the
+  // user kept changing inputs.
   if (bodyRecentWeeksState.inFlight) return;
   bodyRecentWeeksState.inFlight = true;
   try {
