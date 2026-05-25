@@ -2772,10 +2772,17 @@ async function loadAndRenderBodyRecentWeeks() {
     slot.innerHTML = '<div class="body-view-section-empty">Sign in to see recent weeks.</div>';
     return;
   }
-  // Concurrent calls (e.g. rapid window-toggle clicks landing in Task 3)
-  // are silently dropped while a fetch is in flight. The Task 3 toggle
-  // path is responsible for triggering a fresh fetch on settle if the
-  // user kept changing inputs.
+  // Cache hit: re-entering Body with data already loaded for the current
+  // window — render from memory, no spinner, no fetch. Pills still
+  // re-evaluate against the live coachingProfile bands inside the render.
+  var cached = bodyRecentWeeksState.data;
+  if (cached && cached.weeks && cached.weeks.length === bodyRecentWeeksState.weeks) {
+    renderBodyRecentWeeks();
+    return;
+  }
+  // Concurrent calls (rapid window-toggle clicks) are dropped here; the
+  // post-settle check at the bottom re-fires so the user's FINAL choice
+  // wins even if intermediate clicks landed during a fetch.
   if (bodyRecentWeeksState.inFlight) return;
   bodyRecentWeeksState.inFlight = true;
   try {
@@ -2788,6 +2795,12 @@ async function loadAndRenderBodyRecentWeeks() {
       escapeHtml(err.message || 'unknown error') + '</div>';
   } finally {
     bodyRecentWeeksState.inFlight = false;
+  }
+  // If the window changed mid-flight, the data we just stored is stale.
+  // Re-fire — the cache check above will pass once the latest lands.
+  var settled = bodyRecentWeeksState.data;
+  if (settled && settled.weeks && settled.weeks.length !== bodyRecentWeeksState.weeks) {
+    loadAndRenderBodyRecentWeeks();
   }
 }
 
@@ -8828,6 +8841,7 @@ document.getElementById('bodyView').addEventListener('click', function(e) {
     bodyRecentWeeksState.data = null;
     renderBodyRecentWeeks(); // immediately re-render to show "Loading…"
     loadAndRenderBodyRecentWeeks();
+    return;
   }
   var rowBtn = e.target.closest && e.target.closest('[data-rw-muscle]');
   if (rowBtn) {
