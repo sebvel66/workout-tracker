@@ -2007,6 +2007,82 @@ body[data-view="log"] #logView { display: block; }
   font-size: 13px;
 }
 
+/* Body tab "Recent weeks" section (v3.6.32). Per-muscle row: label,
+ * horizontally laid-out weekly pills, sparkline, weekly average. Pills
+ * reuse the pv-* classes from Body chips so coloring stays consistent
+ * across surfaces. Drops the sparkline on narrow viewports. */
+.body-rw-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 0 10px;
+}
+.body-rw-controls .body-rw-group {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.body-rw-controls button {
+  padding: 6px 10px;
+  background: var(--surface2);
+  color: var(--text);
+  border: 0;
+  border-right: 1px solid var(--border);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  cursor: pointer;
+}
+.body-rw-controls button:last-child { border-right: 0; }
+.body-rw-controls button.active {
+  background: var(--accent);
+  color: var(--bg);
+}
+.body-rw-row {
+  display: grid;
+  grid-template-columns: 80px 1fr 60px 40px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.body-rw-row:last-child { border-bottom: 0; }
+.body-rw-muscle {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.body-rw-pills {
+  display: flex;
+  gap: 3px;
+  overflow-x: auto;
+}
+.body-rw-pill {
+  flex: 0 0 auto;
+  min-width: 26px;
+  padding: 3px 6px;
+  text-align: center;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.body-rw-spark { color: var(--text2); }
+.body-rw-spark .vt-spark { width: 56px; height: 22px; display: block; }
+.body-rw-avg {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  text-align: right;
+}
+/* Narrow viewports: drop the sparkline so pills + avg still fit. */
+@media (max-width: 420px) {
+  .body-rw-row { grid-template-columns: 70px 1fr 40px; }
+  .body-rw-spark { display: none; }
+}
+
 /* Analyze-chat: in-modal Q&A on the analyze review (v3.5.3). Rides the
  * analyze prompt cache via /api/generate-plan mode=analyze_chat. Each
  * Q/A pair renders as right-aligned (you) / left-aligned (coach) bubbles

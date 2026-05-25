@@ -2589,6 +2589,27 @@ function closeHistory() {
   historyEditMode = false;
 }
 
+// Body tab "Recent weeks" — historical per-muscle weekly volume on the
+// Body tab (v3.6.32+). Replaces the old hamburger Volume Trends modal.
+// Shares fetchVolumeTrends data with the now-gone modal. State persists
+// window + mode in localStorage so the choice sticks across visits.
+var bodyRecentWeeksState = {
+  weeks: 8,                 // 4 | 8 | 12
+  mode: 'fractional',       // 'primary' | 'fractional'
+  data: null,               // last fetchVolumeTrends result
+  expandedMuscle: null,     // null | muscle_group (used in Task 4)
+  inFlight: false,
+};
+
+(function hydrateBodyRecentWeeksState() {
+  try {
+    var w = parseInt(localStorage.getItem('bodyRecentWeeks.weeks'), 10);
+    if (w === 4 || w === 8 || w === 12) bodyRecentWeeksState.weeks = w;
+    var m = localStorage.getItem('bodyRecentWeeks.mode');
+    if (m === 'primary' || m === 'fractional') bodyRecentWeeksState.mode = m;
+  } catch (_) {}
+})();
+
 // Volume trends dashboard (v3.5.4). Hamburger entry → modal table with
 // muscle groups as rows, last N weeks as columns, inline-SVG sparklines
 // per muscle. Default 8 weeks; selectable 4/8/12. Fetches via
@@ -2762,6 +2783,14 @@ async function renderBodyView() {
   h += '<div id="bodyViewPlannedSlot"><div class="body-view-section-empty">Loading…</div></div>';
   h += '</div>';
 
+  // Section 3: Recent weeks (v3.6.32) — per-muscle weekly volume across
+  // the selected window, color-coded against MEV/MAV/MRV bands in the
+  // selected mode. Loaded async like the other two sections.
+  h += '<div class="body-view-section">';
+  h += '<div class="body-view-section-label">Recent weeks</div>';
+  h += '<div id="bodyViewRecentWeeksSlot"><div class="body-view-section-empty">Loading…</div></div>';
+  h += '</div>';
+
   body.innerHTML = h;
 
   // Persist the reference panel's open/closed state across visits.
@@ -2774,6 +2803,10 @@ async function renderBodyView() {
       } catch (_) {}
     });
   }
+
+  // Fire the Recent weeks fetch in parallel — it doesn't depend on the
+  // week summary. Errors render inline; don't bubble.
+  loadAndRenderBodyRecentWeeks();
 
   // Both sections fill from the same week summary.
   if (!userId) {
@@ -2817,6 +2850,91 @@ async function renderBodyView() {
     var pslotE = document.getElementById('bodyViewPlannedSlot');
     if (pslotE) pslotE.innerHTML = '<div class="body-view-section-empty">Couldn\'t load this week\'s plan.</div>';
   }
+}
+
+async function loadAndRenderBodyRecentWeeks() {
+  var slot = document.getElementById('bodyViewRecentWeeksSlot');
+  if (!slot) return;
+  if (!userId) {
+    slot.innerHTML = '<div class="body-view-section-empty">Sign in to see recent weeks.</div>';
+    return;
+  }
+  if (bodyRecentWeeksState.inFlight) return;
+  bodyRecentWeeksState.inFlight = true;
+  try {
+    var data = await fetchVolumeTrends(userId, bodyRecentWeeksState.weeks);
+    bodyRecentWeeksState.data = data;
+    renderBodyRecentWeeks();
+  } catch (err) {
+    console.error('loadAndRenderBodyRecentWeeks error:', err);
+    slot.innerHTML = '<div class="body-view-section-empty">Couldn\'t load: ' +
+      escapeHtml(err.message || 'unknown error') + '</div>';
+  } finally {
+    bodyRecentWeeksState.inFlight = false;
+  }
+}
+
+// Pure-render: takes whatever is in bodyRecentWeeksState.data and paints
+// the slot. Used by both the initial fetch and (in Task 3) the mode
+// toggle, which re-paints without re-fetching.
+function renderBodyRecentWeeks() {
+  var slot = document.getElementById('bodyViewRecentWeeksSlot');
+  if (!slot) return;
+  var data = bodyRecentWeeksState.data;
+  if (!data) { slot.innerHTML = '<div class="body-view-section-empty">Loading…</div>'; return; }
+  if (!data.muscles || !data.muscles.length) {
+    slot.innerHTML = '<div class="body-view-section-empty">No completed sets in the last ' +
+      bodyRecentWeeksState.weeks + ' weeks.</div>';
+    return;
+  }
+  var mode = bodyRecentWeeksState.mode;
+  var byMuscle = mode === 'primary' ? data.byMusclePrimary : data.byMuscle;
+  var averages = mode === 'primary' ? data.averagesPrimary : data.averages;
+  var rowsHtml = '';
+  for (var mi = 0; mi < data.muscles.length; mi++) {
+    var m = data.muscles[mi];
+    var arr = byMuscle[m] || [];
+    rowsHtml += _bodyRwRowHtml(m, arr, averages[m]);
+  }
+  slot.innerHTML = rowsHtml;
+}
+
+function _bodyRwRowHtml(muscle, weeklyValues, avg) {
+  var band = muscleVolumeBand(muscle, bodyRecentWeeksState.mode);
+  // Fall back to the other mode's band so we don't render a grey strip
+  // when one mode is unconfigured (same fallback policy as _dualChipRowsHtml).
+  var bandSource = bodyRecentWeeksState.mode;
+  if (!band) {
+    var other = bodyRecentWeeksState.mode === 'primary' ? 'fractional' : 'primary';
+    var fb = muscleVolumeBand(muscle, other);
+    if (fb) { band = fb; bandSource = other + ' (fallback)'; }
+  }
+  var pills = '';
+  for (var wi = 0; wi < weeklyValues.length; wi++) {
+    var v = weeklyValues[wi] || 0;
+    var label = (v === Math.floor(v)) ? String(v) : v.toFixed(1);
+    var cls;
+    var title;
+    if (v === 0) {
+      cls = 'pv-empty';
+      title = '0 sets';
+    } else if (!band) {
+      cls = 'pv-empty';
+      title = 'No band for ' + muscle;
+    } else {
+      cls = muscleBandStatusCssClass(muscleBandStatus(v, band));
+      title = 'MEV ' + band.mev + ' · MAV ' + band.mavLow + '-' + band.mavHigh +
+              ' · MRV ' + band.mrv + ' (' + bandSource + ')';
+    }
+    pills += '<span class="body-rw-pill ' + cls + '" title="' + escapeAttr(title) + '">' + label + '</span>';
+  }
+  var avgLabel = (avg == null) ? '—' : ((avg === Math.floor(avg)) ? String(avg) : avg.toFixed(1));
+  return '<div class="body-rw-row" data-muscle="' + escapeAttr(muscle) + '">' +
+    '<div class="body-rw-muscle">' + escapeHtml(muscle) + '</div>' +
+    '<div class="body-rw-pills">' + pills + '</div>' +
+    '<div class="body-rw-spark">' + _vtSparklineSvg(weeklyValues) + '</div>' +
+    '<div class="body-rw-avg">' + avgLabel + '</div>' +
+    '</div>';
 }
 
 // Collapsible reference panel for the Body view (v3.6.22): plain-language
