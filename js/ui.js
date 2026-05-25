@@ -2907,13 +2907,11 @@ function _bodyRwControlsHtml() {
   var mode = bodyRecentWeeksState.mode;
   var weeks = bodyRecentWeeksState.weeks;
   function modeBtn(val, label) {
-    var active = val === mode ? ' active' : '';
-    return '<button type="button" class="' + (active ? 'active' : '') +
+    return '<button type="button" class="' + (val === mode ? 'active' : '') +
       '" data-rw-mode="' + val + '">' + label + '</button>';
   }
   function weekBtn(val) {
-    var active = val === weeks ? ' active' : '';
-    return '<button type="button" class="' + (active ? 'active' : '') +
+    return '<button type="button" class="' + (val === weeks ? 'active' : '') +
       '" data-rw-weeks="' + val + '">' + val + 'w</button>';
   }
   return '<div class="body-rw-controls">' +
