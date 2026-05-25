@@ -2045,7 +2045,16 @@ body[data-view="log"] #logView { display: block; }
   gap: 8px;
   padding: 6px 0;
   border-bottom: 1px solid var(--border);
+  /* row is a <button> now (Task 4 expand) — neutralize default styling */
+  width: 100%;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  text-align: left;
 }
+.body-rw-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.body-rw-row.is-expanded { background: var(--surface2); }
 .body-rw-row:last-child { border-bottom: 0; }
 .body-rw-muscle {
   font-family: 'JetBrains Mono', monospace;
@@ -2081,6 +2090,35 @@ body[data-view="log"] #logView { display: block; }
 @media (max-width: 420px) {
   .body-rw-row { grid-template-columns: 70px 1fr 40px; }
   .body-rw-spark { display: none; }
+}
+.body-rw-expand {
+  padding: 8px 0 12px 80px;  /* indent under the muscle label */
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.body-rw-exp-line {
+  display: grid;
+  grid-template-columns: 80px 1fr;
+  gap: 8px;
+  align-items: center;
+}
+.body-rw-exp-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text2);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.body-rw-exp-band {
+  grid-column: 2 / 3;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text2);
+}
+@media (max-width: 420px) {
+  .body-rw-expand { padding-left: 70px; }
 }
 
 /* Analyze-chat: in-modal Q&A on the analyze review (v3.5.3). Rides the

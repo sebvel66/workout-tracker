@@ -2921,9 +2921,8 @@ function _bodyRwControlsHtml() {
 }
 
 function _bodyRwRowHtml(muscle, weeklyValues, avg) {
+  var expanded = bodyRecentWeeksState.expandedMuscle === muscle;
   var band = muscleVolumeBand(muscle, bodyRecentWeeksState.mode);
-  // Fall back to the other mode's band so we don't render a grey strip
-  // when one mode is unconfigured (same fallback policy as _dualChipRowsHtml).
   var bandSource = bodyRecentWeeksState.mode;
   if (!band) {
     var other = bodyRecentWeeksState.mode === 'primary' ? 'fractional' : 'primary';
@@ -2950,11 +2949,50 @@ function _bodyRwRowHtml(muscle, weeklyValues, avg) {
     pills += '<span class="body-rw-pill ' + cls + '" title="' + escapeAttr(title) + '">' + label + '</span>';
   }
   var avgLabel = (avg == null) ? '—' : ((avg === Math.floor(avg)) ? String(avg) : avg.toFixed(1));
-  return '<div class="body-rw-row" data-muscle="' + escapeAttr(muscle) + '">' +
+  var rowHtml = '<button type="button" class="body-rw-row' + (expanded ? ' is-expanded' : '') +
+    '" data-rw-muscle="' + escapeAttr(muscle) + '">' +
     '<div class="body-rw-muscle">' + escapeHtml(muscle) + '</div>' +
     '<div class="body-rw-pills">' + pills + '</div>' +
     '<div class="body-rw-spark">' + _vtSparklineSvg(weeklyValues) + '</div>' +
     '<div class="body-rw-avg">' + avgLabel + '</div>' +
+    '</button>';
+  if (expanded) rowHtml += _bodyRwExpandHtml(muscle);
+  return rowHtml;
+}
+
+// Inline detail panel for an expanded muscle row — shows BOTH primary
+// and fractional weekly numbers plus the per-mode band readout. Lets
+// the user compare counts side-by-side without flipping the section's
+// global mode toggle.
+function _bodyRwExpandHtml(muscle) {
+  var data = bodyRecentWeeksState.data;
+  if (!data) return '';
+  var primArr = (data.byMusclePrimary && data.byMusclePrimary[muscle]) || [];
+  var fracArr = (data.byMuscle && data.byMuscle[muscle]) || [];
+  function strip(values, mode) {
+    var band = muscleVolumeBand(muscle, mode);
+    var pills = '';
+    for (var i = 0; i < values.length; i++) {
+      var v = values[i] || 0;
+      var label = (v === Math.floor(v)) ? String(v) : v.toFixed(1);
+      var cls;
+      if (v === 0) cls = 'pv-empty';
+      else if (!band) cls = 'pv-empty';
+      else cls = muscleBandStatusCssClass(muscleBandStatus(v, band));
+      pills += '<span class="body-rw-pill ' + cls + '">' + label + '</span>';
+    }
+    var bandTxt = band
+      ? ('MEV ' + band.mev + ' · MAV ' + band.mavLow + '-' + band.mavHigh + ' · MRV ' + band.mrv)
+      : 'no band';
+    return '<div class="body-rw-exp-line">' +
+      '<div class="body-rw-exp-label">' + mode + '</div>' +
+      '<div class="body-rw-pills">' + pills + '</div>' +
+      '<div class="body-rw-exp-band">' + escapeHtml(bandTxt) + '</div>' +
+      '</div>';
+  }
+  return '<div class="body-rw-expand">' +
+    strip(primArr, 'primary') +
+    strip(fracArr, 'fractional') +
     '</div>';
 }
 
@@ -8884,6 +8922,14 @@ document.getElementById('bodyView').addEventListener('click', function(e) {
     bodyRecentWeeksState.data = null;
     renderBodyRecentWeeks(); // immediately re-render to show "Loading…"
     loadAndRenderBodyRecentWeeks();
+  }
+  var rowBtn = e.target.closest && e.target.closest('[data-rw-muscle]');
+  if (rowBtn) {
+    var m2 = rowBtn.getAttribute('data-rw-muscle');
+    bodyRecentWeeksState.expandedMuscle =
+      (bodyRecentWeeksState.expandedMuscle === m2) ? null : m2;
+    renderBodyRecentWeeks();
+    return;
   }
 });
 // Log view launchpad cards open the existing modals.
