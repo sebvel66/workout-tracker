@@ -2044,7 +2044,6 @@ body[data-view="log"] #logView { display: block; }
   align-items: center;
   gap: 8px;
   padding: 6px 0;
-  border-bottom: 1px solid var(--border);
   /* row is a <button> now (Task 4 expand) — neutralize default styling */
   width: 100%;
   background: transparent;
@@ -2056,6 +2055,7 @@ body[data-view="log"] #logView { display: block; }
 .body-rw-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .body-rw-row.is-expanded { background: var(--surface2); }
 .body-rw-row:last-child { border-bottom: 0; }
+.body-rw-expand:last-child { border-bottom: 0; }
 .body-rw-muscle {
   font-family: 'JetBrains Mono', monospace;
   font-size: 12px;

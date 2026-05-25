@@ -2923,6 +2923,8 @@ function _bodyRwControlsHtml() {
 function _bodyRwRowHtml(muscle, weeklyValues, avg) {
   var expanded = bodyRecentWeeksState.expandedMuscle === muscle;
   var band = muscleVolumeBand(muscle, bodyRecentWeeksState.mode);
+  // Fall back to the other mode's band so we don't render a grey strip
+  // when one mode is unconfigured (same fallback policy as _dualChipRowsHtml).
   var bandSource = bodyRecentWeeksState.mode;
   if (!band) {
     var other = bodyRecentWeeksState.mode === 'primary' ? 'fractional' : 'primary';
