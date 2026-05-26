@@ -1956,7 +1956,9 @@ body[data-view="log"] #logView { display: block; }
   align-items: center;
   gap: 8px;
   padding: 6px 0;
-  /* row is a <button> now (Task 4 expand) — neutralize default styling */
+  /* <div role="button"> with explicit resets — keeps appearance neutral
+   * regardless of platform div defaults. (Row was briefly a <button> in
+   * v3.6.32 but switched to a div in v3.7.0 to allow nested pill buttons.) */
   width: 100%;
   background: transparent;
   border: 0;
@@ -1989,7 +1991,7 @@ body[data-view="log"] #logView { display: block; }
   border-radius: 4px;
   white-space: nowrap;
 }
-button.body-rw-pill { cursor: pointer; border: 0; font: inherit; line-height: inherit; color: inherit; }
+button.body-rw-pill { cursor: pointer; border: 0; background: transparent; font: inherit; line-height: inherit; color: inherit; }
 .body-rw-pill.is-selected { outline: 2px solid var(--accent); outline-offset: 1px; }
 .body-rw-spark { color: var(--text2); }
 .body-rw-spark .vt-spark { width: 56px; height: 22px; display: block; }
