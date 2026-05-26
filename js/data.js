@@ -62,11 +62,14 @@ var suggestedDayIndex = null;
 
 var historicalCache = {};     // dayIndex -> state (read-only past workouts)
 // Which plan-day indexes have any workout in history (today or past) for
-// the active plan. Populated once at hydrate via a single cheap query so
-// the dropdown completion dot renders correctly on first paint — previously
-// it required selecting a day to lazy-load historicalCache[i], leaving
-// non-focused days undotted on hard reload.
-var daysWithHistory = {};     // { [dayIndex]: true }
+// the active plan, scoped to the CURRENT WEEK (Sun-anchored). Drives the
+// completion dot on the dropdown so the indicator reflects "did this day
+// this week" rather than "ever did this day on this plan." Populated once
+// at hydrate via a single cheap query so the dot renders on first paint.
+// v3.7.2: was previously lifetime-scoped (every day_index ever done on
+// the active plan) which made every day-tab show a dot once the plan had
+// been running for a few weeks — the indicator stopped being useful.
+var dayIndicesDoneThisWeek = {};     // { [dayIndex]: true }
 var planCache = {};           // planId -> plan blob
 var exerciseIdCache = {};     // normName -> uuid
 
@@ -157,7 +160,7 @@ function saveHydrationSnapshot() {
       planTitle: plan.title || 'Workout Tracker',
       planWeek: planWeekLabel(plan) || plan.week || '',
       currentDay: currentDay,
-      daysWithHistory: daysWithHistory || {},
+      dayIndicesDoneThisWeek: dayIndicesDoneThisWeek || {},
       todayPlanStates: todayPlanStates || {},
       todayAdHocs: todayAdHocs || []
     };
@@ -462,7 +465,7 @@ async function loadHistorical(di) {
   if (historicalCache[di]) return historicalCache[di];
   // Scope to the active plan so a brand-new plan's Day N doesn't pull in
   // the most recent Day N from a previous plan as "historical". Mirrors
-  // the plan_id filter in loadDaysWithHistory.
+  // the plan_id filter in loadDayIndicesDoneThisWeek.
   if (!activePlanId) return null;
   try {
     var bounds = sessionBounds();
@@ -591,29 +594,49 @@ async function loadSuggestedDayIndex() {
   suggestedDayIndex = (res.data[0].day_index + 1) % plan.days.length;
 }
 
-// Populate daysWithHistory (used by buildTabs for the completion dot)
-// with one cheap query: every distinct day_index that has a workout row
-// on the currently active plan. Payload is a few ints. Runs once per
-// hydrate so the dropdown dots render correctly on first paint —
-// historicalCache is still lazy-loaded on tab selection for the full
-// state, but the dot check no longer depends on it.
-async function loadDaysWithHistory() {
-  daysWithHistory = {};
+// Populate dayIndicesDoneThisWeek (used by buildTabs for the completion
+// dot in the dropdown). Scoped to the CURRENT week (Sun-anchored, same
+// convention as everywhere else in the app) and the currently active
+// plan. A day_index is included only when at least one set on that
+// workout has done=true — matches fetchVolumeTrends's
+// donePlanDaysCurrentWeek semantic so abandoned workouts don't falsely
+// dot a day.
+//
+// v3.7.2: previously this was lifetime-scoped (every day_index ever
+// done on the active plan), which made every dropdown entry show a dot
+// once the plan had been running for multiple weeks. The dot stopped
+// discriminating; the user reported "day 1 shows complete even though I
+// did day 4 first this week."
+async function loadDayIndicesDoneThisWeek() {
+  dayIndicesDoneThisWeek = {};
   if (!activePlanId || !userId) return;
+  var todayStr = sessionTodayDateString();
+  var weekStart = weekStartForLocalDate(new Date(todayStr + 'T00:00:00'));
+  var weekEnd = addDaysToDateString(weekStart, 6);
   var res = await sb.from('workouts')
-    .select('day_index')
+    .select('day_index, sets(done)')
     .eq('user_id', userId)
     .eq('plan_id', activePlanId)
-    .not('day_index', 'is', null);
+    .not('day_index', 'is', null)
+    .gte('performed_on', weekStart)
+    .lte('performed_on', weekEnd);
   if (res.error) {
-    // Non-fatal — dots just won't show for non-focused days, matching the
-    // pre-fix behavior. Log so we notice in dev.
-    console.error('loadDaysWithHistory error:', res.error);
+    // Non-fatal — dots just won't show for non-focused days. Log so we
+    // notice in dev.
+    console.error('loadDayIndicesDoneThisWeek error:', res.error);
     return;
   }
   var rows = res.data || [];
   for (var i = 0; i < rows.length; i++) {
-    if (rows[i].day_index != null) daysWithHistory[rows[i].day_index] = true;
+    var row = rows[i];
+    if (row.day_index == null) continue;
+    var sets = row.sets || [];
+    for (var si = 0; si < sets.length; si++) {
+      if (sets[si] && sets[si].done) {
+        dayIndicesDoneThisWeek[row.day_index] = true;
+        break;
+      }
+    }
   }
 }
 
@@ -3828,13 +3851,13 @@ async function savePlanAsActive(newPlan) {
   todayState = null;
   todayPlanStates = {};
   historicalCache = {};
-  daysWithHistory = {};
+  dayIndicesDoneThisWeek = {};
   exerciseIdCache = {};
   currentDay = 0;
 
-  // Repopulate days-with-history for the new active plan so dots render
+  // Repopulate this-week's done-day indices for the new active plan so dots render
   // correctly in buildTabs below. Cheap query; new plans return nothing.
-  await loadDaysWithHistory();
+  await loadDayIndicesDoneThisWeek();
 
   document.getElementById('emptyState').style.display = 'none';
   document.getElementById('summaryBar').style.display = 'flex';
@@ -3868,13 +3891,13 @@ async function activateExistingPlan(planId) {
   todayState = null;
   todayPlanStates = {};
   historicalCache = {};
-  daysWithHistory = {};
+  dayIndicesDoneThisWeek = {};
   exerciseIdCache = {};
   currentDay = 0;
 
-  // Repopulate days-with-history for the new active plan so dots render
+  // Repopulate this-week's done-day indices for the new active plan so dots render
   // correctly in buildTabs below. Cheap query; new plans return nothing.
-  await loadDaysWithHistory();
+  await loadDayIndicesDoneThisWeek();
 
   document.getElementById('emptyState').style.display = 'none';
   document.getElementById('summaryBar').style.display = 'flex';
@@ -3910,7 +3933,7 @@ async function endActivePlan() {
   todayState = null;
   todayPlanStates = {};
   historicalCache = {};
-  daysWithHistory = {};
+  dayIndicesDoneThisWeek = {};
   exerciseIdCache = {};
   currentDay = 0;
   suggestedDayIndex = null;

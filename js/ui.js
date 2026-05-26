@@ -523,13 +523,14 @@ function buildTabs() {
       var d = plan.days[i];
       var planDayState = todayPlanStates[i];
       var hasToday = planDayState && Object.keys(planDayState.exercises || {}).length > 0;
-      // daysWithHistory is populated once at hydrate with every plan-day
-      // index that has a workout row on the active plan — lets the dot
-      // render correctly on first paint without lazy-loading per-day
-      // historicalCache state. historicalCache is still checked as a
-      // fallback so dots stay correct after a tab selection populates it
-      // (e.g., if daysWithHistory was stale for any reason).
-      var hasData = hasToday || daysWithHistory[i] || historicalCache[i];
+      // dayIndicesDoneThisWeek (v3.7.2) is populated on hydrate with the
+      // active-plan day indices that have at least one done set in the
+      // CURRENT week — drives "did this day this week" not "ever did this
+      // day." hasToday covers today's in-session progress so the dot is
+      // live as you log sets. historicalCache is intentionally NOT
+      // consulted: it can hold a pre-today workout from any prior week,
+      // which would re-introduce the stale-dot bug we're fixing.
+      var hasData = hasToday || dayIndicesDoneThisWeek[i];
       var dot = hasData ? '● ' : '';
       var label = d.short ? d.short + ' — ' + (d.name || '') : (d.name || 'Day ' + (i + 1));
       var inProg = planDayState && planDayState.workoutId && planDayState.startedAt && !planDayState.endedAt;

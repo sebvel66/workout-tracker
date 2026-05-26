@@ -7,7 +7,7 @@
 
 // Bump this on every deploy. Displayed at the bottom of the app so stale-
 // cache issues can be diagnosed from the client ("which version am I on?").
-var APP_VERSION = 'v3.7.1';
+var APP_VERSION = 'v3.7.2';
 
 // Paint the version tag in the bottom-right as soon as APP_VERSION is declared.
 // DOM is already parsed here (all the script tags sit at the end of <body>).
@@ -39,7 +39,10 @@ function __removeRefreshingPill() {
     plan = blob.plan;
     planCache[activePlanId] = plan;
     currentDay = blob.currentDay;
-    daysWithHistory = blob.daysWithHistory || {};
+    // v3.7.2: cache field was renamed from daysWithHistory; read both
+    // for one-deploy back-compat so warm boots from an old cache still
+    // paint dots (the fresh fetch below will replace it shortly anyway).
+    dayIndicesDoneThisWeek = blob.dayIndicesDoneThisWeek || blob.daysWithHistory || {};
     sessionTodayStart = dayBounds(new Date()).start;
     // Today-state restore is gated on the cache having been saved on this
     // same local calendar day. Yesterday's snapshot can carry an empty (or
@@ -82,7 +85,7 @@ function __removeRefreshingPill() {
     console.error('paintFromCache failed:', err);
     clearHydrationSnapshot();
     activePlanId = null; plan = null;
-    todayPlanStates = {}; todayAdHocs = []; daysWithHistory = {};
+    todayPlanStates = {}; todayAdHocs = []; dayIndicesDoneThisWeek = {};
     __hydratedFromCache = false;
   }
 })();
@@ -125,7 +128,7 @@ async function hydrate() {
       // exercise library + locations in parallel. The library is needed
       // by stateFromWorkout (resolves exerciseMeta names) and the picker;
       // locations supplies gym-tag rendering. Plan-anchored queries
-      // (daysWithHistory, suggestedDayIndex) are skipped — irrelevant
+      // (dayIndicesDoneThisWeek, suggestedDayIndex) are skipped — irrelevant
       // when there's no plan.
       var bounds = sessionBounds();
       var pAdHocs = sb.from('workouts').select('*, sets(*)')
@@ -222,7 +225,7 @@ async function hydrate() {
     //   - today's workouts: drives focus hierarchy + populates today-states
     //   - exercise library: needed by seedExerciseIdCache so set-done writes
     //     hit the cache instead of falling through to a per-name lookup
-    //   - daysWithHistory: drives the completion dot in buildTabs
+    //   - dayIndicesDoneThisWeek: drives the completion dot in buildTabs
     //
     // Three queries fire in parallel but are NOT awaited for first paint
     // (Phase 2). They re-render their consumers when they complete:
@@ -242,7 +245,7 @@ async function hydrate() {
       .lt('performed_at', bounds.end.toISOString())
       .order('performed_at', { ascending: true });
     var pLibrary = loadExerciseLibrary();
-    var pDaysWithHistory = loadDaysWithHistory();
+    var pDayIndicesDoneThisWeek = loadDayIndicesDoneThisWeek();
     // Phase 2 (background, non-blocking).
     var pLocations = loadLocations();
     var pSuggestedDay = loadSuggestedDayIndex();
@@ -251,7 +254,7 @@ async function hydrate() {
     // since all three are already in flight.
     var wRes;
     try {
-      var phase1 = await Promise.all([pWorkouts, pLibrary, pDaysWithHistory]);
+      var phase1 = await Promise.all([pWorkouts, pLibrary, pDayIndicesDoneThisWeek]);
       wRes = phase1[0];
     } catch (err) {
       console.error('Hydrate phase 1 error:', err);
