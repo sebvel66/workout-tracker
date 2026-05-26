@@ -954,6 +954,10 @@ function _accumulatePlanExercisePrimary(ex, out) {
 //     muscles:  [muscle_group, ...]            // sorted by fractional total desc
 //     byMuscle:        { mg: [n, ...] }        // fractional, one entry per week
 //     byMusclePrimary: { mg: [n, ...] }        // primary-only, one entry per week
+//     byMuscleWeekExercises: { mg: [{ exercises: [{ name, sets, role }] }, ...] }
+//                                                // per-(muscle, weekIdx) breakdown for pill drilldown
+//     donePlanDaysCurrentWeek: { dayIndex: true }
+//                                                // active-plan day indices done in the latest week
 //     totals / averages:                fractional totals/avgs per muscle
 //     totalsPrimary / averagesPrimary:  primary-only totals/avgs per muscle
 //   }
@@ -976,9 +980,10 @@ async function fetchVolumeTrends(userId, weeksBack) {
   }
 
   // One query for the full range. Same embed shape as fetchWeekSummary
-  // so pull through secondary_muscles.
+  // so pull through secondary_muscles. Also fetches day_index (workout
+  // level) and exercise name for the per-week exercise breakdown.
   var res = await sb.from('workouts')
-    .select('plan_id, performed_on, sets(done, exercise_order, exercises!exercise_id(muscle_group, secondary_muscles))')
+    .select('plan_id, day_index, performed_on, sets(done, exercise_order, exercises!exercise_id(name, muscle_group, secondary_muscles))')
     .eq('user_id', userId)
     .gte('performed_on', earliestWeekStart)
     .lte('performed_on', endDate);
@@ -992,12 +997,27 @@ async function fetchVolumeTrends(userId, weeksBack) {
   // Cardio + mobility filtered.
   var byMuscle = {};
   var byMusclePrimary = {};
+  // exercisesByMuscleWeek[muscle][weekIdx] = Map(exerciseName -> { sets, role })
+  // Built as a Map keyed by name so multiple workouts using the same exercise
+  // in the same week aggregate. Finalized to arrays after the loop.
+  var exercisesByMuscleWeek = {};
+  // Day indices of the active plan that have been done in the latest week
+  // (weekIdx === weeksBack - 1). Used to compute "planned remaining" for
+  // the current week's pill drilldown.
+  var donePlanDaysCurrentWeek = {};   // dayIndex -> true
+  var currentWeekIdx = weeksBack - 1;
   var rows = res.data || [];
   for (var ri = 0; ri < rows.length; ri++) {
     var row = rows[ri];
     var ws2 = weekStartForLocalDate(new Date(row.performed_on + 'T00:00:00'));
     var widx = weekIdxByStart[ws2];
     if (widx == null) continue;
+    // Current-week, active-plan, real plan day (not ad-hoc) → record the
+    // day_index so the planned-remaining computation can skip it.
+    if (widx === currentWeekIdx && row.plan_id && row.plan_id === activePlanId
+        && row.day_index != null) {
+      donePlanDaysCurrentWeek[row.day_index] = true;
+    }
     var sets = row.sets || [];
     for (var si = 0; si < sets.length; si++) {
       var s = sets[si];
@@ -1008,13 +1028,41 @@ async function fetchVolumeTrends(userId, weeksBack) {
       if (!primary || primary === 'cardio' || primary === 'mobility') continue;
       _vtAdd(byMuscle, primary, widx, weeksBack, 1);
       _vtAdd(byMusclePrimary, primary, widx, weeksBack, 1);
+      // Per-(muscle, week) primary exercise contribution.
+      _vtAddExercise(exercisesByMuscleWeek, primary, widx, weeksBack, ex.name, 'primary');
       var sec = Array.isArray(ex.secondary_muscles) ? ex.secondary_muscles : [];
       for (var k = 0; k < sec.length; k++) {
         var mg = sec[k];
         if (!mg || mg === primary || mg === 'cardio' || mg === 'mobility') continue;
         _vtAdd(byMuscle, mg, widx, weeksBack, 0.5);
+        _vtAddExercise(exercisesByMuscleWeek, mg, widx, weeksBack, ex.name, 'secondary');
       }
     }
+  }
+
+  // Finalize per-(muscle, weekIdx) exercise breakdowns: Map -> array,
+  // sorted with primary contributions first (each block desc by sets),
+  // then secondary (also desc by sets).
+  var byMuscleWeekExercises = {};
+  var emKeys = Object.keys(exercisesByMuscleWeek);
+  for (var emi = 0; emi < emKeys.length; emi++) {
+    var emK = emKeys[emi];
+    var weeksArr = exercisesByMuscleWeek[emK];
+    var outWeeks = [];
+    for (var wj = 0; wj < weeksArr.length; wj++) {
+      var cell = weeksArr[wj];   // Map or null
+      if (!cell) { outWeeks.push({ exercises: [] }); continue; }
+      var list = [];
+      cell.forEach(function(v, name) {
+        list.push({ name: name, sets: v.sets, role: v.role });
+      });
+      list.sort(function(a, b) {
+        if (a.role !== b.role) return a.role === 'primary' ? -1 : 1;
+        return b.sets - a.sets;
+      });
+      outWeeks.push({ exercises: list });
+    }
+    byMuscleWeekExercises[emK] = outWeeks;
   }
 
   // Totals + averages for both modes. Muscle ordering is driven by the
@@ -1052,6 +1100,8 @@ async function fetchVolumeTrends(userId, weeksBack) {
     muscles: muscles,
     byMuscle: byMuscle,
     byMusclePrimary: byMusclePrimary,
+    byMuscleWeekExercises: byMuscleWeekExercises,
+    donePlanDaysCurrentWeek: donePlanDaysCurrentWeek,
     totals: totals,
     totalsPrimary: totalsPrimary,
     averages: averages,
@@ -1065,6 +1115,31 @@ function _vtAdd(byMuscle, mg, widx, weeksBack, factor) {
     for (var i = 0; i < weeksBack; i++) byMuscle[mg].push(0);
   }
   byMuscle[mg][widx] = Math.round((byMuscle[mg][widx] + factor) * 10) / 10;
+}
+
+// Per-(muscle, weekIdx) exercise breakdown accumulator. Uses Map so
+// repeated workouts using the same exercise in the same week aggregate
+// their done-set count. Promotes role from 'secondary' to 'primary' if
+// the muscle ever appears as the primary contribution for this exercise
+// in this cell (rare — same exercise typically has a single primary
+// muscle, but resolveLibraryRow is the source of truth and could
+// change between rows).
+function _vtAddExercise(by, muscle, widx, weeksBack, name, role) {
+  if (!name) return;
+  if (!by[muscle]) {
+    by[muscle] = [];
+    for (var i = 0; i < weeksBack; i++) by[muscle].push(null);
+  }
+  if (!by[muscle][widx]) by[muscle][widx] = new Map();
+  var cell = by[muscle][widx];
+  var entry = cell.get(name);
+  if (!entry) {
+    cell.set(name, { sets: 1, role: role });
+  } else {
+    entry.sets += 1;
+    // Primary takes precedence if it ever wins.
+    if (role === 'primary' && entry.role !== 'primary') entry.role = 'primary';
+  }
 }
 
 function _vtWeekLabel(weekStart) {
