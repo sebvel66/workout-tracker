@@ -2933,10 +2933,69 @@ function _bodyRwExpandHtml(muscle) {
       '<div class="body-rw-exp-band">' + escapeHtml(bandTxt) + '</div>' +
       '</div>';
   }
-  return '<div class="body-rw-expand">' +
+  var html = '<div class="body-rw-expand">' +
     strip(primArr, 'primary') +
     strip(fracArr, 'fractional') +
     '</div>';
+  // Pill drilldown (v3.7.0): appended below the two-strip panel when
+  // a pill in THIS muscle's row is selected.
+  var sel = bodyRecentWeeksState.selectedPill;
+  if (sel && sel.muscle === muscle) {
+    html += _bodyRwDrilldownHtml(muscle, sel.weekIdx);
+  }
+  return html;
+}
+
+// Pill drilldown panel (v3.7.0). Shows COMPLETED exercises that
+// contributed to the pill's count for the selected week. PLANNED
+// REMAINING (current week only) is appended by Task 4.
+function _bodyRwDrilldownHtml(muscle, weekIdx) {
+  var data = bodyRecentWeeksState.data;
+  if (!data) return '';
+  var mode = bodyRecentWeeksState.mode;
+  var weekLabel = (data.weeks && data.weeks[weekIdx]) ? data.weeks[weekIdx].label : '';
+  var weekExercises = (data.byMuscleWeekExercises && data.byMuscleWeekExercises[muscle])
+    ? data.byMuscleWeekExercises[muscle][weekIdx]
+    : null;
+  var exercises = (weekExercises && weekExercises.exercises) ? weekExercises.exercises : [];
+  // Filter by mode: primary mode shows only primary contributions;
+  // fractional shows both. Contribution math reflects the active mode.
+  var filtered = [];
+  for (var i = 0; i < exercises.length; i++) {
+    var ex = exercises[i];
+    if (mode === 'primary' && ex.role !== 'primary') continue;
+    filtered.push(ex);
+  }
+  var total = 0;
+  var lines = '';
+  for (var j = 0; j < filtered.length; j++) {
+    var e = filtered[j];
+    var perSet = (mode === 'primary' || e.role === 'primary') ? 1.0 : 0.5;
+    var contribution = e.sets * perSet;
+    total += contribution;
+    var contribLabel = (contribution === Math.floor(contribution))
+      ? '+' + contribution
+      : '+' + contribution.toFixed(1);
+    var secondaryTag = (mode === 'fractional' && e.role === 'secondary')
+      ? '<span class="secondary-tag">(secondary)</span>' : '';
+    lines += '<div class="body-rw-drill-line">' +
+      '<div>' + escapeHtml(e.name) + secondaryTag + '</div>' +
+      '<div>' + e.sets + ' sets</div>' +
+      '<div>' + contribLabel + '</div>' +
+      '</div>';
+  }
+  var totalLabel = (total === Math.floor(total)) ? String(total) : total.toFixed(1);
+  var html = '<div class="body-rw-drilldown">';
+  html += '<div class="body-rw-drill-section-label">COMPLETED' +
+    (weekLabel ? ' · week of ' + escapeHtml(weekLabel) : '') + '</div>';
+  if (filtered.length === 0) {
+    html += '<div class="body-rw-drill-line"><div>No completed contributions in this mode.</div><div></div><div></div></div>';
+  } else {
+    html += lines;
+    html += '<div class="body-rw-drill-total">' + totalLabel + ' total</div>';
+  }
+  html += '</div>';
+  return html;
 }
 
 // Collapsible reference panel for the Body view (v3.6.22): plain-language
