@@ -2597,7 +2597,8 @@ var bodyRecentWeeksState = {
   weeks: 8,                 // 4 | 8 | 12
   mode: 'fractional',       // 'primary' | 'fractional'
   data: null,               // last fetchVolumeTrends result
-  expandedMuscle: null,     // null | muscle_group (used in Task 4)
+  expandedMuscle: null,     // null | muscle_group
+  selectedPill: null,       // null | { muscle, weekIdx } — pill drilldown (v3.7.0)
   inFlight: false,
 };
 
@@ -2848,6 +2849,8 @@ function _bodyRwControlsHtml() {
 
 function _bodyRwRowHtml(muscle, weeklyValues, avg) {
   var expanded = bodyRecentWeeksState.expandedMuscle === muscle;
+  var sel = bodyRecentWeeksState.selectedPill;
+  var selectedWeekIdx = (sel && sel.muscle === muscle) ? sel.weekIdx : -1;
   var band = muscleVolumeBand(muscle, bodyRecentWeeksState.mode);
   // Fall back to the other mode's band so we don't render a grey strip
   // when one mode is unconfigured (same fallback policy as _dualChipRowsHtml).
@@ -2874,20 +2877,28 @@ function _bodyRwRowHtml(muscle, weeklyValues, avg) {
       title = 'MEV ' + band.mev + ' · MAV ' + band.mavLow + '-' + band.mavHigh +
               ' · MRV ' + band.mrv + ' (' + bandSource + ')';
     }
-    pills += '<span class="body-rw-pill ' + cls + '" title="' + escapeAttr(title) + '">' + label + '</span>';
+    if (v === 0) {
+      // Non-interactive: zero pills have nothing to drill into.
+      pills += '<span class="body-rw-pill ' + cls + '" title="' + escapeAttr(title) + '">' + label + '</span>';
+    } else {
+      var selCls = (wi === selectedWeekIdx) ? ' is-selected' : '';
+      pills += '<button type="button" class="body-rw-pill ' + cls + selCls +
+        '" data-rw-pill="' + wi + '" data-rw-pill-muscle="' + escapeAttr(muscle) +
+        '" title="' + escapeAttr(title) + '">' + label + '</button>';
+    }
   }
   var avgLabel = (avg == null) ? '—' : ((avg === Math.floor(avg)) ? String(avg) : avg.toFixed(1));
   // Sparkline drops the current (in-progress) week — its mid-week 0 made
   // every trend visually plunge to the floor (v3.6.34). The pills row still
   // shows the live count so the user can see this week's progress.
   var sparkValues = weeklyValues.slice(0, -1);
-  var rowHtml = '<button type="button" class="body-rw-row' + (expanded ? ' is-expanded' : '') +
-    '" data-rw-muscle="' + escapeAttr(muscle) + '">' +
+  var rowHtml = '<div class="body-rw-row' + (expanded ? ' is-expanded' : '') +
+    '" data-rw-muscle="' + escapeAttr(muscle) + '" role="button" tabindex="0">' +
     '<div class="body-rw-muscle">' + escapeHtml(muscle) + '</div>' +
     '<div class="body-rw-pills">' + pills + '</div>' +
     '<div class="body-rw-spark">' + _vtSparklineSvg(sparkValues) + '</div>' +
     '<div class="body-rw-avg">' + avgLabel + '</div>' +
-    '</button>';
+    '</div>';
   if (expanded) rowHtml += _bodyRwExpandHtml(muscle);
   return rowHtml;
 }
@@ -8825,6 +8836,25 @@ document.getElementById('bottomTabBar').addEventListener('click', function(e) {
 // Recent weeks controls — mode toggle re-paints from cache, window
 // toggle re-fetches. Both persist to localStorage.
 document.getElementById('bodyView').addEventListener('click', function(e) {
+  // Pill branch first — pills live INSIDE the row, so stopPropagation
+  // prevents the row's collapse/expand from firing on the same click.
+  var pillBtn = e.target.closest && e.target.closest('[data-rw-pill]');
+  if (pillBtn) {
+    e.stopPropagation();
+    var pillMuscle = pillBtn.getAttribute('data-rw-pill-muscle');
+    var pillWeek = parseInt(pillBtn.getAttribute('data-rw-pill'), 10);
+    if (!pillMuscle || !Number.isFinite(pillWeek)) return;
+    var cur = bodyRecentWeeksState.selectedPill;
+    var same = cur && cur.muscle === pillMuscle && cur.weekIdx === pillWeek;
+    if (same) {
+      bodyRecentWeeksState.selectedPill = null;
+    } else {
+      bodyRecentWeeksState.selectedPill = { muscle: pillMuscle, weekIdx: pillWeek };
+      bodyRecentWeeksState.expandedMuscle = pillMuscle;  // auto-expand
+    }
+    renderBodyRecentWeeks();
+    return;
+  }
   var modeBtn = e.target.closest && e.target.closest('[data-rw-mode]');
   if (modeBtn) {
     var m = modeBtn.getAttribute('data-rw-mode');
@@ -8843,6 +8873,7 @@ document.getElementById('bodyView').addEventListener('click', function(e) {
     bodyRecentWeeksState.weeks = w;
     try { localStorage.setItem('bodyRecentWeeks.weeks', String(w)); } catch (_) {}
     bodyRecentWeeksState.data = null;
+    bodyRecentWeeksState.selectedPill = null;  // weekIdx is invalidated by window change
     renderBodyRecentWeeks(); // immediately re-render to show "Loading…"
     loadAndRenderBodyRecentWeeks();
     return;
@@ -8850,11 +8881,25 @@ document.getElementById('bodyView').addEventListener('click', function(e) {
   var rowBtn = e.target.closest && e.target.closest('[data-rw-muscle]');
   if (rowBtn) {
     var m2 = rowBtn.getAttribute('data-rw-muscle');
-    bodyRecentWeeksState.expandedMuscle =
-      (bodyRecentWeeksState.expandedMuscle === m2) ? null : m2;
+    var wasExpanded = bodyRecentWeeksState.expandedMuscle === m2;
+    bodyRecentWeeksState.expandedMuscle = wasExpanded ? null : m2;
+    // Collapsing OR switching to a different row clears the pill drill.
+    var s = bodyRecentWeeksState.selectedPill;
+    if (s && s.muscle !== bodyRecentWeeksState.expandedMuscle) {
+      bodyRecentWeeksState.selectedPill = null;
+    }
     renderBodyRecentWeeks();
     return;
   }
+});
+// Row is a <div role="button"> — supply Enter/Space activation
+// manually (native <button> would do this for free).
+document.getElementById('bodyView').addEventListener('keydown', function(e) {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  var rowEl = e.target.closest && e.target.closest('[data-rw-muscle]');
+  if (!rowEl || e.target !== rowEl) return;  // ignore key events on inner buttons
+  e.preventDefault();
+  rowEl.click();
 });
 // Log view launchpad cards open the existing modals.
 document.getElementById('logViewBody').addEventListener('click', function(e) {
