@@ -2773,13 +2773,17 @@ async function loadAndRenderBodyRecentWeeks() {
     slot.innerHTML = '<div class="body-view-section-empty">Sign in to see recent weeks.</div>';
     return;
   }
-  // Cache hit: re-entering Body with data already loaded for the current
-  // window — render from memory, no spinner, no fetch. Pills still
-  // re-evaluate against the live coachingProfile bands inside the render.
+  // Stale-while-revalidate (v3.7.1). Paint cached data immediately for a
+  // snappy re-entry, THEN refetch in the background so newly-completed
+  // sets land on the next tick. Previously (v3.6.33) the cache hit
+  // short-circuited the fetch entirely — fine for snappiness but stale
+  // forever until a window-toggle invalidated. User-reported bug: do a
+  // set, switch to Body tab, pill still reads 0. Stale-while-revalidate
+  // gives both snappy + fresh.
   var cached = bodyRecentWeeksState.data;
-  if (cached && cached.weeks && cached.weeks.length === bodyRecentWeeksState.weeks) {
+  var cacheUsable = !!(cached && cached.weeks && cached.weeks.length === bodyRecentWeeksState.weeks);
+  if (cacheUsable) {
     renderBodyRecentWeeks();
-    return;
   }
   // Concurrent calls (rapid window-toggle clicks) are dropped here; the
   // post-settle check at the bottom re-fires so the user's FINAL choice
@@ -2792,8 +2796,12 @@ async function loadAndRenderBodyRecentWeeks() {
     renderBodyRecentWeeks();
   } catch (err) {
     console.error('loadAndRenderBodyRecentWeeks error:', err);
-    slot.innerHTML = '<div class="body-view-section-empty">Couldn\'t load: ' +
-      escapeHtml(err.message || 'unknown error') + '</div>';
+    // Keep cached data visible on error — only surface the message when
+    // there was nothing on screen to begin with.
+    if (!cacheUsable) {
+      slot.innerHTML = '<div class="body-view-section-empty">Couldn\'t load: ' +
+        escapeHtml(err.message || 'unknown error') + '</div>';
+    }
   } finally {
     bodyRecentWeeksState.inFlight = false;
   }
