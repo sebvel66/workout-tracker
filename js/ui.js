@@ -2946,6 +2946,45 @@ function _bodyRwExpandHtml(muscle) {
   return html;
 }
 
+// PLANNED REMAINING for the current week (v3.7.0). Iterates the
+// active plan's days NOT yet done this week, filters each day's
+// exercises by muscle match against the active mode. Superset-aware
+// (mirrors _accumulatePlanDayFrac walking logic).
+function _bodyRwPlannedRemainingForMuscle(muscle, mode) {
+  if (!plan || !Array.isArray(plan.days)) return [];
+  var done = (bodyRecentWeeksState.data && bodyRecentWeeksState.data.donePlanDaysCurrentWeek) || {};
+  var out = [];
+  for (var di = 0; di < plan.days.length; di++) {
+    if (done[di]) continue;
+    var day = plan.days[di];
+    var entries = (day && Array.isArray(day.exercises)) ? day.exercises : [];
+    for (var ei = 0; ei < entries.length; ei++) {
+      var e = entries[ei];
+      var leaves = (e && e.superset === true && Array.isArray(e.exercises)) ? e.exercises : [e];
+      for (var li = 0; li < leaves.length; li++) {
+        var leaf = leaves[li];
+        if (!leaf || !leaf.name) continue;
+        var setsCount = Array.isArray(leaf.sets) ? leaf.sets.length : 0;
+        if (!setsCount) continue;
+        var meta = (typeof resolveLibraryRow === 'function')
+          ? resolveLibraryRow(leaf.name) : null;
+        if (!meta) continue;
+        var role = null;
+        if (meta.muscle_group === muscle) role = 'primary';
+        else if (mode === 'fractional' && Array.isArray(meta.secondary_muscles) && meta.secondary_muscles.indexOf(muscle) !== -1) role = 'secondary';
+        if (!role) continue;
+        out.push({ name: leaf.name, sets: setsCount, role: role });
+      }
+    }
+  }
+  // Sort primary first (desc by sets), then secondary (desc by sets).
+  out.sort(function(a, b) {
+    if (a.role !== b.role) return a.role === 'primary' ? -1 : 1;
+    return b.sets - a.sets;
+  });
+  return out;
+}
+
 // Pill drilldown panel (v3.7.0). Shows COMPLETED exercises that
 // contributed to the pill's count for the selected week. PLANNED
 // REMAINING (current week only) is appended by Task 4.
@@ -2993,6 +3032,29 @@ function _bodyRwDrilldownHtml(muscle, weekIdx) {
   } else {
     html += lines;
     html += '<div class="body-rw-drill-total">' + totalLabel + ' total</div>';
+  }
+  // PLANNED REMAINING (current week only).
+  var currentWeekIdx = data.weeks ? data.weeks.length - 1 : -1;
+  if (weekIdx === currentWeekIdx) {
+    var planned = _bodyRwPlannedRemainingForMuscle(muscle, mode);
+    if (planned.length > 0) {
+      html += '<div class="body-rw-drill-section-label">PLANNED REMAINING</div>';
+      for (var p = 0; p < planned.length; p++) {
+        var pe = planned[p];
+        var perSetP = (mode === 'primary' || pe.role === 'primary') ? 1.0 : 0.5;
+        var contribP = pe.sets * perSetP;
+        var contribPLabel = (contribP === Math.floor(contribP))
+          ? '+' + contribP
+          : '+' + contribP.toFixed(1);
+        var tagP = (mode === 'fractional' && pe.role === 'secondary')
+          ? '<span class="secondary-tag">(secondary)</span>' : '';
+        html += '<div class="body-rw-drill-line">' +
+          '<div>' + escapeHtml(pe.name) + tagP + '</div>' +
+          '<div>' + pe.sets + ' sets prescribed</div>' +
+          '<div>' + contribPLabel + '</div>' +
+          '</div>';
+      }
+    }
   }
   html += '</div>';
   return html;
