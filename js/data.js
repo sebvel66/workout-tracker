@@ -1012,13 +1012,17 @@ async function fetchVolumeTrends(userId, weeksBack) {
     var ws2 = weekStartForLocalDate(new Date(row.performed_on + 'T00:00:00'));
     var widx = weekIdxByStart[ws2];
     if (widx == null) continue;
-    // Current-week, active-plan, real plan day (not ad-hoc) → record the
-    // day_index so the planned-remaining computation can skip it.
+    var sets = row.sets || [];
+    // Current-week, active-plan, real plan day, with at least one done set
+    // (matches fetchWeekSummary's `completedSets > 0` precedent at line
+    // ~1248 — without this, an abandoned workout would falsely mark its
+    // day as done and shrink the planned-remaining list).
     if (widx === currentWeekIdx && row.plan_id && row.plan_id === activePlanId
         && row.day_index != null) {
-      donePlanDaysCurrentWeek[row.day_index] = true;
+      for (var dsi = 0; dsi < sets.length; dsi++) {
+        if (sets[dsi] && sets[dsi].done) { donePlanDaysCurrentWeek[row.day_index] = true; break; }
+      }
     }
-    var sets = row.sets || [];
     for (var si = 0; si < sets.length; si++) {
       var s = sets[si];
       if (!s || !s.done) continue;
