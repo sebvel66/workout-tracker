@@ -7,7 +7,7 @@
 
 // Bump this on every deploy. Displayed at the bottom of the app so stale-
 // cache issues can be diagnosed from the client ("which version am I on?").
-var APP_VERSION = 'v3.7.2';
+var APP_VERSION = 'v3.7.3';
 
 // Paint the version tag in the bottom-right as soon as APP_VERSION is declared.
 // DOM is already parsed here (all the script tags sit at the end of <body>).
@@ -303,11 +303,24 @@ async function hydrate() {
     // Focus hierarchy:
     //   1. An in-progress session (started_at set, ended_at null) wins.
     //   2. Else the lowest plan-day with any today-state.
-    //   3. Else plan day 0.
-    //   4. Else the first ad-hoc.
-    //   5. Else day 0.
+    //   3. Else cached currentDay from a prior session (v3.7.3) — keeps
+    //      the user on the day they last selected so the dropdown's
+    //      browser-native "selected option" checkmark doesn't snap to
+    //      Day 1 on a fresh day.
+    //   4. Else plan day 0.
+    //   5. Else the first ad-hoc.
+    //   6. Else day 0.
     // In-progress winning matters so a user who completed Day 2 today and
     // started Day 3 lands on Day 3 on reload, not the lowest-index Day 2.
+    //
+    // Snapshot the cached value BEFORE the if-chain overwrites it. Only a
+    // numeric, in-bounds plan-day index counts — ad-hoc keys ('ah_…')
+    // from a prior session may reference workouts that have since ended.
+    var cachedCurrentDay = (
+      __hydratedFromCache && plan && Array.isArray(plan.days)
+      && typeof currentDay === 'number' && Number.isFinite(currentDay)
+      && currentDay >= 0 && currentDay < plan.days.length
+    ) ? currentDay : null;
     var inProgressKey = null;
     var planDayKeysAsc = Object.keys(todayPlanStates).map(Number).sort(function(a, b) { return a - b; });
     for (var pk = 0; pk < planDayKeysAsc.length; pk++) {
@@ -330,6 +343,8 @@ async function hydrate() {
       currentDay = inProgressKey;
     } else if (planDayKeysAsc.length) {
       currentDay = planDayKeysAsc[0];
+    } else if (cachedCurrentDay != null) {
+      currentDay = cachedCurrentDay;
     } else if (plan) {
       currentDay = 0;
     } else if (todayAdHocs.length) {
