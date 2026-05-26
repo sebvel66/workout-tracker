@@ -1128,6 +1128,14 @@ function _vtAdd(byMuscle, mg, widx, weeksBack, factor) {
 // in this cell (rare — same exercise typically has a single primary
 // muscle, but resolveLibraryRow is the source of truth and could
 // change between rows).
+//
+// Known limitation: when the same exercise NAME appears with M as
+// primary in one workout and M as secondary in another within the same
+// week (only possible via cross-library-row name collisions — very
+// rare in practice), the role promotes to 'primary' but `sets` counts
+// every contribution at 1×. The drilldown total will then read N
+// instead of the pill's true N - 0.5 per such promoted set. Acceptable
+// gap; if it surfaces, split `sets` into setsPrimary/setsSecondary.
 function _vtAddExercise(by, muscle, widx, weeksBack, name, role) {
   if (!name) return;
   if (!by[muscle]) {
