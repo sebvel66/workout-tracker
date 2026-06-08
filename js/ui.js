@@ -153,6 +153,24 @@ function renderTimedChip(ei, isTimed, meta, ctx) {
   return '<button class="' + classes + '" type="button" data-toggle-timed-ei="' + ei + '">' + label + '</button>';
 }
 
+// v3.7.5: at-a-glance muscles line under the exercise name during a workout.
+// Reads from the substitute's library row when subbed (else the prescribed
+// exercise's), so the label reflects what's actually being worked. Silent
+// when meta missing (unknown ad-hoc) or cardio (muscle classification N/A).
+function renderMusclesWorked(meta) {
+  if (!meta) return '';
+  if (meta.muscle_group === 'cardio') return '';
+  var primary = meta.muscle_group;
+  if (!primary) return '';
+  var secondaries = Array.isArray(meta.secondary_muscles) ? meta.secondary_muscles : [];
+  var html = '<div class="exercise-muscles"><span class="exm-primary">' + escapeHtml(primary) + '</span>';
+  if (secondaries.length) {
+    html += '<span class="exm-secondary"> · ' + escapeHtml(secondaries.join(', ')) + '</span>';
+  }
+  html += '</div>';
+  return html;
+}
+
 // Clamp a form input value to [min, max]; fall back to `fallback` if missing/invalid.
 function clampFormInt(raw, min, max, fallback) {
   var n = raw == null ? NaN : parseInt(String(raw), 10);
@@ -746,7 +764,7 @@ function renderPlanDayExerciseCard(di, ei, planEx, exState, mode, readOnly, badg
   var chipHtml = renderWeightModeChip(ei, weightMode, chipMeta, readOnly ? 'history-readonly' : 'editable', null)
     + renderTimedChip(ei, isTimedRow, chipMeta, readOnly ? 'history-readonly' : 'editable');
   var badgeHtml = badgeLabel ? '<span class="superset-badge">' + escapeHtml(badgeLabel) + '</span>' : '';
-  h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + badgeHtml + escapeHtml(displayName) + prescribedBadge + '</div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(displayName) + '">view recent</button>' + chipHtml + '</div><div class="exercise-status ' + sc + '">' + stat + '</div>' + swapBtn + supersetBtn + '</div>';
+  h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + badgeHtml + escapeHtml(displayName) + prescribedBadge + '</div>' + renderMusclesWorked(chipMeta) + '<button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(displayName) + '">view recent</button>' + chipHtml + '</div><div class="exercise-status ' + sc + '">' + stat + '</div>' + swapBtn + supersetBtn + '</div>';
   if (ex.note) h += '<div class="exercise-note">' + escapeHtml(ex.note) + '</div>';
   h += renderInlineFormNotes(resolveCardExerciseId(ex, exState), ei, readOnly);
   h += '<div class="sets-container">';
@@ -899,7 +917,7 @@ function renderPlanDayExtraCard(di, xei, xState, mode, readOnly, badgeLabel) {
   var xSwapBtn = readOnly ? '' :
     '<button class="card-swap card-swap-session" data-swap-session-ei="' + xei +
     '" aria-label="Swap exercise" title="Swap / recommend" type="button">⇄</button>';
-  h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + xBadgeHtml + escapeHtml(xMeta.name) + '<span class="extras-badge">added</span></div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(xMeta.name) + '">view recent</button>' + xChipHtml + '</div><div class="exercise-status ' + xsc + '">' + xstat + '</div>' + (readOnly ? '' : xSwapBtn + xSupersetBtn + '<button class="card-delete" data-di="' + di + '" data-ei="' + xei + '" aria-label="Delete exercise" type="button">×</button>') + '</div>';
+  h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + xBadgeHtml + escapeHtml(xMeta.name) + '<span class="extras-badge">added</span></div>' + renderMusclesWorked(xMeta) + '<button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(xMeta.name) + '">view recent</button>' + xChipHtml + '</div><div class="exercise-status ' + xsc + '">' + xstat + '</div>' + (readOnly ? '' : xSwapBtn + xSupersetBtn + '<button class="card-delete" data-di="' + di + '" data-ei="' + xei + '" aria-label="Delete exercise" type="button">×</button>') + '</div>';
   h += renderInlineFormNotes(resolveCardExerciseId(null, xState), xei, readOnly);
   h += '<div class="sets-container">';
   var xStdSetNum = 0;
@@ -967,7 +985,7 @@ function renderAdHocExerciseCard(di, ei, exState, badgeLabel) {
     '" title="' + (inBlockAd ? 'Remove from superset' : 'Pair as superset') + '">⟷</button>';
   var swapBtnAd = '<button class="card-swap card-swap-session" data-swap-session-ei="' + ei +
     '" aria-label="Swap exercise" title="Swap / recommend" type="button">⇄</button>';
-  h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + badgeHtml + escapeHtml(meta.name) + '</div><button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(meta.name) + '">view recent</button>' + adChipHtml + '</div><div class="exercise-status ' + sc + '">' + stat + '</div>' + swapBtnAd + supersetBtnAd + '<button class="card-delete" data-di="' + di + '" data-ei="' + ei + '" aria-label="Delete exercise" type="button">×</button></div>';
+  h += '<div class="exercise-header"><div class="exercise-name-block"><div class="exercise-name">' + badgeHtml + escapeHtml(meta.name) + '</div>' + renderMusclesWorked(meta) + '<button class="ex-history-btn" type="button" data-exercise-name="' + escapeAttr(meta.name) + '">view recent</button>' + adChipHtml + '</div><div class="exercise-status ' + sc + '">' + stat + '</div>' + swapBtnAd + supersetBtnAd + '<button class="card-delete" data-di="' + di + '" data-ei="' + ei + '" aria-label="Delete exercise" type="button">×</button></div>';
   h += renderInlineFormNotes(resolveCardExerciseId(null, exState), ei, false);
   h += '<div class="sets-container">';
   var adStdSetNum = 0;
