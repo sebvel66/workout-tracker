@@ -2621,6 +2621,15 @@ var bodyRecentWeeksState = {
   inFlight: false,
 };
 
+// v3.7.6 Body chip drilldown — tap a muscle chip in "This week so far"
+// or "Planned (this week)" to expand a list of contributing exercises.
+// Cached summary so click re-renders without refetching.
+var bodyChipDrillState = {
+  summary: null,            // most recent fetchWeekSummary result
+  actualsKey: null,         // null | "primary|<muscle>" | "fractional|<muscle>"
+  plannedKey: null,
+};
+
 (function hydrateBodyRecentWeeksState() {
   try {
     var w = parseInt(localStorage.getItem('bodyRecentWeeks.weeks'), 10);
@@ -2754,28 +2763,9 @@ async function renderBodyView() {
     var weekStart = weekStartForLocalDate(new Date(todayStr + 'T00:00:00'));
     var weekEnd = addDaysToDateString(weekStart, 6);
     var summary = await fetchWeekSummary(userId, weekStart, weekEnd);
-
-    var slot2 = document.getElementById('bodyViewActualsSlot');
-    if (slot2) {
-      var actualsF = (summary && summary.volumeByMuscleGroup) || {};
-      var actualsP = (summary && summary.volumeByMuscleGroupPrimary) || {};
-      if (!Object.keys(actualsF).length && !Object.keys(actualsP).length) {
-        slot2.innerHTML = '<div class="body-view-section-empty">No completed sets this week yet.</div>';
-      } else {
-        slot2.innerHTML = _dualChipRowsHtml(actualsP, actualsF);
-      }
-    }
-
-    var pslot = document.getElementById('bodyViewPlannedSlot');
-    if (pslot) {
-      var plannedF = (summary && summary.plannedByMuscleGroup) || {};
-      var plannedP = (summary && summary.plannedByMuscleGroupPrimary) || {};
-      if (!Object.keys(plannedF).length && !Object.keys(plannedP).length) {
-        pslot.innerHTML = '<div class="body-view-section-empty">No active plan and nothing done this week — generate or activate a plan to see your target.</div>';
-      } else {
-        pslot.innerHTML = _dualChipRowsHtml(plannedP, plannedF);
-      }
-    }
+    bodyChipDrillState.summary = summary;
+    _renderBodyActualsSlot();
+    _renderBodyPlannedSlot();
   } catch (err) {
     console.error('renderBodyView week summary error:', err);
     var slotE = document.getElementById('bodyViewActualsSlot');
@@ -2783,6 +2773,45 @@ async function renderBodyView() {
     var pslotE = document.getElementById('bodyViewPlannedSlot');
     if (pslotE) pslotE.innerHTML = '<div class="body-view-section-empty">Couldn\'t load this week\'s plan.</div>';
   }
+}
+
+// v3.7.6: slot painters extracted so the chip click handler can re-render
+// just the relevant slot from cached summary, without refetching.
+function _renderBodyActualsSlot() {
+  var slot = document.getElementById('bodyViewActualsSlot');
+  if (!slot) return;
+  var summary = bodyChipDrillState.summary;
+  var actualsF = (summary && summary.volumeByMuscleGroup) || {};
+  var actualsP = (summary && summary.volumeByMuscleGroupPrimary) || {};
+  if (!Object.keys(actualsF).length && !Object.keys(actualsP).length) {
+    slot.innerHTML = '<div class="body-view-section-empty">No completed sets this week yet.</div>';
+    return;
+  }
+  slot.innerHTML = _dualChipRowsHtml(actualsP, actualsF, {
+    interactive: true,
+    section: 'actuals',
+    expandedKey: bodyChipDrillState.actualsKey,
+    exercisesByMuscle: (summary && summary.exercisesByMuscle) || {},
+  });
+}
+
+function _renderBodyPlannedSlot() {
+  var slot = document.getElementById('bodyViewPlannedSlot');
+  if (!slot) return;
+  var summary = bodyChipDrillState.summary;
+  var plannedF = (summary && summary.plannedByMuscleGroup) || {};
+  var plannedP = (summary && summary.plannedByMuscleGroupPrimary) || {};
+  if (!Object.keys(plannedF).length && !Object.keys(plannedP).length) {
+    slot.innerHTML = '<div class="body-view-section-empty">No active plan and nothing done this week — generate or activate a plan to see your target.</div>';
+    return;
+  }
+  slot.innerHTML = _dualChipRowsHtml(plannedP, plannedF, {
+    interactive: true,
+    section: 'planned',
+    expandedKey: bodyChipDrillState.plannedKey,
+    exercisesByMuscle: (summary && summary.exercisesByMuscle) || {},
+    doneDaysForPlanned: (summary && summary.activePlanDoneDaysThisWeek) || {},
+  });
 }
 
 async function loadAndRenderBodyRecentWeeks() {
@@ -2977,9 +3006,14 @@ function _bodyRwExpandHtml(muscle) {
 // active plan's days NOT yet done this week, filters each day's
 // exercises by muscle match against the active mode. Superset-aware
 // (mirrors _accumulatePlanDayFrac walking logic).
-function _bodyRwPlannedRemainingForMuscle(muscle, mode) {
+function _bodyRwPlannedRemainingForMuscle(muscle, mode, doneDaysOverride) {
   if (!plan || !Array.isArray(plan.days)) return [];
-  var done = (bodyRecentWeeksState.data && bodyRecentWeeksState.data.donePlanDaysCurrentWeek) || {};
+  // v3.7.6: the body-chip drilldown passes its own done-days map from
+  // fetchWeekSummary so it doesn't have to wait for Recent weeks to load.
+  // Recent-weeks callers omit the arg and get the original behavior.
+  var done = doneDaysOverride
+    || (bodyRecentWeeksState.data && bodyRecentWeeksState.data.donePlanDaysCurrentWeek)
+    || {};
   var out = [];
   for (var di = 0; di < plan.days.length; di++) {
     if (done[di]) continue;
@@ -3152,7 +3186,19 @@ function _bodyInfoPanelHtml() {
 // point: rear delts ~ MEV under primary, in-MAV under fractional).
 // Muscles sorted by fractional count desc so the row order matches at
 // a glance.
-function _dualChipRowsHtml(primaryCounts, fractionalCounts) {
+function _dualChipRowsHtml(primaryCounts, fractionalCounts, opts) {
+  opts = opts || {};
+  // v3.7.6: when `interactive` is true, non-zero chips render as buttons
+  // tagged with data-chip-drill so the Body view's click delegator can
+  // expand a per-muscle exercise breakdown beneath the relevant row.
+  // The plan-review path (chips in plan summaries) calls without opts so
+  // chips stay inert there.
+  var interactive = !!opts.interactive;
+  var section = opts.section || '';
+  var expandedKey = opts.expandedKey || null;
+  var exercisesByMuscle = opts.exercisesByMuscle || null;
+  var doneDaysForPlanned = opts.doneDaysForPlanned || null;
+
   var primary = primaryCounts || {};
   var fractional = fractionalCounts || {};
   var seen = {};
@@ -3170,7 +3216,8 @@ function _dualChipRowsHtml(primaryCounts, fractionalCounts) {
     var raw = counts[m];
     var v = (raw == null) ? 0 : raw;
     var label = (v === Math.floor(v)) ? String(v) : v.toFixed(1);
-    // Zero stays grey regardless of band (signal: "no data in this mode").
+    // Zero stays grey regardless of band (signal: "no data in this mode")
+    // and is never interactive — nothing to drill into.
     if (v === 0) {
       return '<span class="pv-chip pv-empty" title="0 sets in this mode">' +
         escapeHtml(m) + ' 0</span>';
@@ -3191,30 +3238,120 @@ function _dualChipRowsHtml(primaryCounts, fractionalCounts) {
         bandSource = otherMode + ' (fallback)';
       }
     }
+    var cls, title;
     if (!band) {
       // No band in either mode — render with a neutral "unknown" treatment
       // (still distinct from zero grey). Value is real; we just have no
-      // ruler to grade it against.
-      return '<span class="pv-chip pv-empty" title="No band configured for ' + escapeAttr(m) + '">' +
-        escapeHtml(m) + ' ' + label + '</span>';
+      // ruler to grade it against. Still drillable when interactive.
+      cls = 'pv-empty';
+      title = 'No band configured for ' + m;
+    } else {
+      var status = muscleBandStatus(v, band);
+      cls = muscleBandStatusCssClass(status);
+      title = 'MEV ' + band.mev + ' · MAV ' + band.mavLow + '-' + band.mavHigh +
+              ' · MRV ' + band.mrv + ' (' + bandSource + ')';
     }
-    var status = muscleBandStatus(v, band);
-    var cls = muscleBandStatusCssClass(status);
-    var title = 'MEV ' + band.mev + ' · MAV ' + band.mavLow + '-' + band.mavHigh +
-                ' · MRV ' + band.mrv + ' (' + bandSource + ')';
+    if (interactive) {
+      var key = mode + '|' + m;
+      var isExpanded = expandedKey === key;
+      return '<button type="button" class="pv-chip ' + cls + (isExpanded ? ' is-expanded' : '') +
+        '" data-chip-drill="1" data-chip-section="' + escapeAttr(section) +
+        '" data-chip-mode="' + mode + '" data-chip-muscle="' + escapeAttr(m) +
+        '" title="' + escapeAttr(title) + '">' + escapeHtml(m) + ' ' + label + '</button>';
+    }
     return '<span class="pv-chip ' + cls + '" title="' + escapeAttr(title) + '">' +
       escapeHtml(m) + ' ' + label + '</span>';
   }
   function row(label, mode, counts) {
     var chips = muscles.map(function(m) { return chipFor(m, mode, counts); }).join('');
-    return '<div class="dual-chip-row">' +
+    var rowHtml = '<div class="dual-chip-row">' +
       '<div class="dual-chip-row-label">' + label + '</div>' +
       '<div class="plan-volume-chips">' + chips + '</div></div>';
+    // If a chip in this row is expanded, append its drilldown beneath it.
+    if (interactive && expandedKey) {
+      var parts = expandedKey.split('|');
+      if (parts[0] === mode && parts[1]) {
+        rowHtml += _bodyChipDrillHtml(section, mode, parts[1], exercisesByMuscle, doneDaysForPlanned);
+      }
+    }
+    return rowHtml;
   }
   return '<div class="dual-chip-rows">' +
     row('Primary', 'primary', primary) +
     row('Fractional', 'fractional', fractional) +
     '</div>';
+}
+
+// v3.7.6: drilldown panel for a tapped chip in the Body view. Shows
+// completed exercises that fed the muscle's count. On the 'planned'
+// section, also appends PLANNED REMAINING (active plan's untouched
+// days) — mirrors the Recent-weeks current-week pill drilldown.
+function _bodyChipDrillHtml(section, mode, muscle, exercisesByMuscle, doneDaysForPlanned) {
+  var entries = (exercisesByMuscle && exercisesByMuscle[muscle]) ? exercisesByMuscle[muscle] : [];
+  var filtered = [];
+  for (var i = 0; i < entries.length; i++) {
+    var ex = entries[i];
+    if (mode === 'primary' && ex.role !== 'primary') continue;
+    filtered.push(ex);
+  }
+  // Primary contributors first (desc by sets), then secondaries.
+  filtered.sort(function(a, b) {
+    if (a.role !== b.role) return a.role === 'primary' ? -1 : 1;
+    return b.sets - a.sets;
+  });
+  var total = 0;
+  var lines = '';
+  for (var j = 0; j < filtered.length; j++) {
+    var e = filtered[j];
+    var perSet = (mode === 'primary' || e.role === 'primary') ? 1.0 : 0.5;
+    var contribution = e.sets * perSet;
+    total += contribution;
+    var contribLabel = (contribution === Math.floor(contribution))
+      ? '+' + contribution
+      : '+' + contribution.toFixed(1);
+    var secondaryTag = (mode === 'fractional' && e.role === 'secondary')
+      ? '<span class="secondary-tag">(secondary)</span>' : '';
+    lines += '<div class="body-rw-drill-line">' +
+      '<div>' + escapeHtml(e.name) + secondaryTag + '</div>' +
+      '<div>' + e.sets + ' sets</div>' +
+      '<div>' + contribLabel + '</div>' +
+      '</div>';
+  }
+  var totalLabel = (total === Math.floor(total)) ? String(total) : total.toFixed(1);
+  var modeLabel = mode === 'primary' ? 'Primary' : 'Fractional';
+  var html = '<div class="body-rw-drilldown body-chip-drilldown">';
+  html += '<div class="body-rw-drill-section-label">COMPLETED · ' +
+    escapeHtml(muscle) + ' · ' + modeLabel + '</div>';
+  if (filtered.length === 0) {
+    html += '<div class="body-rw-drill-line"><div>No completed contributions in this mode.</div><div></div><div></div></div>';
+  } else {
+    html += lines;
+    html += '<div class="body-rw-drill-total">' + totalLabel + ' total</div>';
+  }
+  // PLANNED REMAINING — only on the planned section's chips.
+  if (section === 'planned') {
+    var planned = _bodyRwPlannedRemainingForMuscle(muscle, mode, doneDaysForPlanned);
+    if (planned.length > 0) {
+      html += '<div class="body-rw-drill-section-label">PLANNED REMAINING</div>';
+      for (var p = 0; p < planned.length; p++) {
+        var pe = planned[p];
+        var perSetP = (mode === 'primary' || pe.role === 'primary') ? 1.0 : 0.5;
+        var contribP = pe.sets * perSetP;
+        var contribPLabel = (contribP === Math.floor(contribP))
+          ? '+' + contribP
+          : '+' + contribP.toFixed(1);
+        var tagP = (mode === 'fractional' && pe.role === 'secondary')
+          ? '<span class="secondary-tag">(secondary)</span>' : '';
+        html += '<div class="body-rw-drill-line">' +
+          '<div>' + escapeHtml(pe.name) + tagP + '</div>' +
+          '<div>' + pe.sets + ' sets prescribed</div>' +
+          '<div>' + contribPLabel + '</div>' +
+          '</div>';
+      }
+    }
+  }
+  html += '</div>';
+  return html;
 }
 
 // Log view: launchpad to existing History modal. Volume trends moved
@@ -8984,6 +9121,21 @@ document.getElementById('bottomTabBar').addEventListener('click', function(e) {
 // Recent weeks controls — mode toggle re-paints from cache, window
 // toggle re-fetches. Both persist to localStorage.
 document.getElementById('bodyView').addEventListener('click', function(e) {
+  // v3.7.6 chip drilldown: tap a "This week so far" / "Planned (this
+  // week)" chip → expand exercises that fed the count, beneath the row.
+  var chipBtn = e.target.closest && e.target.closest('[data-chip-drill]');
+  if (chipBtn) {
+    var chipSection = chipBtn.getAttribute('data-chip-section');
+    var chipMode = chipBtn.getAttribute('data-chip-mode');
+    var chipMuscle = chipBtn.getAttribute('data-chip-muscle');
+    if (!chipSection || !chipMode || !chipMuscle) return;
+    var keyName = chipSection === 'actuals' ? 'actualsKey' : 'plannedKey';
+    var nextKey = chipMode + '|' + chipMuscle;
+    bodyChipDrillState[keyName] = (bodyChipDrillState[keyName] === nextKey) ? null : nextKey;
+    if (chipSection === 'actuals') _renderBodyActualsSlot();
+    else _renderBodyPlannedSlot();
+    return;
+  }
   // Pill branch first — pills live INSIDE the row, so stopPropagation
   // prevents the row's collapse/expand from firing on the same click.
   var pillBtn = e.target.closest && e.target.closest('[data-rw-pill]');

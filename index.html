@@ -1830,6 +1830,20 @@ body[data-view="log"] #logView { display: block; }
   border-color: rgba(180, 180, 180, 0.2);
   opacity: 0.75;
 }
+/* v3.7.6: pv-chip rendered as a <button> for the Body chip drilldown.
+ * Zero out the browser's button defaults so it matches the <span> chip
+ * pixel-for-pixel, then add a subtle expanded-state outline. */
+button.pv-chip {
+  cursor: pointer;
+  font: inherit;
+  line-height: inherit;
+  -webkit-tap-highlight-color: transparent;
+}
+button.pv-chip.is-expanded { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* Chip-drilldown panel sits between the two dual-chip rows when expanded
+ * (or after the Fractional row). Slightly less indent than the Recent
+ * weeks variant since it lives in the top-of-tab chip blocks. */
+.body-chip-drilldown { margin-top: 8px; }
 
 /* Dual-row chip layout (v3.6.14). Renders primary + fractional counts
  * for the same muscles as parallel rows so the user can see at a

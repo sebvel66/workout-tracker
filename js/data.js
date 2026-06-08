@@ -1239,6 +1239,10 @@ async function fetchWeekSummary(userId, weekStartDate, weekEndDate) {
   var rpeSum = 0, rpeSetCount = 0;
   var volByMuscle = {};         // muscle_group -> fractional (Schoenfeld) sets across the week
   var volByMusclePrimary = {};  // muscle_group -> primary-only sets across the week (v3.6.14)
+  // v3.7.6 Body-chip drilldown: per-muscle exercise breakdown across the
+  // week. Same (name, role) entries from different sessions are merged
+  // so the drilldown shows one row per exercise with summed sets.
+  var exByMuscleWeek = {};      // muscle -> [{name, sets, role}]
 
   for (var j = 0; j < workouts.length; j++) {
     var w = workouts[j];
@@ -1263,6 +1267,25 @@ async function fetchWeekSummary(userId, weekStartDate, weekEndDate) {
       for (var mkj = 0; mkj < mgKeysP.length; mkj++) {
         var mgkP = mgKeysP[mkj];
         volByMusclePrimary[mgkP] = (volByMusclePrimary[mgkP] || 0) + w.setsByMuscleGroupPrimary[mgkP];
+      }
+    }
+    if (w.exercisesByMuscle) {
+      var emKeys = Object.keys(w.exercisesByMuscle);
+      for (var emi = 0; emi < emKeys.length; emi++) {
+        var emM = emKeys[emi];
+        var weekArr = exByMuscleWeek[emM] || (exByMuscleWeek[emM] = []);
+        var entries = w.exercisesByMuscle[emM] || [];
+        for (var emj = 0; emj < entries.length; emj++) {
+          var entry = entries[emj];
+          var hit = null;
+          for (var emk = 0; emk < weekArr.length; emk++) {
+            if (weekArr[emk].name === entry.name && weekArr[emk].role === entry.role) {
+              hit = weekArr[emk]; break;
+            }
+          }
+          if (hit) hit.sets += entry.sets;
+          else weekArr.push({ name: entry.name, sets: entry.sets, role: entry.role });
+        }
       }
     }
     if (w.isAdHoc) {
@@ -1334,6 +1357,13 @@ async function fetchWeekSummary(userId, weekStartDate, weekEndDate) {
     volumeByMuscleGroupPrimary: volByMusclePrimary,
     plannedByMuscleGroup: weekPlanned.frac,
     plannedByMuscleGroupPrimary: weekPlanned.prim,
+    // v3.7.6 Body-chip drilldown payloads.
+    exercisesByMuscle: exByMuscleWeek,
+    // {dayIdx: true} for the active plan's days already done this week —
+    // lets the planned-chip drilldown compute PLANNED REMAINING without
+    // waiting for Recent weeks state to populate.
+    activePlanDoneDaysThisWeek: (activePlanId && perPlan[activePlanId])
+      ? perPlan[activePlanId].dayIndices : {},
   };
 }
 
@@ -1505,6 +1535,7 @@ function _summarizeWorkoutRow(row) {
     notes: row.notes || '',
     setsByMuscleGroup: _setsByMuscleGroup(byOrder),
     setsByMuscleGroupPrimary: _setsByMuscleGroupPrimary(byOrder),
+    exercisesByMuscle: _exercisesByMuscle(byOrder),
     _dayIndex: row.day_index,
     _planBlob: planBlob,
     _planId: row.plan_id || null,
@@ -1567,6 +1598,42 @@ function _setsByMuscleGroupPrimary(byOrder) {
     }
     if (!done) continue;
     out[primary] = (out[primary] || 0) + done;
+  }
+  return out;
+}
+
+// v3.7.6: per-workout exercise breakdown grouped by muscle. Powers the
+// Body chip drilldown — for each muscle, lists each exercise that
+// contributed completed sets along with the role (primary/secondary).
+// Same filter as _setsByMuscleGroup (cardio/mobility skipped). Returns
+// { muscle: [{ name, sets, role }] }.
+function _exercisesByMuscle(byOrder) {
+  var out = {};
+  if (!byOrder) return out;
+  function push(muscle, name, sets, role) {
+    if (!out[muscle]) out[muscle] = [];
+    out[muscle].push({ name: name, sets: sets, role: role });
+  }
+  var keys = Object.keys(byOrder);
+  for (var i = 0; i < keys.length; i++) {
+    var ex = byOrder[keys[i]];
+    if (!ex || !ex.muscleGroup) continue;
+    var primary = ex.muscleGroup;
+    if (primary === 'cardio' || primary === 'mobility') continue;
+    var done = 0;
+    var sets = ex.sets || [];
+    for (var s = 0; s < sets.length; s++) {
+      if (sets[s] && sets[s].done) done++;
+    }
+    if (!done) continue;
+    var name = ex.name || 'Unknown';
+    push(primary, name, done, 'primary');
+    var secondaries = Array.isArray(ex.secondaryMuscles) ? ex.secondaryMuscles : [];
+    for (var si = 0; si < secondaries.length; si++) {
+      var mg2 = secondaries[si];
+      if (!mg2 || mg2 === primary || mg2 === 'cardio' || mg2 === 'mobility') continue;
+      push(mg2, name, done, 'secondary');
+    }
   }
   return out;
 }
