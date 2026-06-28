@@ -2630,6 +2630,22 @@ var bodyChipDrillState = {
   plannedKey: null,
 };
 
+// v3.7.8: adjustable date range for the "This week so far" (actuals)
+// section ONLY. 'week' reuses bodyChipDrillState.summary (the current
+// calendar week already fetched by renderBodyView) — no extra request.
+// Any other preset/custom range fetches its own summary here so Planned
+// and Recent weeks are never disturbed. Not persisted: re-entering the
+// Body tab resets to 'week', the predictable "back to default."
+var bodyActualsRange = {
+  preset: 'week',   // 'week' | '7d' | '14d' | '30d' | 'custom'
+  start: null,      // YYYY-MM-DD — effective range start
+  end: null,        // YYYY-MM-DD — effective range end
+  summary: null,    // fetchWeekSummary result when preset !== 'week'
+  inFlight: false,
+  reqToken: 0,      // bumped per request; only the latest result paints
+  error: null,      // last fetch error for the active range
+};
+
 (function hydrateBodyRecentWeeksState() {
   try {
     var w = parseInt(localStorage.getItem('bodyRecentWeeks.weeks'), 10);
@@ -2696,6 +2712,12 @@ async function setActiveView(name) {
 async function renderBodyView() {
   var body = document.getElementById('bodyViewBody');
   if (!body) return;
+
+  // Reset the actuals range to the default week on every tab entry.
+  bodyActualsRange.preset = 'week';
+  bodyActualsRange.start = null;
+  bodyActualsRange.end = null;
+  bodyActualsRange.summary = null;
 
   var phase = (coachingProfile && coachingProfile.phase) || null;
   var goal = (coachingProfile && coachingProfile.goal_type) || null;
@@ -2775,23 +2797,138 @@ async function renderBodyView() {
   }
 }
 
+// v3.7.8: resolve the effective start/end for the current actuals preset.
+// 'custom' is left untouched — its dates come from the Apply handler.
+function _computeActualsRange() {
+  var today = sessionTodayDateString();
+  var p = bodyActualsRange.preset;
+  if (p === 'week') {
+    var ws = weekStartForLocalDate(new Date(today + 'T00:00:00'));
+    bodyActualsRange.start = ws;
+    bodyActualsRange.end = addDaysToDateString(ws, 6);
+  } else if (p === '7d') {
+    bodyActualsRange.end = today;
+    bodyActualsRange.start = addDaysToDateString(today, -6);
+  } else if (p === '14d') {
+    bodyActualsRange.end = today;
+    bodyActualsRange.start = addDaysToDateString(today, -13);
+  } else if (p === '30d') {
+    bodyActualsRange.end = today;
+    bodyActualsRange.start = addDaysToDateString(today, -29);
+  }
+}
+
+function _actualsRangeDays() {
+  if (!bodyActualsRange.start || !bodyActualsRange.end) return 7;
+  var s = new Date(bodyActualsRange.start + 'T00:00:00');
+  var e = new Date(bodyActualsRange.end + 'T00:00:00');
+  return Math.round((e - s) / 86400000) + 1;
+}
+
+function _fmtActualsRangeCaption(start, end) {
+  var opt = { month: 'short', day: 'numeric' };
+  var s = new Date(start + 'T00:00:00').toLocaleDateString(undefined, opt);
+  var e = new Date(end + 'T00:00:00').toLocaleDateString(undefined, opt);
+  var days = _actualsRangeDays();
+  return s + ' – ' + e + ' · ' + days + ' day' + (days === 1 ? '' : 's');
+}
+
+// Preset buttons (+ custom date inputs when active) and the active-range
+// caption. Rendered INSIDE the actuals slot so it survives the chip-drill
+// re-render, mirroring how _bodyRwControlsHtml lives in its slot.
+function _bodyActualsControlsHtml() {
+  var p = bodyActualsRange.preset;
+  function presetBtn(val, label) {
+    return '<button type="button" class="' + (val === p ? 'active' : '') +
+      '" data-ba-preset="' + val + '">' + label + '</button>';
+  }
+  var h = '<div class="body-actuals-controls">';
+  h += '<div class="body-actuals-group">' +
+    presetBtn('week', 'This week') + presetBtn('7d', '7d') +
+    presetBtn('14d', '14d') + presetBtn('30d', '30d') +
+    presetBtn('custom', 'Custom') + '</div>';
+  if (p === 'custom') {
+    h += '<div class="body-actuals-custom">' +
+      '<label>from <input type="date" id="bodyActualsFrom" value="' + escapeAttr(bodyActualsRange.start || '') + '"></label>' +
+      '<label>to <input type="date" id="bodyActualsTo" value="' + escapeAttr(bodyActualsRange.end || '') + '"></label>' +
+      '<button type="button" class="body-actuals-apply" data-ba-apply="1">Apply</button></div>';
+  }
+  if (bodyActualsRange.start && bodyActualsRange.end) {
+    var note = _actualsRangeDays() > 7 ? ' · weekly targets apply to 7-day ranges' : '';
+    h += '<div class="body-actuals-caption">' +
+      escapeHtml(_fmtActualsRangeCaption(bodyActualsRange.start, bodyActualsRange.end) + note) + '</div>';
+  }
+  h += '</div>';
+  return h;
+}
+
+// Fetch + paint the actuals slot for the active range. 'week' reuses the
+// already-loaded week summary (no request). Other ranges fetch their own
+// summary; a request token ensures only the latest click paints.
+async function _loadBodyActualsRange() {
+  _computeActualsRange();
+  if (bodyActualsRange.preset === 'week') {
+    bodyActualsRange.summary = null;
+    bodyActualsRange.error = null;
+    bodyActualsRange.inFlight = false;
+    _renderBodyActualsSlot();
+    return;
+  }
+  if (!userId || !bodyActualsRange.start || !bodyActualsRange.end) {
+    _renderBodyActualsSlot();
+    return;
+  }
+  var token = ++bodyActualsRange.reqToken;
+  bodyActualsRange.inFlight = true;
+  bodyActualsRange.summary = null;
+  bodyActualsRange.error = null;
+  _renderBodyActualsSlot();  // paint controls + Loading…
+  try {
+    var summary = await fetchWeekSummary(userId, bodyActualsRange.start, bodyActualsRange.end);
+    if (token !== bodyActualsRange.reqToken) return;  // superseded by a later click
+    bodyActualsRange.summary = summary;
+  } catch (err) {
+    if (token !== bodyActualsRange.reqToken) return;
+    console.error('_loadBodyActualsRange error:', err);
+    bodyActualsRange.error = err;
+  } finally {
+    if (token === bodyActualsRange.reqToken) bodyActualsRange.inFlight = false;
+  }
+  if (token === bodyActualsRange.reqToken) _renderBodyActualsSlot();
+}
+
 // v3.7.6: slot painters extracted so the chip click handler can re-render
 // just the relevant slot from cached summary, without refetching.
+// v3.7.8: now range-aware — renders the date controls, reads the summary
+// for the active range, and drops band coloring on multi-week ranges.
 function _renderBodyActualsSlot() {
   var slot = document.getElementById('bodyViewActualsSlot');
   if (!slot) return;
-  var summary = bodyChipDrillState.summary;
+  _computeActualsRange();
+  var controls = _bodyActualsControlsHtml();
+  var isWeek = bodyActualsRange.preset === 'week';
+  var summary = isWeek ? bodyChipDrillState.summary : bodyActualsRange.summary;
+  if (!isWeek && bodyActualsRange.inFlight && !summary) {
+    slot.innerHTML = controls + '<div class="body-view-section-empty">Loading…</div>';
+    return;
+  }
+  if (!isWeek && bodyActualsRange.error && !summary) {
+    slot.innerHTML = controls + '<div class="body-view-section-empty">Couldn\'t load this range.</div>';
+    return;
+  }
   var actualsF = (summary && summary.volumeByMuscleGroup) || {};
   var actualsP = (summary && summary.volumeByMuscleGroupPrimary) || {};
   if (!Object.keys(actualsF).length && !Object.keys(actualsP).length) {
-    slot.innerHTML = '<div class="body-view-section-empty">No completed sets this week yet.</div>';
+    var emptyMsg = isWeek ? 'No completed sets this week yet.' : 'No completed sets in this range.';
+    slot.innerHTML = controls + '<div class="body-view-section-empty">' + emptyMsg + '</div>';
     return;
   }
-  slot.innerHTML = _dualChipRowsHtml(actualsP, actualsF, {
+  slot.innerHTML = controls + _dualChipRowsHtml(actualsP, actualsF, {
     interactive: true,
     section: 'actuals',
     expandedKey: bodyChipDrillState.actualsKey,
     exercisesByMuscle: (summary && summary.exercisesByMuscle) || {},
+    gradeChips: _actualsRangeDays() <= 7,
   });
 }
 
@@ -3198,6 +3335,10 @@ function _dualChipRowsHtml(primaryCounts, fractionalCounts, opts) {
   var expandedKey = opts.expandedKey || null;
   var exercisesByMuscle = opts.exercisesByMuscle || null;
   var doneDaysForPlanned = opts.doneDaysForPlanned || null;
+  // v3.7.8: weekly MEV/MAV/MRV bands only make sense for a ~7-day window.
+  // When the actuals range spans multiple weeks the caller passes
+  // gradeChips:false so totals render neutral instead of "all over MRV."
+  var gradeChips = opts.gradeChips !== false;
 
   var primary = primaryCounts || {};
   var fractional = fractionalCounts || {};
@@ -3221,6 +3362,20 @@ function _dualChipRowsHtml(primaryCounts, fractionalCounts, opts) {
     if (v === 0) {
       return '<span class="pv-chip pv-empty" title="0 sets in this mode">' +
         escapeHtml(m) + ' 0</span>';
+    }
+    // Multi-week range: bands don't apply. Render a neutral (ungraded)
+    // chip showing the raw total; still drillable when interactive.
+    if (!gradeChips) {
+      var ugTitle = label + ' sets over the selected range (weekly targets apply to 7-day ranges)';
+      if (interactive) {
+        var ugKey = mode + '|' + m;
+        return '<button type="button" class="pv-chip pv-ungraded' + (expandedKey === ugKey ? ' is-expanded' : '') +
+          '" data-chip-drill="1" data-chip-section="' + escapeAttr(section) +
+          '" data-chip-mode="' + mode + '" data-chip-muscle="' + escapeAttr(m) +
+          '" title="' + escapeAttr(ugTitle) + '">' + escapeHtml(m) + ' ' + label + '</button>';
+      }
+      return '<span class="pv-chip pv-ungraded" title="' + escapeAttr(ugTitle) + '">' +
+        escapeHtml(m) + ' ' + label + '</span>';
     }
     // Non-zero: prefer this mode's band; fall back to the other mode's
     // band as a proxy when this mode is unconfigured (v3.6.17). Forearms'
@@ -9137,6 +9292,43 @@ document.getElementById('bottomTabBar').addEventListener('click', function(e) {
 // Recent weeks controls — mode toggle re-paints from cache, window
 // toggle re-fetches. Both persist to localStorage.
 document.getElementById('bodyView').addEventListener('click', function(e) {
+  // v3.7.8 actuals date-range presets. 'custom' seeds its inputs from the
+  // currently-active range and fetches it immediately, so chips persist
+  // while the user edits the dates and hits Apply.
+  var baPreset = e.target.closest && e.target.closest('[data-ba-preset]');
+  if (baPreset) {
+    var pv = baPreset.getAttribute('data-ba-preset');
+    if (!pv) return;
+    if (pv === 'custom') {
+      _computeActualsRange();            // fill start/end from the current preset
+      var s0 = bodyActualsRange.start, e0 = bodyActualsRange.end;
+      bodyActualsRange.preset = 'custom';
+      bodyActualsRange.start = s0;
+      bodyActualsRange.end = e0;
+    } else {
+      if (pv === bodyActualsRange.preset) return;  // no-op re-click
+      bodyActualsRange.preset = pv;
+    }
+    bodyChipDrillState.actualsKey = null;  // muscle may not exist in the new range
+    _loadBodyActualsRange();
+    return;
+  }
+  // Custom range Apply: read both date inputs, auto-swap if reversed.
+  var baApply = e.target.closest && e.target.closest('[data-ba-apply]');
+  if (baApply) {
+    var fromEl = document.getElementById('bodyActualsFrom');
+    var toEl = document.getElementById('bodyActualsTo');
+    if (!fromEl || !toEl) return;
+    var fromV = fromEl.value, toV = toEl.value;
+    if (!fromV || !toV) return;  // need both endpoints
+    if (fromV > toV) { var tmp = fromV; fromV = toV; toV = tmp; }
+    bodyActualsRange.preset = 'custom';
+    bodyActualsRange.start = fromV;
+    bodyActualsRange.end = toV;
+    bodyChipDrillState.actualsKey = null;
+    _loadBodyActualsRange();
+    return;
+  }
   // v3.7.6 chip drilldown: tap a "This week so far" / "Planned (this
   // week)" chip → expand exercises that fed the count, beneath the row.
   var chipBtn = e.target.closest && e.target.closest('[data-chip-drill]');

@@ -1830,6 +1830,14 @@ body[data-view="log"] #logView { display: block; }
   border-color: rgba(180, 180, 180, 0.2);
   opacity: 0.75;
 }
+/* v3.7.8: non-zero total over a multi-week actuals range. Weekly bands
+ * don't apply, so render neutral (brighter than pv-empty since the value
+ * is real, not absent). */
+.pv-ungraded {
+  background: rgba(180, 180, 180, 0.12);
+  color: var(--text);
+  border-color: rgba(180, 180, 180, 0.28);
+}
 /* v3.7.6: pv-chip rendered as a <button> for the Body chip drilldown.
  * Zero out the browser's button defaults so it matches the <span> chip
  * pixel-for-pixel, then add a subtle expanded-state outline. */
@@ -1963,6 +1971,67 @@ button.pv-chip.is-expanded { outline: 2px solid var(--accent); outline-offset: 1
 .body-rw-controls button.active {
   background: var(--accent);
   color: var(--bg);
+}
+/* v3.7.8: actuals date-range controls (segmented presets + custom dates). */
+.body-actuals-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 0 0 10px;
+}
+.body-actuals-controls .body-actuals-group {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.body-actuals-controls .body-actuals-group button {
+  padding: 6px 10px;
+  background: var(--surface2);
+  color: var(--text);
+  border: 0;
+  border-right: 1px solid var(--border);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  cursor: pointer;
+}
+.body-actuals-controls .body-actuals-group button:last-child { border-right: 0; }
+.body-actuals-controls .body-actuals-group button.active {
+  background: var(--accent);
+  color: var(--bg);
+}
+.body-actuals-custom {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text2);
+}
+.body-actuals-custom input[type="date"] {
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 6px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+}
+.body-actuals-custom .body-actuals-apply {
+  padding: 5px 12px;
+  background: var(--accent);
+  color: var(--bg);
+  border: 0;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.body-actuals-caption {
+  flex-basis: 100%;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text2);
 }
 .body-rw-row {
   display: grid;
