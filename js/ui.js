@@ -8613,6 +8613,22 @@ async function exportCoachingProfile() {
 }
 
 // ---- Event listeners ----
+document.getElementById('btnRefresh').addEventListener('click', function() {
+  var btn = this;
+  btn.disabled = true;
+  btn.style.opacity = '0.5';
+  // Bust any cached assets (e.g. a stale deployed version) before reloading so
+  // we pick up new code, not just re-fetch data. No service worker today, but
+  // clearing Cache Storage is harmless if one is ever added.
+  function reload() { window.location.reload(); }
+  if (window.caches && caches.keys) {
+    caches.keys()
+      .then(function(keys) { return Promise.all(keys.map(function(k) { return caches.delete(k); })); })
+      .then(reload, reload);
+  } else {
+    reload();
+  }
+});
 document.getElementById('btnMenu').addEventListener('click', openMenu);
 document.getElementById('btnMenuClose').addEventListener('click', closeMenu);
 document.getElementById('menuOverlay').addEventListener('click', function(e) {
