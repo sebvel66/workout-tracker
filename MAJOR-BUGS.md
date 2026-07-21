@@ -2,6 +2,75 @@
 
 Record of significant bugs that required non-trivial investigation or data cleanup. Newest first. Small, in-code-fixed-in-one-commit bugs don't belong here — those live in git history. This file is for bugs where the root cause, the fix, or the blast radius is worth knowing later.
 
+## 2026-07-20 — Ad-hoc sets never persist when there's no active plan (v3.7.9)
+
+### Symptoms
+
+User report: "I am really struggling with the workout tracker when I'm not using a plan. When I try to use ad-hoc sessions, the exercises do not save — even if I check them as completed, they never persist." No error toast, no visible failure. Sets appeared checked for the rest of the session (in-memory state was mutated) and were gone on reload. Ad-hoc sessions *while an active plan exists* worked fine — the bug only fired in no-plan mode.
+
+### Root cause
+
+`_toggleSetCommit` ([js/data.js:2529](js/data.js#L2529)) read the prescribed set for auto-fill without a null guard on `plan`:
+
+```js
+var prescribed = plan.days[di] && plan.days[di].exercises[ei] && plan.days[di].exercises[ei].sets[si];
+```
+
+In no-plan mode `plan` is `null` ([js/app.js:119](js/app.js#L119)), so this threw `TypeError: Cannot read properties of null (reading 'days')` — **eight lines before `await persistSet(di, ei, si)`**. The set was never written, `buildTabs()` / `buildDay(di)` never ran, and the rest timer never fired.
+
+With an active plan the same line is harmless: `di` is an `'ah_<uuid>'` string, so `plan.days['ah_…']` is `undefined` and the `&&` chain short-circuits. That's why the bug was invisible to anyone who kept a plan active.
+
+Two things made it **silent** rather than a visible error:
+
+1. Check-on routes through `promptResumeIfEnded(function() { _toggleSetCommit(…) })` ([js/data.js:2513](js/data.js#L2513)), which invokes the callback un-awaited ([js/ui.js:8189](js/ui.js#L8189)). An async callback's rejection became an unhandled promise rejection — no toast.
+2. `sl.done = !wasDone` ([js/data.js:2520](js/data.js#L2520)) runs *first*, so in-memory state said "done" while the DB had nothing. Every subsequent re-render honored the lie until reload.
+
+The persistSet error path has a well-built toast with the Supabase message on it — it just never got reached, because the throw was upstream of the `try`.
+
+### What was fixed
+
+Guarded the deref to match the style already used by the cascade lookup at data.js:2564 and the rest-timer lookup at data.js:2606 — both of which were written as `(plan && plan.days) ? … : null`. This one line was the only site in the function that missed the guard.
+
+```js
+var prescribed = plan && plan.days && plan.days[di] && plan.days[di].exercises[ei] && plan.days[di].exercises[ei].sets[si];
+```
+
+An audit of all ~80 `plan.` dereferences across `js/data.js`, `js/ui.js`, `js/app.js` found **no other** unguarded site reachable with `plan === null` — `buildDay` dispatches to `buildAdHocDay` before its `if (!plan) return`, `buildTabs` wraps the day loop in `if (plan)`, and `buildSetPayload` / `_persistSetInner` keep their plan reads inside the `else` of `if (todayState.isAdHoc || exState.isExtra)`.
+
+### Blast radius
+
+Latent since the no-plan branch existed, but only reachable while **no plan is active** — which for most of this app's history was a transient state. It bites the window after "End plan" and before the next plan is generated. Ad-hoc sessions logged *alongside* an active plan were never affected, which is why ad-hoc looked healthy for months.
+
+Confirmed against production data. Of 48 ad-hoc (`plan_id IS NULL`) workouts, 47 have a full set of `done=true` rows — all of them logged during periods when a plan was active (e.g. Jun 22 / Jun 23 / Jun 27 ad-hocs sit inside plan `c9c47b2f` / `29b60a33` active windows). The single exception is the session on the day the bug was reported, the only one logged with every plan `is_active=false`:
+
+```
+2026-07-20 | plan_id NULL | sets: 2 | done: 0     <-- no active plan
+2026-06-27 | plan_id NULL | sets: 23 | done: 23   <-- plan active
+2026-06-23 | plan_id NULL | sets: 7  | done: 7    <-- plan active
+```
+
+### Why partial rows exist rather than none
+
+The affected session has two `done=false` rows at `set_order` 1 and 2, and nothing at `set_order` 0. That signature is the bug's fingerprint, not a contradiction of it:
+
+- **Tap 1 (check on):** `sl.done = true` in memory → TypeError → no row, no re-render. From the user's side the tap did nothing.
+- **Tap 2 (same checkbox):** `toggleSet` now reads `wasDone = true`, so `_toggleSetCommit` sets `sl.done = false` and **skips the entire `if (sl.done)` block** — including the unguarded lookup. No crash. `persistSet` runs and inserts the row **with `done: false`**.
+
+So a set the user tapped twice got saved as *not completed*, and a set tapped once got no row at all. Both read as "it didn't save." The `weight`/`reps` on those rows came along because `logSet` had already stamped them in memory. Nothing about this was recoverable as completed work — `completed_at` is null on both.
+
+### Debugging path
+
+1. Read the ad-hoc write path end-to-end: `toggleSet` → `_toggleSetCommit` → `persistSet` → `_persistSetInner` → `buildSetPayload`.
+2. Grepped `plan\.days\[` filtered against the guarded forms — 2529 stood out as unguarded in a function whose *other* two plan reads were guarded.
+3. Confirmed against real shipped code rather than by inspection: extracted the `_toggleSetCommit` source out of `js/data.js` at runtime, ran it in a sandbox with stubbed `persistSet` / `buildDay`, once with a plan and once with `plan = null`. First passed, second threw and recorded zero `persistSet` calls. Re-ran after the fix; both passed.
+
+### Lessons
+
+- **A guard added in three places and missed in one is the default failure mode.** The cascade and rest-timer lookups in this same function were both written defensively. Whoever added them was reasoning about the no-plan case and still missed the auto-fill lookup ten lines up. When adding a null guard, grep the whole function for the same deref rather than fixing the line in front of you.
+- **Un-awaited async callbacks convert crashes into data loss.** `promptResumeIfEnded(fn)` calls `fn()` without awaiting because it can't know whether the action is async. Every async action passed through it loses its error reporting. The persistSet toast was well-designed and completely bypassed.
+- **Optimistic in-memory mutation before the persist call hides the failure for the whole session.** `sl.done = true` ran before the throw, so the UI kept showing the set as logged. Failing writes should either mutate after the await or roll back on catch.
+- **"Works with a plan, fails without" is a null-object smell.** The plan-active case passed through the same buggy line and short-circuited harmlessly on a string key. A code path that's accidentally safe in the common configuration will not be exercised by ordinary use.
+
 ## 2026-05-10 — History-edit modal silently freezes after the first edit (v3.6.6)
 
 ### Symptoms

@@ -2526,7 +2526,15 @@ async function _toggleSetCommit(di, ei, si, sl, wasDone) {
     // distance) are mutually-exclusive in practice but the auto-fill is
     // unconditional on field type — a cardio prescribed set just has
     // weight/reps null, so the resistance branches no-op.
-    var prescribed = plan.days[di] && plan.days[di].exercises[ei] && plan.days[di].exercises[ei].sets[si];
+    // `plan` is null in no-plan mode (app.js sets it when there's no active
+    // plan), and every set logged in that mode is ad-hoc — no prescription to
+    // read. Pre-v3.7.9 this line dereferenced plan.days unguarded, so the
+    // TypeError aborted _toggleSetCommit before persistSet ever ran: ad-hoc
+    // sets checked done stayed in memory only and vanished on reload, with no
+    // toast (promptResumeIfEnded invokes this callback un-awaited, so the
+    // rejection was silent). Matches the guard style used by the cascade and
+    // rest-timer lookups below.
+    var prescribed = plan && plan.days && plan.days[di] && plan.days[di].exercises[ei] && plan.days[di].exercises[ei].sets[si];
     if (prescribed) {
       if (sl.weight == null && prescribed.weight != null) sl.weight = prescribed.weight;
       if (sl.reps == null && prescribed.reps_target != null) sl.reps = prescribed.reps_target;
