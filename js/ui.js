@@ -6249,17 +6249,28 @@ function appendCoachMessage(content) {
   thread.scrollTop = thread.scrollHeight;
 }
 
+// Entry point for a typed message. Reads the input, then runs a normal
+// (unconfirmed) coach turn.
 async function sendCoachMessage() {
   if (chatPending) return;
   var input = document.getElementById('coachInput');
   var text = (input.value || '').trim();
   if (!text) return;
-
-  chatPending = true;
   input.value = '';
   input.style.height = '';
+  await runCoachTurn(text, {});
+}
+
+// Run one coach turn. opts.confirm authorizes server write tools (set by the
+// Confirm chip); opts.displayUser overrides what shows in the transcript for
+// the user bubble (e.g. "✓ Confirm" instead of the literal confirmation text).
+async function runCoachTurn(userMsg, opts) {
+  if (chatPending) return;
+  opts = opts || {};
+  chatPending = true;
   var sendBtn = document.getElementById('btnCoachSend');
   if (sendBtn) sendBtn.disabled = true;
+  removeProposalChips();  // a new turn supersedes any dangling proposal
 
   // Lazy-build context if the lifecycle hooks haven't run yet (e.g., user
   // opens chat before a session starts). Awaited so the first message has
@@ -6268,29 +6279,29 @@ async function sendCoachMessage() {
     try { await buildCoachContext(); } catch(e) { /* continue with empty ctx */ }
   }
 
-  appendUserMessage(text);
+  appendUserMessage(opts.displayUser || userMsg);
   chatAttempt = 1;
   appendTypingIndicator();
 
-  var userMsg = text;
-  // Stamp the user message at the moment they sent it — before the API
-  // call. The assistant message gets stamped after the reply arrives
-  // (~1-2s later). Passing explicit created_at to logCoachMessage keeps
-  // the persisted ordering stable across the two concurrent INSERTs that
-  // would otherwise race for `default now()` server-side.
+  // Stamp the user message at the moment they sent it — before the API call.
   var userMsgAt = new Date().toISOString();
-  var outcome = await attemptCoachCall(userMsg);
+  var outcome = await attemptCoachCall(userMsg, !!opts.confirm);
   if (outcome.retry) {
     chatAttempt = 2;
     removeTypingIndicator();
     appendTypingIndicator();
-    outcome = await attemptCoachCall(userMsg);
+    outcome = await attemptCoachCall(userMsg, !!opts.confirm);
   }
   removeTypingIndicator();
   chatAttempt = 0;
 
   if (outcome.success) {
-    var reply = outcome.reply;
+    var rawReply = outcome.reply;
+    // The <proposal> wrapper is a render signal, not content — strip the tags
+    // for display + persistence, but use their presence to decide whether to
+    // offer Confirm / Cancel chips.
+    var hasProposal = /<proposal>/i.test(rawReply);
+    var reply = stripProposalTags(rawReply);
     appendCoachMessage(reply);
     chatHistory.push({ role: 'user', content: userMsg });
     chatHistory.push({ role: 'assistant', content: reply });
@@ -6299,20 +6310,26 @@ async function sendCoachMessage() {
     var assistantMsgAt = new Date().toISOString();
     logCoachMessage('user', userMsg, 'chat', null, userMsgAt);
     logCoachMessage('assistant', reply, 'chat', null, assistantMsgAt);
-    if (chatHistory.length > CHAT_HISTORY_MAX) {
-      // Drop the two oldest entries (one Q/A pair). Keep length aligned on
-      // pair boundaries so context ordering stays user/assistant/user/...
-      chatHistory = chatHistory.slice(chatHistory.length - CHAT_HISTORY_MAX);
+    trimChatHistory();
+
+    // Writes that happened this turn: render each as a system line + persist,
+    // then refresh app state. A reload (for active-plan writes) supersedes
+    // the proposal chips.
+    var scheduledReload = false;
+    if (Array.isArray(outcome.actions) && outcome.actions.length) {
+      scheduledReload = await handleCoachActions(outcome.actions);
     }
+    if (!scheduledReload && hasProposal) {
+      renderProposalChips();
+    }
+
     if (!document.getElementById('coachOverlay').classList.contains('show')) {
       setCoachUnread(true);
     }
   } else {
     appendChatError(outcome.error || 'Coach unavailable.', function() {
-      // Retry by putting the question back into the input and resending.
-      input.value = userMsg;
-      // Also re-focus for edit.
-      input.focus();
+      var input = document.getElementById('coachInput');
+      if (input) { input.value = userMsg; input.focus(); }
     });
   }
 
@@ -6320,12 +6337,143 @@ async function sendCoachMessage() {
   if (sendBtn) sendBtn.disabled = false;
 }
 
+function trimChatHistory() {
+  if (chatHistory.length > CHAT_HISTORY_MAX) {
+    // Drop oldest pairs. Keep length aligned on pair boundaries so context
+    // ordering stays user/assistant/user/...
+    chatHistory = chatHistory.slice(chatHistory.length - CHAT_HISTORY_MAX);
+  }
+}
+
+function stripProposalTags(s) {
+  return String(s == null ? '' : s).replace(/<\/?proposal>/gi, '').trim();
+}
+
+// Muted, centered status line in the transcript (confirmation outcomes, applied
+// actions, cancellations). Not a coach/user bubble.
+function appendCoachSystemMessage(content) {
+  var thread = document.getElementById('coachThread');
+  if (!thread) return;
+  var el = document.createElement('div');
+  el.className = 'coach-msg system';
+  el.textContent = content;
+  thread.appendChild(el);
+  thread.scrollTop = thread.scrollHeight;
+}
+
+// Confirm / Cancel chips rendered under a reply that contains a <proposal>.
+// Confirm re-sends the conversation authorized for the write; Cancel is a
+// local dismiss (the proposal stays in the transcript, nothing is applied).
+function renderProposalChips() {
+  removeProposalChips();
+  var thread = document.getElementById('coachThread');
+  if (!thread) return;
+  var row = document.createElement('div');
+  row.className = 'coach-proposal-chips';
+  row.id = 'coachProposalChips';
+  var confirmBtn = document.createElement('button');
+  confirmBtn.type = 'button';
+  confirmBtn.className = 'coach-chip confirm';
+  confirmBtn.textContent = 'Confirm';
+  confirmBtn.addEventListener('click', function() {
+    removeProposalChips();
+    runCoachTurn('Yes — apply that change.', { confirm: true, displayUser: '✓ Confirm' });
+  });
+  var cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'coach-chip cancel';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.addEventListener('click', function() {
+    removeProposalChips();
+    appendCoachSystemMessage('Cancelled — nothing was changed.');
+  });
+  row.appendChild(confirmBtn);
+  row.appendChild(cancelBtn);
+  thread.appendChild(row);
+  thread.scrollTop = thread.scrollHeight;
+}
+
+function removeProposalChips() {
+  var el = document.getElementById('coachProposalChips');
+  if (el) el.remove();
+}
+
+// One-line human description of a coach write action, for the transcript.
+function describeCoachAction(a) {
+  if (!a || !a.type) return 'Change applied.';
+  switch (a.type) {
+    case 'update_plan':
+      return '✓ Updated ' + (a.is_template ? 'template' : 'plan') + (a.title ? ' "' + a.title + '"' : '') + (a.summary ? ' — ' + a.summary : '') + '.';
+    case 'set_active_plan':
+      return '✓ New plan' + (a.title ? ' "' + a.title + '"' : '') + ' is now active' + (a.start_date ? ' (starts ' + a.start_date + ')' : '') + '.';
+    case 'activate_plan':
+      return '✓ Activated plan' + (a.title ? ' "' + a.title + '"' : '') + '.';
+    case 'end_active_plan':
+      return '✓ Ended the active plan' + (a.title ? ' "' + a.title + '"' : '') + ' — now in a no-plan state.';
+    case 'save_template':
+      return '✓ Saved template "' + (a.template_name || '') + '".';
+    case 'delete_plan':
+      return '✓ Deleted ' + (a.is_template ? 'template' : 'plan') + (a.title ? ' "' + a.title + '"' : '') + (a.forced ? ' (logged workouts kept)' : '') + '.';
+    case 'update_coaching_profile':
+      return '✓ Updated coaching profile: ' + ((a.fields || []).join(', ')) + '.';
+    default:
+      return 'Change applied.';
+  }
+}
+
+// Render + persist each action, refresh in-memory state, and (for writes that
+// change the active plan) reload so the tracker repaints from the DB. The
+// logged training log is persisted independently, so a reload re-paints the
+// edited plan while already-logged sets reappear untouched. Returns true if a
+// reload was scheduled.
+async function handleCoachActions(actions) {
+  for (var i = 0; i < actions.length; i++) {
+    var line = describeCoachAction(actions[i]);
+    appendCoachSystemMessage(line);
+    logCoachMessage('assistant', line, 'chat', null, new Date().toISOString());
+  }
+
+  // Coaching-profile edits: refresh the in-memory copy so the modal + future
+  // prompts use the new values. No reload needed.
+  if (actions.some(function(a) { return a.type === 'update_coaching_profile'; })) {
+    if (typeof loadCoachingProfile === 'function') {
+      try { await loadCoachingProfile(); } catch (e) { /* non-fatal */ }
+    }
+    if (typeof refreshCoachForNewSession === 'function') {
+      try { refreshCoachForNewSession(); } catch (e) { /* non-fatal */ }
+    }
+  }
+
+  // Active-plan writes change what the tracker should paint. Everything the
+  // user has logged is already persisted (DB + hydration snapshot), so clear
+  // the snapshot and reload — the edited plan paints fresh and logged sets
+  // reappear from the DB. Non-active plan / template edits touch nothing on
+  // screen, so they need no reload.
+  var needsReload = actions.some(function(a) {
+    return a.type === 'set_active_plan'
+      || a.type === 'activate_plan'
+      || a.type === 'end_active_plan'
+      || (a.type === 'update_plan' && a.is_active)
+      || (a.type === 'delete_plan' && a.is_active);
+  });
+  if (needsReload) {
+    showToast('Plan updated — reloading…', null);
+    if (typeof clearHydrationSnapshot === 'function') {
+      try { clearHydrationSnapshot(); } catch (e) { /* non-fatal */ }
+    }
+    setTimeout(function() { window.location.reload(); }, 1300);
+    return true;
+  }
+  return false;
+}
+
 // One POST to /api/coach-chat. Returns:
-//   { success: true, reply }                  on 200 with reply
-//   { retry: true, error }                    on 5xx / 504 / network error
-//   { success: false, error }                 on 4xx, 401, 200-without-reply
-// Never throws — caller handles display.
-async function attemptCoachCall(userMsg) {
+//   { success: true, reply, actions }          on 200 with reply
+//   { retry: true, error }                      on 5xx / 504 / network error
+//   { success: false, error }                   on 4xx, 401, 200-without-reply
+// Never throws — caller handles display. `confirm` is true only on a turn
+// where the client tapped the Confirm chip (authorizes server write tools).
+async function attemptCoachCall(userMsg, confirm) {
   try {
     var sessionRes = await sb.auth.getSession();
     var token = sessionRes.data && sessionRes.data.session && sessionRes.data.session.access_token;
@@ -6347,12 +6495,12 @@ async function attemptCoachCall(userMsg) {
     var res = await fetch('/api/coach-chat', {
       method: 'POST',
       headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: messages, model: modelForCoach() }),
+      body: JSON.stringify({ messages: messages, model: modelForCoach(), confirm: !!confirm }),
     });
     var body = await res.json().catch(function() { return null; });
 
     if (res.status === 200 && body && typeof body.reply === 'string' && body.reply) {
-      return { success: true, reply: body.reply };
+      return { success: true, reply: body.reply, actions: Array.isArray(body.actions) ? body.actions : [] };
     }
     var msg = (body && body.error) || ('HTTP ' + res.status);
     if (res.status === 401) return { success: false, error: 'Session expired. Please sign in again.' };

@@ -424,7 +424,7 @@ async function doDeletePlan(userId, args, ctx) {
   const planId = args.plan_id;
   const force = !!args.force;
   if (!planId || typeof planId !== 'string') return err('plan_id is required.');
-  const rows = await sbJson(`/plans?user_id=eq.${userId}&id=eq.${planId}&select=id,title,is_template&limit=1`);
+  const rows = await sbJson(`/plans?user_id=eq.${userId}&id=eq.${planId}&select=id,title,is_template,is_active&limit=1`);
   if (!rows.length) return err(`No plan with id ${planId} belongs to this client.`);
   const refs = await sbJson(`/workouts?user_id=eq.${userId}&plan_id=eq.${planId}&select=id`);
   const count = Array.isArray(refs) ? refs.length : 0;
@@ -432,7 +432,7 @@ async function doDeletePlan(userId, args, ctx) {
     return err(`"${rows[0].title || planId}" has ${count} logged workout${count === 1 ? '' : 's'} referencing it. Deletion is blocked to protect the training log. If the client is sure, confirm again with force (the workouts are preserved — only their plan_id link is cleared).`);
   }
   await sbWrite('DELETE', `/plans?id=eq.${planId}&user_id=eq.${userId}`, null);
-  ctx.actions.push({ type: 'delete_plan', plan_id: planId, title: rows[0].title || null, is_template: !!rows[0].is_template, forced: count > 0 });
+  ctx.actions.push({ type: 'delete_plan', plan_id: planId, title: rows[0].title || null, is_template: !!rows[0].is_template, is_active: !!rows[0].is_active, forced: count > 0 });
   return ok(`Deleted ${rows[0].is_template ? 'template' : 'plan'} "${rows[0].title || planId}".`);
 }
 

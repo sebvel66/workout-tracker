@@ -3013,6 +3013,30 @@ body.unauthed .coach-fab { display: none; }
   background: transparent; color: var(--text3);
   font-size: 13px; text-align: center; padding: 20px 10px;
 }
+/* System/status line in the transcript: confirmation outcomes + applied
+ * coach actions + cancellations. Centered + muted, distinct from bubbles. */
+.coach-msg.system {
+  align-self: center; max-width: 100%;
+  background: transparent; color: var(--text3);
+  font-size: 12.5px; text-align: center; padding: 4px 10px;
+}
+/* Confirm / Cancel chips rendered under a reply containing a <proposal>. */
+.coach-proposal-chips {
+  align-self: stretch; display: flex; gap: 8px;
+  padding: 2px 2px 6px;
+}
+.coach-chip {
+  flex: 1; padding: 10px 12px; border-radius: 12px;
+  font-size: 14px; font-weight: 600; cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.coach-chip.confirm {
+  background: var(--accent2); color: #000; border: none;
+}
+.coach-chip.cancel {
+  background: transparent; color: var(--text2);
+  border: 1px solid var(--border);
+}
 /* Past-session messages render at reduced opacity so the user can
  * visually distinguish "what we said before" from "what we're saying now".
  * Applied alongside .user / .coach so background colors stay consistent. */
