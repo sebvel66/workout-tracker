@@ -1354,6 +1354,7 @@ function populateCoachingProfileForm(p) {
   setVal('cpPhaseStartDate', p.phase_start_date);
   setVal('cpPhaseNotes', p.phase_notes);
   setVal('cpSpecialInstructions', p.special_instructions);
+  setVal('cpCoachingRules', p.coaching_rules);
   setVal('cpCoachContextWeeks', p.coach_context_weeks);
   setVal('cpModelCoach',   resolveModel(p.model_coach,   'coach'));
   setVal('cpModelPlan',    resolveModel(p.model_plan,    'plan'));
@@ -1569,6 +1570,10 @@ async function saveCoachingProfileFromForm() {
     phase_notes: trimOrNull(getVal('cpPhaseNotes')),
     injuries: readInjuryListFromDom(),
     special_instructions: trimOrNull(getVal('cpSpecialInstructions')),
+    // v3.8.0 standing coaching rules. Multi-line free text; preserved
+    // verbatim (newlines kept) and injected into the CLIENT PROFILE block
+    // across all Claude call paths. Not in the AI profile_updates allowlist.
+    coaching_rules: trimOrNull(getVal('cpCoachingRules')),
     // v3.5.2 context-window override. Applies to coach chat + swap;
     // plan-gen / analyze / refine keep their per-call form input. Null
     // means "use default" (2 weeks); a number is clamped to 1-12 by both
