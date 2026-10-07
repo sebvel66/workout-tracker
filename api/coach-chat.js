@@ -83,7 +83,25 @@ You have tools that read deeper into the client's data and plans:
 - list_plans({ templates_only }) — all plans + templates with ids, the active flag, and how many logged workouts reference each.
 - get_plan({ plan_id }) — the full contents of one plan or template by id.
 
-You ALREADY have, in the first user message, the client's profile + standing rules, recent coaching conversations, current-session context, saved-template summaries, and the volume trend. Answer in-the-moment training questions — form, load, "one more set?", swaps, fatigue, cardio — DIRECTLY from that context; do NOT call a tool for those. Reach for tools only when the question genuinely needs data you don't already have: a multi-week review or analysis, adherence/skip-pattern counting, stagnation checks, or reading and comparing specific plans and templates. These tools are read-only — the client's workout log is never edited.`;
+You ALREADY have, in the first user message, the client's profile + standing rules, recent coaching conversations, current-session context, saved-template summaries, and the volume trend. Answer in-the-moment training questions — form, load, "one more set?", swaps, fatigue, cardio — DIRECTLY from that context; do NOT call a tool for those. Reach for the read tools only when the question genuinely needs data you don't already have: a multi-week review or analysis, adherence / skip-pattern counting, stagnation checks, or reading and comparing specific plans and templates.
+
+You can also EDIT plans, templates, and the coaching profile:
+- update_plan({ plan_id, plan, summary }) — overwrite an existing plan/template IN PLACE (same row; logged history stays linked). Send the full plan blob with ONLY the requested change applied; keep every other day and exercise identical.
+- set_active_plan({ plan, start_date? }) — save a NEW plan and make it active. (To edit the plan already on screen, use update_plan — that keeps the same row and history.)
+- activate_plan({ plan_id }) — re-activate an existing plan.
+- end_active_plan() — end the active plan (no-plan state).
+- save_template({ plan, template_name }) — save a plan as a reusable template.
+- delete_plan({ plan_id, force }) — delete a plan/template (refused if logged workouts reference it unless force).
+- update_coaching_profile({ patch }) — update standing profile facts / rules.
+
+You NEVER read, insert, update, or delete the client's workout log (their logged sets and sessions). Editing a plan only changes the prescription going forward; it never rewrites what they already did.
+
+CONFIRMATION — mandatory before every write (update_plan, set_active_plan, activate_plan, end_active_plan, save_template, delete_plan, update_coaching_profile):
+1. On the FIRST pass, do NOT call the write tool. Read whatever you need (get_active_plan / get_plan / list_plans / get_training_history) to ground the change, then PROPOSE it: describe in plain words exactly what will change — which plan/day, which exercise, the sets/loads, and what it replaces or removes — and end by asking the client to confirm. Wrap the whole proposal in a <proposal> … </proposal> block so the app renders Confirm / Cancel buttons. Keep any commentary outside the block.
+2. Only AFTER the client confirms (the app re-sends the conversation authorized for the write, with a short confirmation from the client) do you call the write tool, applying EXACTLY what you proposed — no more, no less. Then tell the client in one line what you did.
+3. If you call a write tool before the client has confirmed, it is refused — fall back to step 1.
+
+For "adjust Day N" edits on the active plan: read it with get_active_plan, build the full revised blob changing only that day, propose it, and on confirmation call update_plan with the active plan's id — this keeps the same plan and never disturbs the sessions already logged.`;
 
 // Narrow biomechanics-only system prompt for the form-cue surface
 // (v3.6.11). Used when the request carries mode: 'form_only' — bypasses
@@ -236,7 +254,10 @@ export default async function handler(req, res) {
       // the client's selection) handles any turn that actually uses a tool —
       // analysis + plan reads shouldn't run on Haiku. See runCoachToolLoop.
       const planModel = resolveModel(coachingProfile && coachingProfile.model_plan, 'plan');
-      return await runCoachToolLoop(res, { userId, messages, coachModel: model, planModel });
+      // confirm:true is set by the frontend only on a turn where the client
+      // tapped the Confirm chip — the mechanical gate for write tools.
+      const confirm = body && body.confirm === true;
+      return await runCoachToolLoop(res, { userId, messages, coachModel: model, planModel, confirm });
     } else {
       console.log('[coach-chat] ' + (formVideoMode ? 'form_video' : 'form_only') + ' mode — skipping side-channel fetches + context splice');
     }
@@ -358,7 +379,7 @@ export default async function handler(req, res) {
 //
 // Returns { reply, actions, model, usage }. `actions` is always [] until the
 // write tools land; the frontend contract is forward-compatible.
-async function runCoachToolLoop(res, { userId, messages, coachModel, planModel }) {
+async function runCoachToolLoop(res, { userId, messages, coachModel, planModel, confirm }) {
   const T_START = Date.now();
   const HARD_MS = 55000;  // overall abort — under maxDuration (60s)
   const SOFT_MS = 45000;  // don't START another tool round past this
@@ -440,7 +461,7 @@ async function runCoachToolLoop(res, { userId, messages, coachModel, planModel }
       const toolResults = [];
       for (const block of resp.content) {
         if (!block || block.type !== 'tool_use') continue;
-        const out = await executeCoachTool(block.name, block.input || {}, { userId: userId, actions: actions });
+        const out = await executeCoachTool(block.name, block.input || {}, { userId: userId, actions: actions, confirm: confirm });
         console.log('[coach-chat] tool', block.name, out.ok === false ? 'ERROR' : 'ok', '·', Date.now() - T_START, 'ms');
         toolResults.push({
           type: 'tool_result',
