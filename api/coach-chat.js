@@ -18,7 +18,10 @@
 export const maxDuration = 60;  // Hobby ceiling; form_video's 45s abort must fire under this.
 
 import { resolveModel, modelSupportsTemperature } from './_models.js';
-const MAX_TOKENS = 500;
+import { COACH_TOOLS, executeCoachTool } from './_coach-tools.js';
+const MAX_TOKENS = 500;          // plain chat reply budget (unchanged fast path)
+const TOOL_MAX_TOKENS = 4000;    // tool-using turns on the plan model
+const MAX_TOOL_ITERS = 6;        // hard cap on agentic tool rounds per turn
 const TEMPERATURE = 0.4;
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -71,7 +74,16 @@ SAVED TEMPLATES:
 The first user message may also include a SAVED TEMPLATES section — compact summaries of reusable plan structures the client has saved (template name + per-day exercise names; no sets/reps detail). Reference templates by name when relevant: "Your 'Push Pull Legs' template fits — it covers chest twice a week", or "Your 'Upper Lower' template has thin calf work; bump it." If the client asks for sets/reps detail on a specific template, tell them you only have exercise names and ask them to paste specifics or check the Templates modal. Don't fabricate exercises that aren't listed. When the section is absent, skip template references entirely.
 
 WEEKLY VOLUME TREND:
-The first user message may include a WEEKLY VOLUME TREND section — one line per muscle group with a chronological series of weekly set counts (oldest → newest) plus a window average. Counts use Schoenfeld fractional counting (primary muscle = 1.0, each secondary = 0.5) — the same numbers the client sees in the Body / Volume Trends dashboard. Use it to spot drift, ramps, or deficits at a glance: "Your back volume dropped from 18 → 12 over the last two weeks — let's bring it back up." Compare against the client's phase target band (accumulation 10-20 / maintain 8-12 / cut 5-8) when discussing volume changes. Don't restate every muscle's numbers — pick the 1-2 that matter for the question.`;
+The first user message may include a WEEKLY VOLUME TREND section — one line per muscle group with a chronological series of weekly set counts (oldest → newest) plus a window average. Counts use Schoenfeld fractional counting (primary muscle = 1.0, each secondary = 0.5) — the same numbers the client sees in the Body / Volume Trends dashboard. Use it to spot drift, ramps, or deficits at a glance: "Your back volume dropped from 18 → 12 over the last two weeks — let's bring it back up." Compare against the client's phase target band (accumulation 10-20 / maintain 8-12 / cut 5-8) when discussing volume changes. Don't restate every muscle's numbers — pick the 1-2 that matter for the question.
+
+TOOLS:
+You have tools that read deeper into the client's data and plans:
+- get_training_history({ weeks }) — logged sessions over the last N weeks (default 6, max 12): per-exercise sets with prescribed vs actual, RPE, done/skipped, notes, plus the weekly fractional sets-per-muscle table.
+- get_active_plan() — the current active plan (title, week, days, exercises, prescriptions), or null.
+- list_plans({ templates_only }) — all plans + templates with ids, the active flag, and how many logged workouts reference each.
+- get_plan({ plan_id }) — the full contents of one plan or template by id.
+
+You ALREADY have, in the first user message, the client's profile + standing rules, recent coaching conversations, current-session context, saved-template summaries, and the volume trend. Answer in-the-moment training questions — form, load, "one more set?", swaps, fatigue, cardio — DIRECTLY from that context; do NOT call a tool for those. Reach for tools only when the question genuinely needs data you don't already have: a multi-week review or analysis, adherence/skip-pattern counting, stagnation checks, or reading and comparing specific plans and templates. These tools are read-only — the client's workout log is never edited.`;
 
 // Narrow biomechanics-only system prompt for the form-cue surface
 // (v3.6.11). Used when the request carries mode: 'form_only' — bypasses
@@ -217,6 +229,14 @@ export default async function handler(req, res) {
           messages[0].content += '\n\n' + append;
         }
       }
+
+      // v3.8.0: the default coach mode is tool-capable. Run the agentic loop
+      // (read-only tools this commit) and return its reply. form_only /
+      // form_video keep the single-call path below. planModel (Sonnet/Opus by
+      // the client's selection) handles any turn that actually uses a tool —
+      // analysis + plan reads shouldn't run on Haiku. See runCoachToolLoop.
+      const planModel = resolveModel(coachingProfile && coachingProfile.model_plan, 'plan');
+      return await runCoachToolLoop(res, { userId, messages, coachModel: model, planModel });
     } else {
       console.log('[coach-chat] ' + (formVideoMode ? 'form_video' : 'form_only') + ' mode — skipping side-channel fetches + context splice');
     }
@@ -313,6 +333,161 @@ export default async function handler(req, res) {
   } catch (err) {
     console.error('[coach-chat] error:', err);
     return jsonError(res, 500, err.message || 'Internal server error');
+  }
+}
+
+// ---- Agentic tool loop (v3.8.0) ----
+// The default coach mode can call read-only tools (get_training_history,
+// get_active_plan, list_plans, get_plan) — write tools + the confirm gate
+// extend this in a later commit. Flow:
+//   1. One call on the COACH model (Haiku) with tools offered, MAX_TOKENS
+//      budget. If it answers plainly (no tool_use), that's the unchanged
+//      fast path — return it. Tool-use decisions are cheap, so the 500-token
+//      cap never truncates them.
+//   2. If it wants a tool, discard and re-run the loop FROM SCRATCH on the
+//      PLAN model (Sonnet/Opus) at TOOL_MAX_TOKENS — analysis + plan reads
+//      shouldn't run on Haiku.
+//
+// Defensive against the Vercel Hobby 60s cap (we stay on Hobby by choice):
+//   - one AbortController hard-kills all Anthropic calls at HARD_MS (< 60s);
+//   - a SOFT_MS guard stops starting NEW tool rounds and forces a final
+//     no-tool wrap-up (capped tokens) so a long turn degrades to a graceful
+//     reply instead of a platform-killed hang;
+//   - a timeout returns 200 with a friendly "ask me to continue" reply, not
+//     a 5xx, so the frontend renders it as a normal coach message.
+//
+// Returns { reply, actions, model, usage }. `actions` is always [] until the
+// write tools land; the frontend contract is forward-compatible.
+async function runCoachToolLoop(res, { userId, messages, coachModel, planModel }) {
+  const T_START = Date.now();
+  const HARD_MS = 55000;  // overall abort — under maxDuration (60s)
+  const SOFT_MS = 45000;  // don't START another tool round past this
+  const WRAP_MAX_TOKENS = 1500;  // forced final-answer budget when wrapping up
+  const abort = new AbortController();
+  const killer = setTimeout(() => abort.abort(), HARD_MS);
+
+  const actions = [];
+
+  const callClaude = async (model, msgs, withTools, maxTokens) => {
+    const payload = {
+      model: model,
+      max_tokens: maxTokens,
+      ...(modelSupportsTemperature(model) ? { temperature: TEMPERATURE } : {}),
+      system: [{
+        type: 'text',
+        text: COACH_SYSTEM_PROMPT,
+        cache_control: { type: 'ephemeral', ttl: '1h' },
+      }],
+      messages: msgs,
+    };
+    if (withTools) payload.tools = COACH_TOOLS;
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify(payload),
+      signal: abort.signal,
+    });
+    if (!r.ok) {
+      const errBody = await r.text().catch(() => '');
+      const e = new Error('Anthropic ' + r.status + ': ' + errBody.slice(0, 300));
+      e.status = r.status;
+      throw e;
+    }
+    return r.json();
+  };
+
+  const textOf = (data) => {
+    const blocks = Array.isArray(data && data.content) ? data.content : [];
+    return blocks
+      .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+      .map((b) => b.text)
+      .join('')
+      .trim();
+  };
+
+  try {
+    // Step 1 — coach model, tools offered, cheap budget.
+    const first = await callClaude(coachModel, messages, true, MAX_TOKENS);
+    if (first.stop_reason !== 'tool_use') {
+      clearTimeout(killer);
+      const text = textOf(first);
+      if (!text) return jsonError(res, 422, 'No text in coach response', { raw: first });
+      console.log('[coach-chat] plain reply on', coachModel, '·', Date.now() - T_START, 'ms');
+      return res.status(200).json({ reply: text, actions: actions, model: coachModel, usage: first.usage || null });
+    }
+
+    // Step 2 — escalate to the plan model and run the loop from scratch.
+    if (/opus/i.test(planModel)) {
+      console.warn('[coach-chat] tool loop on Opus plan model — higher latency risk under the 60s cap:', planModel);
+    }
+    console.log('[coach-chat] escalating to tool loop on', planModel);
+    const convo = messages.slice();
+    let finalText = '';
+    let lastUsage = null;
+
+    for (let iter = 0; iter < MAX_TOOL_ITERS; iter++) {
+      const resp = await callClaude(planModel, convo, true, TOOL_MAX_TOKENS);
+      lastUsage = resp.usage || lastUsage;
+      if (resp.stop_reason !== 'tool_use') { finalText = textOf(resp); break; }
+
+      // Record the assistant turn verbatim (carries the tool_use blocks), then
+      // answer every tool_use with a tool_result in the next user turn.
+      convo.push({ role: 'assistant', content: resp.content });
+      const toolResults = [];
+      for (const block of resp.content) {
+        if (!block || block.type !== 'tool_use') continue;
+        const out = await executeCoachTool(block.name, block.input || {}, { userId: userId, actions: actions });
+        console.log('[coach-chat] tool', block.name, out.ok === false ? 'ERROR' : 'ok', '·', Date.now() - T_START, 'ms');
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: block.id,
+          content: out.content != null ? out.content : '',
+          ...(out.ok === false ? { is_error: true } : {}),
+        });
+      }
+      convo.push({ role: 'user', content: toolResults });
+
+      // Time guard: near budget → force a final no-tool answer now.
+      if (Date.now() - T_START > SOFT_MS) {
+        console.warn('[coach-chat] soft budget reached, wrapping up after iter', iter);
+        const wrap = await callClaude(planModel, convo, false, WRAP_MAX_TOKENS);
+        lastUsage = wrap.usage || lastUsage;
+        finalText = textOf(wrap);
+        break;
+      }
+    }
+
+    if (!finalText) {
+      // Hit the iteration cap still wanting tools — force a final answer.
+      const wrap = await callClaude(planModel, convo, false, WRAP_MAX_TOKENS);
+      lastUsage = wrap.usage || lastUsage;
+      finalText = textOf(wrap);
+    }
+
+    clearTimeout(killer);
+    if (!finalText) {
+      finalText = 'I pulled your data but ran out of room to summarize it this turn — ask me to continue.';
+    }
+    console.log('[coach-chat] tool loop done on', planModel, '·', Date.now() - T_START, 'ms · actions:', actions.length);
+    return res.status(200).json({ reply: finalText, actions: actions, model: planModel, usage: lastUsage });
+  } catch (err) {
+    clearTimeout(killer);
+    if (err && err.name === 'AbortError') {
+      console.error('[coach-chat] tool loop TIMEOUT after', Date.now() - T_START, 'ms');
+      return res.status(200).json({
+        reply: "That took longer than I can spend in one turn — I was pulling your training data together. Ask me to continue and I'll pick up where I left off.",
+        actions: actions,
+        model: planModel,
+        usage: null,
+        timed_out: true,
+      });
+    }
+    console.error('[coach-chat] tool loop error:', err);
+    return jsonError(res, 502, 'Coach is temporarily unavailable', { detail: (err && err.message) || '' });
   }
 }
 
