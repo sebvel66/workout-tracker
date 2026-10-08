@@ -1356,6 +1356,7 @@ function populateCoachingProfileForm(p) {
   setVal('cpSpecialInstructions', p.special_instructions);
   setVal('cpCoachingRules', p.coaching_rules);
   setVal('cpCoachContextWeeks', p.coach_context_weeks);
+  setVal('cpCoachHistoryWeeks', p.coach_history_weeks);
   setVal('cpModelCoach',   resolveModel(p.model_coach,   'coach'));
   setVal('cpModelPlan',    resolveModel(p.model_plan,    'plan'));
   setVal('cpModelAnalyze', resolveModel(p.model_analyze, 'analyze'));
@@ -1587,6 +1588,18 @@ async function saveCoachingProfileFromForm() {
       if (n > 12) n = 12;
       return n;
     })(),
+    // v3.8.2 coach-chat display window. Controls how many weeks of past
+    // chat the coach panel renders on open (loadChatHistory). Display-only
+    // — independent of coach_context_weeks (what Claude remembers). Null
+    // means "use default" (2 weeks); clamped 1-12 so a manual DB/localStorage
+    // edit can't push the panel to paint an unbounded scroll.
+    coach_history_weeks: (function() {
+      var n = parseIntOrNull(getVal('cpCoachHistoryWeeks'));
+      if (n == null) return null;
+      if (n < 1) n = 1;
+      if (n > 12) n = 12;
+      return n;
+    })(),
     // v3.2.0 model selections. Stored as plain strings; resolveModel on
     // read time handles invalid / retired IDs by falling back to default.
     model_coach:   trimOrNull(getVal('cpModelCoach'))   || null,
@@ -1601,6 +1614,12 @@ async function saveCoachingProfileFromForm() {
   if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
   try {
     await saveCoachingProfile(profile);
+    // The save may have changed coach_history_weeks (chat display window);
+    // drop the loaded-history cache so the next coach-chat open re-queries
+    // with the new window instead of serving the 5-min cache. Leaves the
+    // in-memory session ring buffer (chatHistory) untouched.
+    chatLoadedAt = 0;
+    chatLoadedHistory = [];
     closeCoachingProfile();
     showToast('Coaching profile saved', null);
   } catch (err) {
@@ -5961,7 +5980,8 @@ async function onDeletePlan(planId) {
 //   chatHistory          — in-memory ring buffer for the API call (this
 //                          session only). Sent to /api/coach-chat as the
 //                          multi-turn conversation; capped at 20 entries.
-//   chatLoadedHistory    — past 2 weeks + current week of coach_messages
+//   chatLoadedHistory    — past N weeks + current week of coach_messages
+//                          (N = coach_history_weeks, default 2; v3.8.2)
 //                          loaded from DB on chat open. Renders above the
 //                          current session in the panel as historical
 //                          context (date headers, muted style, context
@@ -5984,9 +6004,11 @@ var chatAttempt = 0;          // 1 = first try, 2 = cold-start retry
 // getLiveContext() on every send.
 var CHAT_HISTORY_MAX = 20;
 // Cap rendered historical messages so a chatty user with months of history
-// doesn't paint a 500-row scroll on chat open. "Load earlier messages"
-// pagination deferred to a follow-up.
-var CHAT_DISPLAY_MAX = 50;
+// doesn't paint a huge scroll on chat open. Raised 50→200 in v3.8.2 so the
+// user-configurable display window (coach_history_weeks, up to 12 weeks)
+// isn't silently truncated for normal usage; still a safety ceiling against
+// painting thousands of rows. "Load earlier messages" pagination deferred.
+var CHAT_DISPLAY_MAX = 200;
 // Re-query coach_messages only every ~5 min on chat open. Closing and
 // reopening the panel rapidly should be instant; long-idle reopens get
 // a fresh pull so cross-context writes (a swap or plan-gen done while
@@ -6053,14 +6075,21 @@ async function loadChatHistory() {
     renderCoachThread();
   }
   try {
-    // Sun-anchored window matching the server-side helper. Two full
-    // prior weeks plus the current week to date.
+    // Sun-anchored window. N full prior weeks plus the current week to
+    // date, where N = coaching_profile.coach_history_weeks (1-12, v3.8.2)
+    // when set, else 2 (preserves the original 14-day default). This is a
+    // display-only window — independent of coach_context_weeks, which
+    // governs what the coach actually remembers.
+    var histWeeks = 2;
+    if (coachingProfile && Number.isFinite(coachingProfile.coach_history_weeks)) {
+      histWeeks = Math.max(1, Math.min(12, coachingProfile.coach_history_weeks));
+    }
     var today = new Date();
     var weekSunday = new Date(today);
     weekSunday.setHours(0, 0, 0, 0);
     weekSunday.setDate(today.getDate() - today.getDay());
     var start = new Date(weekSunday);
-    start.setDate(start.getDate() - 14);
+    start.setDate(start.getDate() - histWeeks * 7);
     var res = await sb.from('coach_messages')
       .select('role, content, context_type, exercise_name, created_at')
       .eq('user_id', userId)
