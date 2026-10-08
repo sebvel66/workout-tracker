@@ -51,7 +51,7 @@ const MAX_HISTORY_WEEKS = 12;
 // Swap mode — budget + prompt are separate from plan generation because the
 // task is narrower (one exercise, one JSON object) and we want it fast.
 // Cached system prompt + library block give a warm-path ~8-12s response.
-const SWAP_MAX_TOKENS = 1400;  // three fully-prescribed exercises
+const SWAP_MAX_TOKENS = 3500;  // three fully-prescribed exercises + adaptive-thinking headroom (5-gen plan models think by default; v3.8.1)
 const SWAP_HISTORY_WEEKS = 2;  // enough for weight calibration on the movement
 
 const SWAP_SYSTEM_PROMPT = `You are a strength and hypertrophy coach. The client wants to replace one exercise. Suggest EXACTLY 3 alternatives, ranked best-fit first, each of which:
@@ -737,7 +737,7 @@ function formatExerciseLibrary(exercises) {
 // 4 sections (~530-800 tok) + variable profile_updates (3-8 entries × ~80-150 tok
 // = up to ~1000 tok) can realistically push past 1800. 3000 keeps comfortable
 // headroom and still fits within the 55s claudeAbort window at Sonnet's ~60-80 t/s.
-const ANALYZE_MAX_TOKENS = 3000;
+const ANALYZE_MAX_TOKENS = 6000;  // 4-section analysis + profile_updates + adaptive-thinking headroom (5-gen analyze models think by default; v3.8.1, up from 3000)
 // Analyze mode pulls more progress photos than plan-gen so Claude can
 // compare them chronologically for over-time observations. 4 keeps token
 // cost bounded (~6-8K image tokens at this count) while giving a useful
@@ -923,7 +923,7 @@ async function handleAnalyzeChat(res, userId, rawInputs) {
       },
       body: JSON.stringify({
         model: model,
-        max_tokens: 600,  // conversational follow-ups are short by design
+        max_tokens: 2500,  // conversational follow-ups are short, but 5-gen analyze models run adaptive thinking that shares this budget (v3.8.1, up from 600)
         ...(modelSupportsTemperature(model) ? { temperature: TEMPERATURE } : {}),
         system: [{
           type: 'text',

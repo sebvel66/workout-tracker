@@ -19,7 +19,12 @@ export const maxDuration = 60;  // Hobby ceiling; form_video's 45s abort must fi
 
 import { resolveModel, modelSupportsTemperature } from './_models.js';
 import { COACH_TOOLS, executeCoachTool } from './_coach-tools.js';
-const MAX_TOKENS = 500;          // plain chat reply budget (unchanged fast path)
+const MAX_TOKENS = 2000;         // plain chat reply + form notes. Bumped from 500
+                                 // (v3.8.1): the 5-gen coach models (Haiku 5.5)
+                                 // run adaptive thinking by default, and thinking
+                                 // shares this output budget — 500 could truncate
+                                 // or empty a short reply. A reply alone needs far
+                                 // less; the ceiling only costs tokens if used.
 const TOOL_MAX_TOKENS = 4000;    // tool-using turns on the plan model
 const MAX_TOOL_ITERS = 6;        // hard cap on agentic tool rounds per turn
 const TEMPERATURE = 0.4;

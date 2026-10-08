@@ -4,16 +4,24 @@
 // physical files because the project has no build step; the operational
 // checklist for new model releases is "edit both files + redeploy."
 
+// The 5.5 generation runs ADAPTIVE THINKING (on by default) and REJECTS
+// temperature/top_p/top_k — so every 5-gen row carries supportsTemperature:false
+// (the modelSupportsTemperature gate then omits the temperature field). Older
+// rows kept for selection; Sonnet 4.6 / Haiku 4.5 still accept temperature.
 var AVAILABLE_MODELS = [
-  { id: 'claude-opus-4-8',           label: 'Opus 4.8',   tier: 'most capable', supportsTemperature: false },
-  { id: 'claude-sonnet-4-6',         label: 'Sonnet 4.6', tier: 'balanced' },
-  { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5',  tier: 'fast' },
+  { id: 'claude-fable-5-1',          label: 'Fable 5.1',  tier: 'frontier',     supportsTemperature: false },
+  { id: 'claude-opus-5-5',           label: 'Opus 5.5',   tier: 'most capable', supportsTemperature: false },
+  { id: 'claude-sonnet-5-5',         label: 'Sonnet 5.5', tier: 'balanced',     supportsTemperature: false },
+  { id: 'claude-haiku-5-5',          label: 'Haiku 5.5',  tier: 'fast',         supportsTemperature: false },
+  { id: 'claude-opus-4-8',           label: 'Opus 4.8',   tier: 'legacy',       supportsTemperature: false },
+  { id: 'claude-sonnet-4-6',         label: 'Sonnet 4.6', tier: 'legacy' },
+  { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5',  tier: 'legacy' },
 ];
 
 var DEFAULT_MODELS = {
-  coach:   'claude-haiku-4-5-20251001',
-  plan:    'claude-sonnet-4-6',
-  analyze: 'claude-sonnet-4-6',
+  coach:   'claude-haiku-5-5',
+  plan:    'claude-opus-5-5',
+  analyze: 'claude-opus-5-5',
 };
 
 // MODEL_ALIASES: retired model ids that should silently upgrade to a current
