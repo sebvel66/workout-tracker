@@ -929,6 +929,17 @@ body.unauthed #logView { display: none !important; }
   text-align: center;
 }
 .start-empty-hint.hidden { display: none; }
+.start-end-plan {
+  display: block; width: 100%;
+  margin-top: 4px; padding: 12px;
+  background: none; border: none;
+  font-family: 'Outfit', sans-serif;
+  font-size: 13px; font-weight: 500;
+  color: var(--text2); text-align: center; cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.start-end-plan:active { color: var(--danger); }
+.start-end-plan.hidden { display: none; }
 .start-import-link {
   display: inline-block;
   margin-top: 8px;
@@ -2386,6 +2397,11 @@ button.body-rw-pill { cursor: pointer; border: 0; background: transparent; font:
 }
 
 /* Plans management */
+.plans-hint {
+  font-size: 12px; line-height: 1.5; color: var(--text2);
+  padding: 12px 14px 10px; border-bottom: 1px solid var(--border);
+}
+.plans-hint strong { color: var(--text); font-weight: 600; }
 .plans-list { padding: 6px 0; }
 .plans-row {
   display: flex; align-items: center; gap: 12px;
@@ -4090,6 +4106,9 @@ input:disabled, button:disabled, textarea:disabled { opacity: 0.7; cursor: defau
       <div class="start-empty-hint hidden" id="startPathEmptyHint">
         No active plan. Pick what to work on, or generate a new plan.
       </div>
+      <button class="start-end-plan hidden" id="startPathEndPlan" type="button">
+        End current plan (switch to no plan)
+      </button>
     </div>
   </div>
 </div>

@@ -1949,6 +1949,11 @@ function openStartScreen() {
   }
 
   var hasPlan = !!(plan && plan.days && plan.days.length);
+  // "End current plan" entry — only meaningful when a plan is active.
+  // Gated on activePlanId (not just hasPlan) so it never shows in the
+  // no-plan state where there's nothing to end.
+  var endPlanBtn = document.getElementById('startPathEndPlan');
+  if (endPlanBtn) endPlanBtn.classList.toggle('hidden', !(hasPlan && activePlanId));
   // Generate path. Promoted to primary styling when there's no active
   // plan (the typical first-time-ever path), demoted to the standard
   // de-emphasized card otherwise (generation is rare vs. starting
@@ -5749,16 +5754,24 @@ async function loadPlans() {
       .order('created_at', { ascending: false });
     if (pr.error) throw pr.error;
 
-    // Count workouts per plan in a single pass.
+    // Count workouts per plan AND track the latest performed_on in a
+    // single pass. last_used feeds the "Last used …" meta line (v3.8.3) —
+    // valuable when a plan gets re-activated across weeks. performed_on is
+    // a 'YYYY-MM-DD' string, so a plain string compare gives the max date.
     var cr = await sb.from('workouts')
-      .select('plan_id')
+      .select('plan_id, performed_on')
       .eq('user_id', userId)
       .not('plan_id', 'is', null);
     var counts = {};
+    var lastUsed = {};
     if (!cr.error && cr.data) {
       for (var i = 0; i < cr.data.length; i++) {
         var pid = cr.data[i].plan_id;
         counts[pid] = (counts[pid] || 0) + 1;
+        var pon = cr.data[i].performed_on;
+        if (pon && (!lastUsed[pid] || pon > lastUsed[pid])) {
+          lastUsed[pid] = pon;
+        }
       }
     }
 
@@ -5771,6 +5784,7 @@ async function loadPlans() {
         created_at: p.created_at,
         start_date: (p.data && p.data.start_date) || null,
         workout_count: counts[p.id] || 0,
+        last_used: lastUsed[p.id] || null,
       };
     });
   } catch(err) {
@@ -5792,12 +5806,23 @@ function renderPlans() {
     body.innerHTML = '<div class="history-empty">No plans yet.</div>';
     return;
   }
-  var h = '<div class="plans-list">';
+  // One-line orientation hint (v3.8.3): the Active/End/Activate flow isn't
+  // self-evident, so spell it out above the list.
+  var h = '<div class="plans-hint">Your <strong>Active</strong> plan drives today’s workout. ' +
+          '<strong>End plan</strong> makes it inactive — it stays here, so you can ' +
+          '<strong>Activate</strong> it again anytime.</div>';
+  h += '<div class="plans-list">';
   for (var i = 0; i < plansList.length; i++) {
     var p = plansList[i];
     var dateLabel = p.start_date
       ? 'Started ' + p.start_date
       : 'Created ' + new Date(p.created_at).toLocaleDateString();
+    // Last used: friendly local date from the 'YYYY-MM-DD' string (anchor
+    // at local midnight so it doesn't shift a day in negative-offset TZs).
+    // Plans with no logged workouts read "Never used".
+    var usedLabel = p.last_used
+      ? 'Last used ' + new Date(p.last_used + 'T00:00:00').toLocaleDateString()
+      : 'Never used';
     h += '<div class="plans-row' + (p.is_active ? ' active' : '') + '">';
     h += '<div class="plans-row-main">';
     h += '<div class="plans-row-title">' + escapeHtml(p.title || 'Untitled');
@@ -5806,6 +5831,7 @@ function renderPlans() {
     h += '<div class="plans-row-meta">';
     if (p.week) h += escapeHtml(p.week) + ' · ';
     h += escapeHtml(dateLabel) + ' · ' + p.workout_count + ' workout' + (p.workout_count === 1 ? '' : 's');
+    h += ' · ' + escapeHtml(usedLabel);
     h += '</div>';
     h += '</div>';
     h += '<div class="plans-row-actions">';
@@ -5854,47 +5880,68 @@ async function onEndPlan(planId) {
     await endActivePlan();
     closePlans();
     showToast('Plan ended. Activate again from Plans anytime.', null);
-
-    // Mirror the hydrate no-plan focus hierarchy: in-progress ad-hoc
-    // wins, else first ad-hoc of any state, else empty state. End just
-    // flipped is_active=false; todayAdHocs (plan-agnostic) is preserved
-    // so a session in progress at end-time stays focused.
-    var focusedAdHocKey = null;
-    for (var ai = 0; ai < todayAdHocs.length; ai++) {
-      var as = todayAdHocs[ai];
-      if (as && as.workoutId && as.startedAt && !as.endedAt) {
-        focusedAdHocKey = 'ah_' + as.workoutId;
-        break;
-      }
-    }
-    if (!focusedAdHocKey && todayAdHocs.length) {
-      focusedAdHocKey = 'ah_' + todayAdHocs[0].workoutId;
-    }
-
-    if (focusedAdHocKey) {
-      document.getElementById('emptyState').style.display = 'none';
-      document.getElementById('summaryBar').style.display = 'flex';
-      currentDay = focusedAdHocKey;
-      focusTab(currentDay);
-      buildTabs();
-      buildDay(currentDay);
-      // Auto-open the start-screen so the no-plan options are surfaced
-      // alongside the focused ad-hoc. Close button is always visible.
-      openStartScreen();
-    } else {
-      // No ad-hoc to focus — fall fully back into the no-plan empty state.
-      // The Plans modal entry path means #emptyState was hidden before this
-      // call; renderEmptyState repopulates innerHTML but doesn't toggle
-      // display, so do that explicitly here (matches the hydrate path in
-      // app.js:199-201).
-      document.getElementById('workoutContainer').innerHTML = '';
-      document.getElementById('emptyState').style.display = 'block';
-      document.getElementById('summaryBar').style.display = 'none';
-      if (typeof renderEmptyState === 'function') renderEmptyState();
-      buildTabs();
-    }
+    refocusAfterPlanEnd();
   } catch(err) {
     console.error('onEndPlan error:', err);
+    showToast("Couldn't end plan: " + (err.message || 'unknown error'), null);
+  }
+}
+
+// Post-end-of-plan UI reconciliation, shared by the Plans modal and the
+// start-screen "End current plan" entry. Mirrors the hydrate no-plan focus
+// hierarchy: an in-progress ad-hoc wins, else the first ad-hoc of any
+// state, else the no-plan empty state. endActivePlan() has already flipped
+// is_active=false by the time this runs; todayAdHocs (plan-agnostic) is
+// preserved so a session in progress at end-time stays focused.
+function refocusAfterPlanEnd() {
+  var focusedAdHocKey = null;
+  for (var ai = 0; ai < todayAdHocs.length; ai++) {
+    var as = todayAdHocs[ai];
+    if (as && as.workoutId && as.startedAt && !as.endedAt) {
+      focusedAdHocKey = 'ah_' + as.workoutId;
+      break;
+    }
+  }
+  if (!focusedAdHocKey && todayAdHocs.length) {
+    focusedAdHocKey = 'ah_' + todayAdHocs[0].workoutId;
+  }
+
+  if (focusedAdHocKey) {
+    document.getElementById('emptyState').style.display = 'none';
+    document.getElementById('summaryBar').style.display = 'flex';
+    currentDay = focusedAdHocKey;
+    focusTab(currentDay);
+    buildTabs();
+    buildDay(currentDay);
+    // Auto-open the start-screen so the no-plan options are surfaced
+    // alongside the focused ad-hoc. Close button is always visible.
+    openStartScreen();
+  } else {
+    // No ad-hoc to focus — fall fully back into the no-plan empty state.
+    // renderEmptyState repopulates innerHTML but doesn't toggle display,
+    // so do that explicitly here (matches the hydrate path in app.js).
+    document.getElementById('workoutContainer').innerHTML = '';
+    document.getElementById('emptyState').style.display = 'block';
+    document.getElementById('summaryBar').style.display = 'none';
+    if (typeof renderEmptyState === 'function') renderEmptyState();
+    buildTabs();
+  }
+}
+
+// Start-screen "End current plan" entry (v3.8.3). Same end flow as the
+// Plans modal, driven off the in-memory active plan rather than a
+// plansList row (the start screen doesn't load that list).
+async function onEndPlanFromStart() {
+  if (!activePlanId || !plan) return;
+  var title = plan.title || 'Untitled';
+  if (!confirm('End "' + title + '"? You can re-activate it from Plans anytime.')) return;
+  try {
+    await endActivePlan();
+    closeStartScreen();
+    showToast('Plan ended. Activate again from Plans anytime.', null);
+    refocusAfterPlanEnd();
+  } catch(err) {
+    console.error('onEndPlanFromStart error:', err);
     showToast("Couldn't end plan: " + (err.message || 'unknown error'), null);
   }
 }
@@ -9338,6 +9385,7 @@ document.getElementById('startPathGenerate').addEventListener('click', function(
   closeStartScreen();
   openGenerate();
 });
+document.getElementById('startPathEndPlan').addEventListener('click', onEndPlanFromStart);
 
 // Coach chat wiring.
 document.getElementById('btnCoachOpen').addEventListener('click', openCoachChat);
