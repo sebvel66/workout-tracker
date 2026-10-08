@@ -4919,7 +4919,9 @@ function renderGenerateInputs(body) {
   var startVal = prev.start_date || defaultStart;
   var durVal = (prev.target_duration != null) ? prev.target_duration : 60;
   var daysVal = (prev.training_days != null) ? prev.training_days : 5;
-  var weeksVal = (prev.history_weeks != null) ? prev.history_weeks : 4;
+  // Analyze defaults to 6 weeks of history (v3.8.0); plan stays at 4. A prior
+  // selection (chained flows) always wins.
+  var weeksVal = (prev.history_weeks != null) ? prev.history_weeks : (generateMode === 'analyze' ? 6 : 4);
   var photosAttr = prev.include_photos ? ' checked' : '';
   var notesVal = prev.notes || '';
 
@@ -5354,7 +5356,7 @@ async function submitAnalyzeChat() {
       question: question,
       // Same window the original analyze used so the volume-by-muscle
       // block in the cached prefix matches up.
-      history_weeks: (generatedMeta && generatedMeta.weeks_analyzed) || (generatedInputs && generatedInputs.history_weeks) || 4,
+      history_weeks: (generatedMeta && generatedMeta.weeks_analyzed) || (generatedInputs && generatedInputs.history_weeks) || 6,
     };
     var res = await fetch('/api/generate-plan', {
       method: 'POST',

@@ -35,6 +35,20 @@ Produce a four-section analysis. Each section is a string value in the output JS
    - *"Hold cable row at 120 until clean 3×12 — last set missed 2 of the last 3 weeks. Add an incline set on the upper body day; chest visually lagging rear delts based on the goal photo. Watch knee on squats given 2 pain notes last week — swap to hack squat if pain persists."*
    - *"Consider a deload next week. Average RPE climbed from 7.2 to 8.8 across the compound lifts over 4 weeks, with a 15% drop in session completion. Drop volume 25-30%, hold weights, maintain intensity. Revisit next week."*
 
+## REQUIRED CHECKS — read the data this way
+
+These are mandatory for every analysis. Work them into the four sections (don't add new sections); be specific and cite the numbers.
+
+1. **Adherence per week, against the plan each session came from.** Compute completion week by week relative to what that session's plan actually prescribed — not a flat total. A week run mostly off-plan (ad hoc) is not "100% adherence"; judge it against what was programmed.
+2. **Muscle groups that vanished when sessions went ad hoc.** When the client trains off-plan, whole groups often silently drop out. Name any major muscle group (chest, back, quads, hamstrings, shoulders — especially side delts) that the plan programmed but that disappeared from the logged sessions in the window.
+3. **End-of-session skips, counted by exercise.** Identify exercises that are prescribed but repeatedly left not-completed at the end of sessions, and count how often. Name them. (Known pattern to watch: calf raises, dead hangs, rear delt work, Copenhagen plank.)
+4. **Stagnation = weeks at the same load with the sets completed.** Only call something stalled when the client has completed the prescribed sets at an unchanged load for 3+ weeks — not when they simply haven't progressed through missed/incomplete work. Say how many weeks and at what load.
+5. **Ramping within a session is a flag, not progress.** If a single exercise climbs in weight set-to-set within one session (e.g., 20 → 25 → 30), flag it; the correct next prescription is a flat scheme at one weight, not a higher top set.
+6. **Smith machine = plate weight only.** Treat any Smith-machine load as plate weight (true load is ~15 lb higher); don't compare Smith loads to free-weight or other-machine loads as if equal.
+7. **Lat pulldown jumps across machines aren't comparable.** Different pulldown machines have different stacks/leverage; a load change that coincides with a machine change is not evidence of progression or regression — say so rather than reading it as a jump.
+8. **Never count bodyweight circuits toward hypertrophy volume.** High-rep bodyweight circuit work (e.g., 10×5 pull-ups, calisthenic finishers) does not count toward the fractional sets-per-muscle hypertrophy volume. Exclude it from volume judgments; mention it as conditioning if relevant.
+9. **After a layoff of 2+ weeks, prescribe re-entry.** If there's a gap of 2+ weeks with no training before the recent sessions (or the window opens after one), the `next_week` recommendation must re-enter at 80–85% of last loads with reduced volume for the first week back — not resume at prior top loads.
+
 ## SAVED TEMPLATES (when present)
 
 The user message may include a `SAVED TEMPLATES` block — compact summaries of training templates the client has saved (template name + day list with exercise names; no per-set detail). Templates are reusable plan structures the client uses to start sessions or reference for future plans.

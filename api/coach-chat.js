@@ -633,6 +633,14 @@ function formatCoachingProfile(profile) {
     out += `SPECIAL INSTRUCTIONS: ${profile.special_instructions}\n\n`;
   }
 
+  // v3.8.0 standing coaching rules — mirrors formatCoachingProfile in
+  // generate-plan.js. The client's explicit, persistent agreement, injected
+  // verbatim as its own CLIENT PROFILE section so it governs coach chat too.
+  if (profile.coaching_rules && String(profile.coaching_rules).trim()) {
+    out += "STANDING COACHING RULES (the client's explicit, persistent agreement — honor these on every call, above generic defaults):\n"
+      + String(profile.coaching_rules).trim() + '\n\n';
+  }
+
   return out;
 }
 

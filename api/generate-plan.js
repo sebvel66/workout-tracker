@@ -40,6 +40,7 @@ export const maxDuration = 60;  // Claude generation takes ~10-20s; Hobby plan c
 const MAX_TOKENS = 16000;
 const TEMPERATURE = 0.3;
 const DEFAULT_HISTORY_WEEKS = 4;
+const DEFAULT_ANALYZE_HISTORY_WEEKS = 6;  // v3.8.0: analyze + analyze_chat default to 6 weeks (plan stays 4)
 const MAX_VERBATIM_WEEKS = 2;   // cap; effective verbatim = min(cap, requested history)
 const DEFAULT_TRAINING_DAYS = 5;
 const MIN_TRAINING_DAYS = 1;
@@ -429,6 +430,14 @@ function formatCoachingProfile(profile) {
     out += `SPECIAL INSTRUCTIONS: ${profile.special_instructions}\n\n`;
   }
 
+  // v3.8.0 standing coaching rules — the client's explicit, persistent
+  // agreement. Injected verbatim (multi-line) as its own section so the rules
+  // govern every call: plan, analyze, swap, refine, coach chat.
+  if (profile.coaching_rules && String(profile.coaching_rules).trim()) {
+    out += "STANDING COACHING RULES (the client's explicit, persistent agreement — honor these on every call, above generic defaults):\n"
+      + String(profile.coaching_rules).trim() + '\n\n';
+  }
+
   return out;
 }
 
@@ -742,7 +751,7 @@ async function handleAnalyze(res, userId, rawInputs) {
     console.warn('generate-plan/analyze: model fallback', { requested: requestedModel, resolved: model });
   }
 
-  const historyWeeks = clampInt(rawInputs.history_weeks, MIN_HISTORY_WEEKS, MAX_HISTORY_WEEKS, DEFAULT_HISTORY_WEEKS);
+  const historyWeeks = clampInt(rawInputs.history_weeks, MIN_HISTORY_WEEKS, MAX_HISTORY_WEEKS, DEFAULT_ANALYZE_HISTORY_WEEKS);
   const verbatimWeeks = Math.min(MAX_VERBATIM_WEEKS, historyWeeks);
   // Analyze-mode inputs: history_weeks (sets the window), optional notes
   // (user questions / focus areas — NOT programming constraints), and
@@ -880,7 +889,7 @@ async function handleAnalyzeChat(res, userId, rawInputs) {
     qaHistory.push({ role: m.role, content: m.content.slice(0, 4000) });
   }
 
-  const historyWeeks = clampInt(rawInputs.history_weeks, MIN_HISTORY_WEEKS, MAX_HISTORY_WEEKS, DEFAULT_HISTORY_WEEKS);
+  const historyWeeks = clampInt(rawInputs.history_weeks, MIN_HISTORY_WEEKS, MAX_HISTORY_WEEKS, DEFAULT_ANALYZE_HISTORY_WEEKS);
 
   const t0 = Date.now();
   const [activePlan, history, exercises, coachHistory, coachingProfile, userTemplates] = await Promise.all([
