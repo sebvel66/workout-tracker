@@ -21,7 +21,13 @@ Mobile-first PWA for workout tracking, with an AI coach (Claude Sonnet 4.6 + Hai
 │   └── app.js                       # APP_VERSION, paintFromCache, hydrate, auth wiring
 ├── api/
 │   ├── generate-plan.js             # 4-mode Edge Function: plan / analyze / swap / refine
-│   └── coach-chat.js                # Real-time chat (Haiku, ~1-2s warm)
+│   ├── coach-chat.js                # Real-time chat (Haiku) + agentic tool loop (v3.8.0)
+│   ├── _history.js                  # Shared training-history fetch + formatters (v3.8.0)
+│   ├── _coach-tools.js              # Coach tool specs + server-side executors (v3.8.0)
+│   ├── _plan-validate.js            # Strict plan validator + repeat-expansion (v3.8.0)
+│   └── _models.js                   # AI model allowlist (mirrors js/models.js)
+├── test/
+│   └── coach-tools.test.js          # Plain-node tests: validator + tool handlers (npm test)
 ├── system-prompt-core.md            # Shared CLIENT PROFILE + COACHING PHILOSOPHY + EXERCISE LIBRARY
 ├── system-prompt-plan.md            # Plan-mode suffix (USER INPUTS, output schema, cardio, drop sets)
 ├── system-prompt-analyze.md         # Analyze-mode suffix (4-section assessment, profile_updates)
@@ -56,7 +62,7 @@ Defined in `supabase/migrations/`. Tables:
 | `locations` | User-defined gym names. Case-insensitive unique per user. |
 | `physique_photos` | Goal + progress photos. `storage_path` points into the `physique-photos` private bucket; rendering uses short-lived signed URLs. |
 | `coach_messages` | v2.4.19. Durable log of coaching interactions: chat sends, swap accept rows, plan-gen accept rows, analyze responses. Columns: `role` ('user' or 'assistant'), `content`, `context_type` ('chat' / 'swap' / 'plan_generation'), `exercise_name` (for swap rows), `created_at`. Read by all four Claude call paths — last 2 weeks + current week injected as RECENT COACHING CONVERSATIONS in the user message. |
-| `coaching_profile` | v2.5.0. One row per user, jsonb `data` column holds the full profile (sex / height / weight / experience / environment / split preference / goal_type+detail / phase+notes+start_date / injuries-as-list / special_instructions). Read by all four Claude call paths and injected as a CLIENT PROFILE block at the top of the user message. Replaces the hardcoded CLIENT PROFILE / Injury / Phase blocks that used to live in `system-prompt-core.md`. |
+| `coaching_profile` | v2.5.0. One row per user, jsonb `data` column holds the full profile (sex / height / weight / experience / environment / split preference / goal_type+detail / phase+notes+start_date / injuries-as-list / special_instructions; v3.8.0 added `coaching_rules` — free-text standing agreement injected verbatim into the CLIENT PROFILE block on every call). Read by all Claude call paths and injected as a CLIENT PROFILE block at the top of the user message. Replaces the hardcoded CLIENT PROFILE / Injury / Phase blocks that used to live in `system-prompt-core.md`. The coach can edit it via the confirm-gated `update_coaching_profile` tool. |
 
 **Supabase Storage:**
 - `physique-photos` (private bucket) — photo files stored under `{user_id}/{uuid}.{ext}`. Storage RLS policies scope read/insert/delete by path prefix via `storage.foldername(name)[1] = auth.uid()::text`.
@@ -78,7 +84,10 @@ Total ~16,720 lines split across 6 frontend files + 3 server files. Rough sizes 
 | `js/app.js` | 401 | `APP_VERSION`, `paintVersion` IIFE, `paintFromCache` IIFE (warm-boot from localStorage), `hydrate` (parallelized phase 1 + deferred phase 2; v3 added a parallel no-plan branch that loads exerciseLibrary + locations before falling through to the empty state), `sb.auth.getSession` + `onAuthStateChange`. |
 | `js/models.js` | 38 | Per-user AI model selection (v3.2.0). Allowlist + helpers mirrored on the server side in `api/_models.js`. |
 | `api/generate-plan.js` | 1908 | Vercel Node serverless function with 5 dispatched modes: `plan` (default), `analyze`, `analyze_chat`, `swap`, `refine`. JWT verify → parallel Supabase queries (active plan, history, library, photos, coach history, coaching profile, saved templates) → mode-specific prompt build → Claude API with cache_control breakpoints → validate (accepts `superset:true` block shape and recurses) + `expandSetRepeats` (recurses into block children) → return. v3.3.0 cold-start path null-guards `formatCurrentPlan` and prepends a `COLD START` marker when both activePlan and history are absent. |
-| `api/coach-chat.js` | 485 | Real-time coach chat (Haiku 4.5, 500 max tokens, ~1-2s warm). JWT verify → side-channel queries (coach_messages, coaching_profile, saved templates, all via service role) → splice CLIENT PROFILE + RECENT COACHING CONVERSATIONS + SAVED TEMPLATES into messages[0] → forward to Anthropic. Default branch uses inline `COACH_SYSTEM_PROMPT` (cached) covering response style, progression rules, COACHING CONTINUITY, SAVED TEMPLATES, WEEKLY VOLUME TREND, cardio Q&A guidance. **`mode: 'form_only'` branch (v3.6.11)** swaps in `FORM_ONLY_SYSTEM_PROMPT` and skips the side-channel fetches + context splice — pure biomechanics, plan-independent, used by inline form-notes generation. |
+| `api/coach-chat.js` | ~650 | Real-time coach chat (Haiku 4.5) + **agentic tool loop (v3.8.0)**. JWT verify → side-channel queries (coach_messages, coaching_profile, saved templates, all via service role) → splice CLIENT PROFILE (incl. `coaching_rules`) + RECENT COACHING CONVERSATIONS + SAVED TEMPLATES into messages[0]. Default branch is now tool-capable: `runCoachToolLoop` offers the coach tools, runs the first call on `model_coach` (Haiku, 500 tok) and escalates to `model_plan` (Sonnet/Opus, 4000 tok, ≤6 rounds) if a tool is used; defensive 55s/45s budget guards under the Hobby cap; returns `{reply, actions}`. `COACH_SYSTEM_PROMPT` gained TOOLS + CONFIRMATION sections. **`mode: 'form_only'` / `'form_video'`** keep the single-call path (no tools). |
+| `api/_history.js` | ~210 | v3.8.0. Shared training-history fetch (`fetchRecentWorkouts`) + formatters (`formatVerbatimHistory` / `formatSummarizedHistory` / `formatVolumeByMuscleGroup` + internal helpers), extracted from generate-plan.js so the `get_training_history` tool emits the identical per-week structure. Read-only. |
+| `api/_coach-tools.js` | ~430 | v3.8.0. Coach tool specs (`COACH_TOOLS`: 4 read + 7 write) + `executeCoachTool` (service-role, scoped to userId). Mechanical confirm gate: write tools refused unless `ctx.confirm === true`. Writes hit only `plans` / `coaching_profile`; never `workouts` / `sets`. |
+| `api/_plan-validate.js` | ~190 | v3.8.0. `validatePlanStrict` (library-name resolution via `makeLib`, integer rest, superset-member-no-rest, timed `duration_seconds`, no-load weight) + `expandSetRepeatsInPlan`. Pure/testable; run before every coach plan write. |
 | `api/_models.js` | 43 | Server-side AI model allowlist (v3.2.0 / v3.2.1 with temperature gating for Opus 4.7). Mirrors `js/models.js`. |
 
 ### Load order and why
@@ -265,6 +274,31 @@ Edge Function (api/coach-chat.js)
 Response  { reply, model, usage }
 ```
 
+### Coach agentic tool loop (v3.8.0)
+
+The default coach-chat mode can call tools. `runCoachToolLoop` (coach-chat.js) drives it; specs + executors live in `api/_coach-tools.js`.
+
+```
+runCoachToolLoop:
+  call #1  → model_coach (Haiku), tools offered, max_tokens 500
+             ├─ stop_reason ≠ tool_use → return reply (fast path, unchanged)
+             └─ stop_reason = tool_use → DISCARD, escalate ↓
+  loop (≤6) → model_plan (Sonnet/Opus), tools, max_tokens 4000
+             repeat: call → execute each tool_use (service role, scoped userId)
+                     → append tool_result → call again, until a text answer
+             guards: AbortController hard-kill @55s; soft @45s forces a capped
+                     no-tool wrap-up; timeout → graceful 200 "ask me to continue"
+  return { reply, actions:[...], model, usage }
+```
+
+**Tools** (all scoped to the authed `userId`; reads only `workouts`/`sets`, writes only `plans`/`coaching_profile`):
+- *Read:* `get_training_history({weeks})` (default 6, reuses `_history.js`), `get_active_plan()`, `list_plans({templates_only})` (+ per-plan `workout_count`), `get_plan({plan_id})`.
+- *Write (confirm-gated):* `update_plan` (in-place, same row + linked history), `set_active_plan` (new row + start_date/week stamp), `activate_plan`, `end_active_plan`, `save_template`, `delete_plan` (refuses referenced plans w/o `force`; FK is `ON DELETE SET NULL` so the log survives), `update_coaching_profile` (shallow merge, field allowlist).
+
+**Confirm flow** (two independent locks). (1) *Mechanical:* `executeCoachTool` refuses any write unless `ctx.confirm === true`; the frontend sends `confirm:true` only on a turn where the user tapped a Confirm chip. (2) *Prompted:* the system prompt tells the coach to propose first inside a `<proposal>` block and call the write tool only after confirmation. The frontend renders Confirm/Cancel whenever a reply contains `<proposal>`; Confirm re-sends the conversation with `confirm:true`; each applied write shows as a system line (persisted to coach_messages) and active-plan writes trigger a hydration-snapshot clear + reload so the tracker repaints (logged sets survive — they're persisted independently).
+
+**Model routing** keeps plain chat on Haiku and sends only tool-using (analysis / edit) turns to the plan model. Writes therefore never run on Haiku. `maxDuration` stays 60 (Hobby); the loop is written defensively against that cap rather than upgrading to Pro.
+
 ### Key design choices (see DECISIONS.md for rationale)
 
 - **Node runtime, not Edge runtime.** Needed for `fs.readFileSync` of the prompt files, longer timeouts, and standard SDK compatibility.
@@ -350,7 +384,8 @@ Patterns established through earlier features. Reuse these when adding new UI ra
 
 ## Testing & deployment
 
-- **No automated test framework.** Every feature is verified manually via the "browser smoke test" checklists in `docs/superpowers/specs/`.
+- **No automated test framework for the frontend.** Every UI feature is verified manually via the "browser smoke test" checklists in `docs/superpowers/specs/`.
+- **Server tool/validate layer has node tests.** `npm test` runs `test/coach-tools.test.js` (plain `node:assert`, no framework) — exercises `validatePlanStrict`, `expandSetRepeatsInPlan`, and every `executeCoachTool` handler against a mocked Supabase `fetch` (confirm gate, delete refuse/force, repeat expansion, template start_date/week stripping, profile merge). No live DB or network.
 - **Every visible change bumps `APP_VERSION`** (in `js/app.js`). Displayed in the bottom-right footer so stale-cache issues are trivial to diagnose ("which version am I on?").
 - **Commits** are small and focused; migration + code can bundle in a single commit when the code requires the migration to function.
 - **Pushes require explicit user approval.** See the workflow feedback memory.
