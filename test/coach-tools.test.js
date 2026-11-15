@@ -141,8 +141,8 @@ for (const name of [...WRITE_TOOLS]) {
     });
   });
 }
-await test('COACH_TOOLS exposes all 4 read + 7 write tools', () => {
-  assert.strictEqual(COACH_TOOLS.length, 11);
+await test('COACH_TOOLS exposes all 4 read + 9 write tools', () => {
+  assert.strictEqual(COACH_TOOLS.length, 13);
 });
 
 section('read tools');
@@ -271,6 +271,97 @@ await test('rejects a disallowed profile field', async () => {
     const r = await executeCoachTool('update_coaching_profile', { patch: { bogus: 1 } }, { userId: 'u1', actions: [], confirm: true });
     assert.strictEqual(r.ok, false);
     assert.match(r.content, /bogus/);
+  });
+});
+
+section('build_session');
+await test('emits a build_session action with expanded sets (no DB write)', async () => {
+  const m = mockSupabase({});
+  await withFetch(m, async () => {
+    const actions = [];
+    const r = await executeCoachTool('build_session', {
+      title: 'Push (coach)',
+      exercises: [
+        { name: 'Dumbbell Bench Press', sets: [{ weight: 70, reps_target: 10, repeat: 3 }] },
+        { name: 'Plank', sets: [{ duration_seconds: 45 }] },
+      ],
+    }, { userId: 'u1', actions, confirm: true });
+    assert.strictEqual(r.ok, true);
+    assert.strictEqual(actions[0].type, 'build_session');
+    assert.strictEqual(actions[0].title, 'Push (coach)');
+    assert.strictEqual(actions[0].exercises[0].sets.length, 3);      // repeat expanded
+    assert.ok(!m.writes.some((w) => /\/(sets|workouts)\b/.test(w.url)), 'must not write sets/workouts');
+  });
+});
+await test('rejects an unknown exercise name', async () => {
+  await withFetch(mockSupabase({}), async () => {
+    const r = await executeCoachTool('build_session', { exercises: [{ name: 'Bogus', sets: [{ reps_target: 5 }] }] }, { userId: 'u1', actions: [], confirm: true });
+    assert.strictEqual(r.ok, false);
+    assert.match(r.content, /not in the exercise library/);
+  });
+});
+await test('rejects a superset block', async () => {
+  await withFetch(mockSupabase({}), async () => {
+    const r = await executeCoachTool('build_session', { exercises: [{ superset: true, rest: 60, exercises: [] }] }, { userId: 'u1', actions: [], confirm: true });
+    assert.strictEqual(r.ok, false);
+    assert.match(r.content, /Supersets/);
+  });
+});
+await test('rejects an empty exercises list', async () => {
+  await withFetch(mockSupabase({}), async () => {
+    const r = await executeCoachTool('build_session', { exercises: [] }, { userId: 'u1', actions: [], confirm: true });
+    assert.strictEqual(r.ok, false);
+  });
+});
+
+section('modify_session');
+await test('normalizes a mix of ops and emits a modify_session action', async () => {
+  const m = mockSupabase({});
+  await withFetch(m, async () => {
+    const actions = [];
+    const r = await executeCoachTool('modify_session', {
+      ops: [
+        { op: 'add_exercise', name: 'Lateral Raise', sets: [{ weight: 20, reps_target: 12, repeat: 2 }] },
+        { op: 'add_set', exercise_order: 0 },
+        { op: 'edit_set', exercise_order: 1, set_index: 2, weight: 185 },
+        { op: 'set_done', exercise_order: 1, set_index: 0, done: true },
+      ],
+    }, { userId: 'u1', actions, confirm: true });
+    assert.strictEqual(r.ok, true);
+    assert.strictEqual(actions[0].type, 'modify_session');
+    assert.strictEqual(actions[0].ops.length, 4);
+    assert.strictEqual(actions[0].ops[0].sets.length, 2);           // add_exercise repeat expanded
+    assert.strictEqual(actions[0].ops[2].weight, 185);
+    assert.strictEqual(actions[0].ops[3].done, true);
+    assert.ok(!m.writes.some((w) => /\/(sets|workouts)\b/.test(w.url)), 'must not write sets/workouts');
+  });
+});
+await test('edit_set with no fields is rejected', async () => {
+  await withFetch(mockSupabase({}), async () => {
+    const r = await executeCoachTool('modify_session', { ops: [{ op: 'edit_set', exercise_order: 0, set_index: 0 }] }, { userId: 'u1', actions: [], confirm: true });
+    assert.strictEqual(r.ok, false);
+    assert.match(r.content, /nothing to change/);
+  });
+});
+await test('set_done requires a boolean done', async () => {
+  await withFetch(mockSupabase({}), async () => {
+    const r = await executeCoachTool('modify_session', { ops: [{ op: 'set_done', exercise_order: 0, set_index: 0 }] }, { userId: 'u1', actions: [], confirm: true });
+    assert.strictEqual(r.ok, false);
+    assert.match(r.content, /done must be true or false/);
+  });
+});
+await test('rpe out of range is rejected', async () => {
+  await withFetch(mockSupabase({}), async () => {
+    const r = await executeCoachTool('modify_session', { ops: [{ op: 'edit_set', exercise_order: 0, set_index: 0, rpe: 12 }] }, { userId: 'u1', actions: [], confirm: true });
+    assert.strictEqual(r.ok, false);
+    assert.match(r.content, /rpe must be an integer/);
+  });
+});
+await test('an unknown op is rejected', async () => {
+  await withFetch(mockSupabase({}), async () => {
+    const r = await executeCoachTool('modify_session', { ops: [{ op: 'delete_everything' }] }, { userId: 'u1', actions: [], confirm: true });
+    assert.strictEqual(r.ok, false);
+    assert.match(r.content, /unknown op/);
   });
 });
 

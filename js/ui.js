@@ -6494,6 +6494,10 @@ function describeCoachAction(a) {
       return '✓ Deleted ' + (a.is_template ? 'template' : 'plan') + (a.title ? ' "' + a.title + '"' : '') + (a.forced ? ' (logged workouts kept)' : '') + '.';
     case 'update_coaching_profile':
       return '✓ Updated coaching profile: ' + ((a.fields || []).join(', ')) + '.';
+    case 'build_session':
+      return '✓ Built a session' + (a.title ? ' "' + a.title + '"' : '') + ' for today.';
+    case 'modify_session':
+      return '✓ Updated the current session.';
     default:
       return 'Change applied.';
   }
@@ -6506,7 +6510,24 @@ function describeCoachAction(a) {
 // reload was scheduled.
 async function handleCoachActions(actions) {
   for (var i = 0; i < actions.length; i++) {
-    var line = describeCoachAction(actions[i]);
+    var a = actions[i];
+    // Live-session edits (build_session / modify_session) are applied in place
+    // through the client's own write paths — no full-page reload. The summary
+    // shown comes from the apply result (what actually landed + any skips).
+    if (a && (a.type === 'build_session' || a.type === 'modify_session')) {
+      var liveLine;
+      try {
+        var res = (typeof applyCoachLiveEdit === 'function') ? await applyCoachLiveEdit(a) : null;
+        liveLine = (res && res.ok ? '✓ ' : '⚠ ') + ((res && res.summary) || 'No change applied.');
+        if (res && res.warnings && res.warnings.length) liveLine += ' (' + res.warnings.join('; ') + ')';
+      } catch (e) {
+        liveLine = "⚠ Couldn't apply that change: " + ((e && e.message) || 'error');
+      }
+      appendCoachSystemMessage(liveLine);
+      logCoachMessage('assistant', liveLine, 'chat', null, new Date().toISOString());
+      continue;
+    }
+    var line = describeCoachAction(a);
     appendCoachSystemMessage(line);
     logCoachMessage('assistant', line, 'chat', null, new Date().toISOString());
   }

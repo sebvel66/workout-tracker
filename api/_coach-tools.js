@@ -257,12 +257,57 @@ export const COACH_TOOLS = [
       required: ['patch'],
     },
   },
+
+  // ---- LIVE-SESSION tools (v3.9.0). These NEVER touch workouts/sets on the
+  // server — they validate + resolve the request and emit a structured action
+  // the FRONTEND applies through its existing live-log write paths (which own
+  // the done/completed_at CHECK, the unique-index dedup, in-memory todayState,
+  // and re-render). Keeps the read-only-log invariant above true server-side. ----
+  {
+    name: 'build_session',
+    description:
+      "Build a brand-new workout for TODAY from scratch and drop it into the app as a standalone session the client can start logging right now. Use when they ask you to put a workout together to do now ('give me a push session', 'quick 20-min arms'). This creates an ad-hoc session (not tied to the active plan) and does NOT change the active plan. If they might instead want to KEEP it as a reusable plan, use set_active_plan (a new active plan) or save_template — ask first when it's ambiguous. Every exercise name must be an exact library name; per-set weight is a suggestion (reps are left blank for the client to log). Supersets aren't supported from chat yet — list members as separate exercises. Validated before it's applied. Requires confirmation.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Short session title, e.g. "Push (coach)". Optional.' },
+        exercises: {
+          type: 'array',
+          description: 'Ordered exercises. Each: { name (exact library name), note?, sets: [ { weight?, reps_target? | reps_range?, duration_seconds?, repeat? } ] }.',
+          items: { type: 'object' },
+        },
+      },
+      required: ['exercises'],
+    },
+  },
+  {
+    name: 'modify_session',
+    description:
+      "Edit the client's CURRENT in-progress session: add exercises, add sets, change a set's weight/reps/RPE, or tick sets done/undone. Reference an existing exercise by its exercise_order (the #N shown in CURRENT SESSION) and a set by its 0-based set_index. Only works on today's editable in-progress session — if there's no session yet, use build_session instead. Names for added exercises must be exact library names; supersets aren't supported from chat yet. Requires confirmation.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        ops: {
+          type: 'array',
+          description:
+            "Ordered edits, each one of: " +
+            "{ op:'add_exercise', name, note?, sets:[{weight?,reps_target?|reps_range?,duration_seconds?,repeat?}] } — append an exercise; " +
+            "{ op:'add_set', exercise_order, weight?, reps_target?, reps_range?, duration_seconds? } — append a set to log into; " +
+            "{ op:'edit_set', exercise_order, set_index, weight?, reps?, rpe? } — change values on an existing set (include only the fields to change); " +
+            "{ op:'set_done', exercise_order, set_index, done } — mark a set done (true) or not-done (false).",
+          items: { type: 'object' },
+        },
+      },
+      required: ['ops'],
+    },
+  },
 ];
 
 // Which tools mutate state and therefore require an explicit confirmed turn.
 const WRITE_TOOLS = new Set([
   'update_plan', 'set_active_plan', 'activate_plan', 'end_active_plan',
   'save_template', 'delete_plan', 'update_coaching_profile',
+  'build_session', 'modify_session',
 ]);
 
 // ---- read-only handlers ----
@@ -456,6 +501,112 @@ async function doUpdateCoachingProfile(userId, args, ctx) {
   return ok(`Updated coaching profile: ${keys.join(', ')}.`);
 }
 
+// ---- live-session handlers (v3.9.0) ----
+// These resolve + validate only; the frontend applies the emitted action
+// through its own live-log write paths. No workouts/sets write happens here.
+
+function hasSupersetEntry(exercises) {
+  return Array.isArray(exercises) && exercises.some((e) => e && e.superset === true);
+}
+
+// Validate a list of exercise blobs by wrapping them in a throwaway one-day
+// plan and running the strict validator (exact library names, reps/duration/
+// weight rules). Expands `repeat` in place. Returns { error } or { exercises }.
+function validateAndExpandExercises(exercises, lib, label) {
+  if (!Array.isArray(exercises) || !exercises.length) {
+    return { error: `${label}: at least one exercise is required.` };
+  }
+  if (hasSupersetEntry(exercises)) {
+    return { error: 'Supersets can\'t be built from chat yet — list the members as separate exercises.' };
+  }
+  const pseudo = { title: 'Session', days: [{ name: 'Session', exercises: JSON.parse(JSON.stringify(exercises)) }] };
+  const vErr = validatePlanStrict(pseudo, lib);
+  if (vErr) return { error: `${label}: ${vErr}` };
+  expandSetRepeatsInPlan(pseudo);
+  return { exercises: pseudo.days[0].exercises };
+}
+
+async function doBuildSession(userId, args, ctx) {
+  const lib = await getLib(userId, ctx);
+  const res = validateAndExpandExercises(args.exercises, lib, 'build_session');
+  if (res.error) return err(res.error);
+  const title = (typeof args.title === 'string' && args.title.trim()) ? args.title.trim() : null;
+  ctx.actions.push({ type: 'build_session', title: title, exercises: res.exercises });
+  const n = res.exercises.length;
+  return ok(`Ready to build a ${n}-exercise session${title ? ` "${title}"` : ''} for today. The app will create it and the client can start logging.`);
+}
+
+function isNum(v) { return typeof v === 'number' && Number.isFinite(v); }
+
+// Validate the per-set fields allowed on add_set (all optional — an added set
+// is something to log into, like the +Add Set button). Returns an error string
+// or null.
+function validateAddSetFields(op, label) {
+  if (op.weight != null && !isNum(op.weight)) return `${label}: weight must be a number.`;
+  if (op.reps_target != null && !Number.isInteger(op.reps_target)) return `${label}: reps_target must be an integer.`;
+  if (op.reps_range != null && typeof op.reps_range !== 'string') return `${label}: reps_range must be a string like "8-10".`;
+  if (op.duration_seconds != null && !Number.isInteger(op.duration_seconds)) return `${label}: duration_seconds must be an integer.`;
+  return null;
+}
+
+async function doModifySession(userId, args, ctx) {
+  const ops = args.ops;
+  if (!Array.isArray(ops) || !ops.length) return err('modify_session needs a non-empty ops array.');
+  const lib = await getLib(userId, ctx);
+  const normalized = [];
+  for (let i = 0; i < ops.length; i++) {
+    const op = ops[i] || {};
+    const label = `op ${i + 1} (${op.op || 'unknown'})`;
+    switch (op.op) {
+      case 'add_exercise': {
+        const res = validateAndExpandExercises([{ name: op.name, note: op.note, sets: op.sets }], lib, label);
+        if (res.error) return err(res.error);
+        const ex = res.exercises[0];
+        normalized.push({ op: 'add_exercise', name: ex.name, note: ex.note || null, sets: ex.sets });
+        break;
+      }
+      case 'add_set': {
+        if (!Number.isInteger(op.exercise_order) || op.exercise_order < 0) return err(`${label}: exercise_order (a non-negative integer) is required.`);
+        const vErr = validateAddSetFields(op, label);
+        if (vErr) return err(vErr);
+        normalized.push({
+          op: 'add_set', exercise_order: op.exercise_order,
+          weight: op.weight != null ? op.weight : null,
+          reps_target: op.reps_target != null ? op.reps_target : null,
+          reps_range: op.reps_range != null ? op.reps_range : null,
+          duration_seconds: op.duration_seconds != null ? op.duration_seconds : null,
+        });
+        break;
+      }
+      case 'edit_set': {
+        if (!Number.isInteger(op.exercise_order) || op.exercise_order < 0) return err(`${label}: exercise_order (a non-negative integer) is required.`);
+        if (!Number.isInteger(op.set_index) || op.set_index < 0) return err(`${label}: set_index (a non-negative integer) is required.`);
+        if (op.weight != null && !isNum(op.weight)) return err(`${label}: weight must be a number.`);
+        if (op.reps != null && !Number.isInteger(op.reps)) return err(`${label}: reps must be an integer.`);
+        if (op.rpe != null && (!Number.isInteger(op.rpe) || op.rpe < 1 || op.rpe > 10)) return err(`${label}: rpe must be an integer 1–10.`);
+        if (op.weight == null && op.reps == null && op.rpe == null) return err(`${label}: nothing to change — provide weight, reps, and/or rpe.`);
+        const e = { op: 'edit_set', exercise_order: op.exercise_order, set_index: op.set_index };
+        if (op.weight != null) e.weight = op.weight;
+        if (op.reps != null) e.reps = op.reps;
+        if (op.rpe != null) e.rpe = op.rpe;
+        normalized.push(e);
+        break;
+      }
+      case 'set_done': {
+        if (!Number.isInteger(op.exercise_order) || op.exercise_order < 0) return err(`${label}: exercise_order (a non-negative integer) is required.`);
+        if (!Number.isInteger(op.set_index) || op.set_index < 0) return err(`${label}: set_index (a non-negative integer) is required.`);
+        if (typeof op.done !== 'boolean') return err(`${label}: done must be true or false.`);
+        normalized.push({ op: 'set_done', exercise_order: op.exercise_order, set_index: op.set_index, done: op.done });
+        break;
+      }
+      default:
+        return err(`${label}: unknown op "${op.op}". Allowed: add_exercise, add_set, edit_set, set_done.`);
+    }
+  }
+  ctx.actions.push({ type: 'modify_session', ops: normalized });
+  return ok(`Ready to apply ${normalized.length} change${normalized.length === 1 ? '' : 's'} to the current session.`);
+}
+
 // ---- executor ----
 // Returns { ok: boolean, content: string }. `content` is what goes in the
 // Anthropic tool_result block (a string); object results are JSON-encoded here
@@ -497,6 +648,8 @@ export async function executeCoachTool(name, input, ctx) {
       case 'save_template':           return await doSaveTemplate(userId, args, ctx);
       case 'delete_plan':             return await doDeletePlan(userId, args, ctx);
       case 'update_coaching_profile': return await doUpdateCoachingProfile(userId, args, ctx);
+      case 'build_session':           return await doBuildSession(userId, args, ctx);
+      case 'modify_session':          return await doModifySession(userId, args, ctx);
       default:
         return err(`Unknown tool: ${name}`);
     }

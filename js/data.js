@@ -5158,7 +5158,10 @@ function getLiveContext() {
       } else if (exState.sub) {
         displayName = ex.name + ' → ' + exState.sub + ' (legacy)';
       }
-      var line = '  ' + displayName + (supersetTag ? ' (superset)' : '') +
+      // '#<flatEi>' is the exercise_order the coach references in
+      // modify_session (edit_set / add_set / set_done); set_index is the
+      // 0-based position within this exercise's sets (0..totalSets-1).
+      var line = '  #' + flatEi + ' ' + displayName + (supersetTag ? ' (superset)' : '') +
                  ' [plan: ' + prescStr + ']: ' +
                  (logged.length ? logged.join(', ') + ' — ' : '') +
                  doneCount + '/' + totalSets + ' done';
@@ -5199,6 +5202,7 @@ function getLiveContext() {
       if (planDay) lines.push('');  // visual separator
       for (var xi = 0; xi < extraKeys.length; xi++) {
         var xek = extraKeys[xi];
+        var xOrder = parseInt(xek.slice(3), 10);  // exercise_order for modify_session
         var xState = st.exercises[xek] || { sets: [] };
         var xMeta = xState.exerciseMeta || {};
         var xName = xMeta.name || 'Exercise';
@@ -5213,7 +5217,7 @@ function getLiveContext() {
             xLogged.push(xw + '×' + xr);
           }
         }
-        var xLine = '  [Ad-hoc] ' + xName + ': ' + (xLogged.length ? xLogged.join(', ') + ' — ' : '') +
+        var xLine = '  #' + xOrder + ' [Ad-hoc] ' + xName + ': ' + (xLogged.length ? xLogged.join(', ') + ' — ' : '') +
                     xDone + '/' + xSets.length + ' sets done';
         if (xState.rpe != null) xLine += ' — RPE ' + xState.rpe;
         if (!currentMarked && xDone < xSets.length) {
@@ -5232,6 +5236,171 @@ function getLiveContext() {
   }
 
   return lines.join('\n');
+}
+
+// ---- Coach live-session apply (v3.9.0) ----
+// The coach's build_session / modify_session tools NEVER touch the DB on the
+// server — they emit a resolved action the client applies HERE, through the
+// same write paths the user drives by hand (createAdHocSession /
+// addTemplateExerciseToSession / addExtraSet / persistSet). So the
+// done/completed_at CHECK, the unique-index dedup, in-memory todayState, and
+// re-render all stay owned by one code path. Returns
+// { ok, summary, warnings:[] }; the caller (handleCoachActions) surfaces it in
+// the chat transcript. No full-page reload — refresh is in place.
+async function applyCoachLiveEdit(action) {
+  if (!action || !action.type) return { ok: false, summary: 'No change to apply.', warnings: [] };
+  if (action.type === 'build_session') return await _coachBuildSession(action);
+  if (action.type === 'modify_session') return await _coachModifySession(action);
+  return { ok: false, summary: 'Unknown live-session action.', warnings: [] };
+}
+
+async function _coachBuildSession(action) {
+  var warnings = [];
+  var exs = Array.isArray(action.exercises) ? action.exercises : [];
+  if (!exs.length) return { ok: false, summary: 'No exercises to build.', warnings: warnings };
+  var before = todayAdHocs.length;
+  await createAdHocSession();  // creates workout row, focuses the new ad-hoc tab (sets todayState + currentDay)
+  if (todayAdHocs.length === before || !todayState || !todayState.isAdHoc || !todayState.workoutId) {
+    return { ok: false, summary: "Couldn't start the session.", warnings: warnings };
+  }
+  if (action.title && typeof action.title === 'string') {
+    todayState.title = action.title;
+    try {
+      await sb.from('workouts').update({ title: action.title }).eq('id', todayState.workoutId).eq('user_id', userId);
+    } catch (e) { /* non-fatal — tab still shows the in-memory title */ }
+  }
+  var added = 0;
+  for (var i = 0; i < exs.length; i++) {
+    var row = resolveLibraryRow(exs[i].name);
+    if (!row) { warnings.push('Skipped "' + exs[i].name + '" — not in the exercise library.'); continue; }
+    addTemplateExerciseToSession(row, { sets: exs[i].sets, note: exs[i].note });
+    added++;
+  }
+  buildTabs();
+  buildDay(currentDay);
+  if (typeof refreshCoachForNewSession === 'function') refreshCoachForNewSession();
+  return {
+    ok: added > 0,
+    summary: added > 0
+      ? 'Built a ' + added + '-exercise session' + (action.title ? ' "' + action.title + '"' : '') + ' for today.'
+      : "Couldn't add any exercises (none matched the library).",
+    warnings: warnings,
+  };
+}
+
+async function _coachModifySession(action) {
+  var warnings = [];
+  var ops = Array.isArray(action.ops) ? action.ops : [];
+  if (!ops.length) return { ok: false, summary: 'No changes to apply.', warnings: warnings };
+  var di = currentDay;
+  if (!todayState || viewModeFor(di) !== 'editable') {
+    return { ok: false, summary: 'No in-progress session to edit — start one first (or ask me to build one).', warnings: warnings };
+  }
+  var applied = 0;
+  for (var i = 0; i < ops.length; i++) {
+    var op = ops[i] || {};
+    try {
+      if (op.op === 'add_exercise') {
+        var row = resolveLibraryRow(op.name);
+        if (!row) { warnings.push('Skipped add "' + op.name + '" — not in the exercise library.'); continue; }
+        addTemplateExerciseToSession(row, { sets: op.sets, note: op.note });
+        applied++;
+      } else if (op.op === 'add_set') {
+        if (await _coachAddSet(di, op)) applied++;
+        else warnings.push('Could not add a set to exercise #' + op.exercise_order + '.');
+      } else if (op.op === 'edit_set') {
+        if (await _coachEditSet(di, op)) applied++;
+        else warnings.push('Set #' + op.exercise_order + ' / set ' + op.set_index + ' not found.');
+      } else if (op.op === 'set_done') {
+        if (await _coachSetDone(di, op)) applied++;
+        else warnings.push('Set #' + op.exercise_order + ' / set ' + op.set_index + ' not found.');
+      } else {
+        warnings.push('Ignored unknown op "' + op.op + '".');
+      }
+    } catch (e) {
+      warnings.push('Op ' + (i + 1) + ' failed: ' + ((e && e.message) || 'error'));
+    }
+  }
+  buildTabs();
+  buildDay(di);
+  return {
+    ok: applied > 0,
+    summary: applied > 0
+      ? 'Applied ' + applied + ' change' + (applied === 1 ? '' : 's') + ' to the session.'
+      : 'No changes applied.',
+    warnings: warnings,
+  };
+}
+
+// Append a set to an EXISTING exercise (refuses to create a phantom exercise
+// for a bad exercise_order). Reuses addExtraSet for placement + carry-forward,
+// then overrides weight / duration with the coach's values when given.
+async function _coachAddSet(di, op) {
+  var ek = 'ex_' + op.exercise_order;
+  var ex = todayState && todayState.exercises[ek];
+  if (!ex || !Array.isArray(ex.sets)) return false;
+  addExtraSet(op.exercise_order);
+  var idx = -1;
+  for (var k = 0; k < ex.sets.length; k++) { if (ex.sets[k]) idx = k; }
+  if (idx < 0) return false;
+  var sl = ex.sets[idx];
+  if (op.weight != null) sl.weight = op.weight;
+  if (op.duration_seconds != null) sl.duration_seconds = op.duration_seconds;
+  if (!sl.startedAt) sl.startedAt = new Date().toISOString();
+  if (sl.setId) await persistSet(di, op.exercise_order, idx);
+  return true;
+}
+
+// Change weight / reps / rpe on an EXISTING set. Weight + reps are assigned
+// directly (coach numbers are already in stored units — the same numbers it
+// reads from the plan/history — so no input-string parsing/unit conversion).
+// RPE is per-exercise in this model: set it on the placement and fan out.
+async function _coachEditSet(di, op) {
+  var ek = 'ex_' + op.exercise_order;
+  var ex = todayState && todayState.exercises[ek];
+  if (!ex) return false;
+  var sl = ex.sets[op.set_index];
+  if (!sl) return false;
+  if (op.weight != null) sl.weight = op.weight;
+  if (op.reps != null) sl.reps = op.reps;
+  if (!sl.startedAt) sl.startedAt = new Date().toISOString();
+  if (sl.setId) await persistSet(di, op.exercise_order, op.set_index);
+  if (op.rpe != null) {
+    ex.rpe = op.rpe;
+    await updateExerciseFanOut(di, op.exercise_order);  // self-guards if nothing persisted
+  }
+  return true;
+}
+
+// Mark an EXISTING set done / not-done. Mirrors _toggleSetCommit's essential
+// behavior (done + completed_at stamp, auto-fill from the plan prescription on
+// a plan day) but is awaitable for batch application. Drop-set cascade is
+// intentionally omitted — coach-driven done-marking targets individual sets.
+async function _coachSetDone(di, op) {
+  var st = todayState;
+  if (!st.isAdHoc && st.dayIndex == null) st.dayIndex = di;
+  var ex = st.exercises['ex_' + op.exercise_order];
+  if (!ex) return false;
+  var sl = ex.sets[op.set_index];
+  if (!sl) return false;
+  if (!!sl.done === !!op.done) return true;  // already in the desired state
+  sl.done = !!op.done;
+  if (sl.done) {
+    sl.completedAt = new Date().toISOString();
+    if (!sl.startedAt) sl.startedAt = sl.completedAt;
+    var prescribed = plan && plan.days && plan.days[di] && plan.days[di].exercises[op.exercise_order]
+      && plan.days[di].exercises[op.exercise_order].sets[op.set_index];
+    if (prescribed) {
+      if (sl.weight == null && prescribed.weight != null) sl.weight = prescribed.weight;
+      if (sl.reps == null && prescribed.reps_target != null) sl.reps = prescribed.reps_target;
+      if (sl.duration_seconds == null && prescribed.duration_seconds != null) sl.duration_seconds = prescribed.duration_seconds;
+      if (sl.distance == null && prescribed.distance != null) sl.distance = prescribed.distance;
+    }
+  } else {
+    sl.completedAt = null;
+  }
+  await persistSet(di, op.exercise_order, op.set_index);
+  return true;
 }
 
 // ---- Exercise form notes (v3.5.8) ----
