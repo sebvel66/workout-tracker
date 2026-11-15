@@ -403,7 +403,7 @@ async function runCoachToolLoop(res, { userId, messages, coachModel, planModel, 
 
   const actions = [];
 
-  const callClaude = async (model, msgs, withTools, maxTokens) => {
+  const callClaude = async (model, msgs, withTools, maxTokens, toolChoice) => {
     const payload = {
       model: model,
       max_tokens: maxTokens,
@@ -416,6 +416,10 @@ async function runCoachToolLoop(res, { userId, messages, coachModel, planModel, 
       messages: msgs,
     };
     if (withTools) payload.tools = COACH_TOOLS;
+    // Force a tool call (vs. a text-only reply) when asked. Used on confirm
+    // turns so the model can't acknowledge the approved write without actually
+    // calling the write tool. tool_choice requires tools to be present.
+    if (withTools && toolChoice) payload.tool_choice = toolChoice;
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -445,8 +449,12 @@ async function runCoachToolLoop(res, { userId, messages, coachModel, planModel, 
   };
 
   try {
-    // Step 1 — coach model, tools offered, cheap budget.
-    const first = await callClaude(coachModel, messages, true, MAX_TOKENS);
+    // Step 1 — coach model, tools offered, cheap budget. On a confirm turn the
+    // client already approved a specific write, so force a tool call: without
+    // this, the coach model can reply with a plain-text "done" (stop_reason
+    // end_turn), take the fast-path return below, and the approved write is
+    // never executed (the confirm gate only applies inside the tool loop).
+    const first = await callClaude(coachModel, messages, true, MAX_TOKENS, confirm ? { type: 'any' } : undefined);
     if (first.stop_reason !== 'tool_use') {
       clearTimeout(killer);
       const text = textOf(first);
@@ -465,7 +473,13 @@ async function runCoachToolLoop(res, { userId, messages, coachModel, planModel, 
     let lastUsage = null;
 
     for (let iter = 0; iter < MAX_TOOL_ITERS; iter++) {
-      const resp = await callClaude(planModel, convo, true, TOOL_MAX_TOKENS);
+      // On a confirm turn, keep forcing a tool call until the approved write is
+      // actually recorded (actions non-empty). Once it's landed, drop back to
+      // auto so the model can wrap up with a plain-text summary. This is what
+      // makes "tap Confirm → write happens" deterministic instead of depending
+      // on the model choosing to re-call the tool after a text "yes".
+      const forceTool = confirm && actions.length === 0 ? { type: 'any' } : undefined;
+      const resp = await callClaude(planModel, convo, true, TOOL_MAX_TOKENS, forceTool);
       lastUsage = resp.usage || lastUsage;
       if (resp.stop_reason !== 'tool_use') { finalText = textOf(resp); break; }
 
